@@ -2,8 +2,8 @@ import streamlit as st
 import configparser
 import os
 
-# 從新的 views 資料夾中，匯入各個頁面的 render 函式
-from views import scraper_view, dormitory_view, worker_view, report_view
+# 從 views 資料夾中，匯入各個頁面的模組
+from views import dashboard_view, scraper_view, dormitory_view, worker_view, report_view
 
 def load_config():
     """載入設定檔"""
@@ -15,7 +15,6 @@ def main():
     """主應用程式"""
     st.set_page_config(layout="wide", page_title="宿舍與移工綜合管理系統")
     
-    # 初始化 session state
     if 'log_messages' not in st.session_state:
         st.session_state.log_messages = []
 
@@ -24,18 +23,20 @@ def main():
 
     with st.sidebar:
         st.header("功能選單")
-        page_options = ["系統爬取", "地址管理", "人員管理", "匯出報表"]
-        page = st.radio("請選擇功能頁面：", page_options)
+        
+        page_options = ["儀表板", "系統爬取", "地址管理", "人員管理"]
+        page = st.radio("請選擇功能頁面：", page_options, index=0) # index=0 讓儀表板成為預設頁面
 
     # 根據選擇的頁面，呼叫對應的 render 函式
-    if page == "系統爬取":
-        scraper_view.render(config) # 將設定傳遞給爬蟲頁面
+    if page == "儀表板":
+        dashboard_view.render()
+    elif page == "系統爬取":
+        scraper_view.render(config)
     elif page == "地址管理":
         dormitory_view.render()
     elif page == "人員管理":
-        worker_view.render() # 目前是預留的空頁面
-    elif page == "匯出報表":
-        report_view.render() # 目前是預留的空頁面
+        worker_view.render()
+
 
 if __name__ == "__main__":
     main()
