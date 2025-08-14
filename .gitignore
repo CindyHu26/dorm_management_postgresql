@@ -1,0 +1,114 @@
+# === 基礎系統檔案 ===
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Icon?
+Desktop.ini
+
+# === 日誌與暫存檔 ===
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
+*.old
+
+# === 編譯輸出與二進位檔 ===
+*.o
+*.obj
+*.so
+*.dll
+*.exe
+*.out
+*.class
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+build/
+dist/
+tmp/
+.cache/
+.nyc_output/
+coverage/
+
+# === Node.js ===
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+package-lock.json
+yarn.lock
+.pnp/
+.pnp.js
+
+# === Python ===
+.env
+.venv
+env/
+venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# === Java ===
+*.jar
+*.war
+*.ear
+*.iml
+.idea/
+.gradle/
+build/
+
+# === Ruby ===
+.bundle/
+vendor/bundle/
+Gemfile.lock
+
+# === PHP ===
+vendor/
+composer.lock
+
+# === Go ===
+bin/
+*.test
+
+# === Rust ===
+target/
+
+# === 前端打包檔 ===
+*.map
+*.tsbuildinfo
+
+# === IDE / 編輯器設定 ===
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# === 測試與覆蓋率報告 ===
+coverage/
+*.lcov
+
+# === 環境設定檔（敏感資訊） ===
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+config.ini
+config*.ini
+# 建議建立 config.example.ini 作為範例檔提交到版本控制
+
+# === macOS / Windows 系統垃圾檔 ===
+*.DS_Store
+ehthumbs.db
+Thumbs.db
+
+# 個資/敏感資料
+*.xlsx
+*.db
+
+# 私用匯入腳本（不打算放版控）
+import_legacy_data.py
+import_xlsx_data.py
