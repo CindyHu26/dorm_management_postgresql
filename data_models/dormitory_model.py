@@ -104,3 +104,8 @@ def get_dorm_id_from_room_id(room_id: int):
     query = "SELECT dorm_id FROM Rooms WHERE id = ?"
     result = db.read_records(query, params=(room_id,), fetch_one=True)
     return result['dorm_id'] if result else None
+
+def get_my_company_dorms_for_selection():
+    """只取得「我司」管理的宿舍列表，用於房租管理等頁面。"""
+    query = "SELECT id, original_address FROM Dormitories WHERE primary_manager = '我司' ORDER BY original_address"
+    return db.read_records(query)

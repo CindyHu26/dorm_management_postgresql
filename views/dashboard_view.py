@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-# 從我們新的 dashboard_model 匯入
 from data_models import dashboard_model
 
 def render():
@@ -9,7 +8,6 @@ def render():
     st.info("此儀表板顯示所有「在住」人員的即時統計數據。")
 
     if st.button("🔄 重新整理數據"):
-        # 清除快取，以便下次能重新從資料庫讀取
         st.cache_data.clear()
 
     @st.cache_data
@@ -22,11 +20,9 @@ def render():
     if dashboard_df is None or dashboard_df.empty:
         st.warning("目前沒有任何在住人員的資料可供統計。")
     else:
-        # --- 數據總覽指標 ---
+        # --- 數據總覽指標 (維持不變) ---
         total_residents = int(dashboard_df['總人數'].sum())
         total_rent = int(dashboard_df['月租金總額'].sum())
-        
-        # 根據 '主要管理人' 進行分組計算
         manager_summary = dashboard_df.groupby('主要管理人')['總人數'].sum()
         my_company_residents = int(manager_summary.get('我司', 0))
         employer_residents = int(manager_summary.get('雇主', 0))
@@ -42,7 +38,6 @@ def render():
         # --- 數據表格 ---
         st.subheader("各宿舍詳細統計")
 
-        # 篩選功能
         manager_filter = st.selectbox(
             "篩選主要管理人：",
             options=["全部"] + dashboard_df['主要管理人'].unique().tolist()
@@ -53,4 +48,6 @@ def render():
         else:
             display_df = dashboard_df
 
+        # 使用 st.dataframe 來顯示，它會自動呈現所有查詢出來的欄位
+        # 因為我們的 SQL 查詢已經移除了 dorm_name 並加入了新欄位，UI會自動同步
         st.dataframe(display_df, use_container_width=True, hide_index=True)

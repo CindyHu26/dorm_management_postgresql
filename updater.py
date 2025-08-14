@@ -13,7 +13,7 @@ def run_update_process(
 ):
     """
     執行核心的資料庫更新流程。
-    1. 檢查並自動建立由爬蟲發現的新宿舍地址。
+    1. 檢查並自動建立由爬蟲發現的新宿舍地址，並將其歸屬為「雇主」管理。
     2. 比對移工資料，執行新增、更新(軟刪除)等操作。
     """
     log_callback("\n===== 開始執行核心資料庫更新程序 =====")
@@ -28,11 +28,9 @@ def run_update_process(
         # --- 步驟一：處理爬蟲發現的新宿舍地址 ---
         log_callback("INFO: 步驟 1/3 - 檢查是否有新地址需要建立...")
         
-        # 取得資料庫中所有已知的正規化地址
         db_dorms_df = db.read_records_as_df("SELECT normalized_address FROM Dormitories")
         db_addresses = set(db_dorms_df['normalized_address']) if not db_dorms_df.empty else set()
 
-        # 找出在新抓取資料中，但不存在於資料庫的地址
         new_addresses_df = fresh_df[
             fresh_df['normalized_address'].notna() & 
             (fresh_df['normalized_address'] != '') & 
@@ -43,17 +41,18 @@ def run_update_process(
         if not unique_new_dorms.empty:
             log_callback(f"INFO: 發現 {len(unique_new_dorms)} 個由爬蟲抓取到的新宿舍地址，將自動建立檔案...")
             for index, row in unique_new_dorms.iterrows():
+                # 【核心邏輯修改】
+                # 由爬蟲新發現的地址，所有責任方預設為「雇主」
                 dorm_details = {
                     "original_address": row['original_address'],
                     "normalized_address": row['normalized_address'],
-                    "primary_manager": "我司", # 【核心邏輯】由爬蟲發現的新地址，預設為我司管理
-                    "rent_payer": "我司",       # 預設值
-                    "utilities_payer": "我司"  # 預設值
+                    "primary_manager": "雇主",
+                    "rent_payer": "雇主",
+                    "utilities_payer": "雇主"
                 }
                 success, msg, dorm_id = db.create_record('Dormitories', dorm_details)
                 if success:
-                    log_callback(f"SUCCESS: {msg}")
-                    # 為新宿舍自動建立預設房間
+                    log_callback(f"SUCCESS: {msg} (已設定為雇主管理)")
                     db.create_record('Rooms', {"dorm_id": dorm_id, "room_number": "[未分配房間]"})
                 else:
                     log_callback(f"ERROR: 建立新宿舍 '{row['original_address']}' 失敗: {msg}")
@@ -63,7 +62,6 @@ def run_update_process(
         # --- 步驟二：比對與處理移工資料 ---
         log_callback("\nINFO: 步驟 2/3 - 比對與處理移工資料...")
         
-        # 讀取資料庫現有所有移工資料
         db_workers_df = db.read_records_as_df('SELECT * FROM Workers')
         log_callback(f"INFO: 資料庫中現有 {len(db_workers_df)} 筆移工總資料。")
 
@@ -90,7 +88,6 @@ def run_update_process(
                     log_callback(f"INFO: 移工 '{uid}' 為手動管理，略過狀態更新。")
 
         # 2. 準備最終要寫入的DataFrame
-        # 以最新的資料(fresh_df)為基礎，合併舊資料庫中需要保留的欄位
         manual_cols = [
             'unique_id', 'room_id', 'monthly_fee', 'fee_notes', 'payment_method', 
             'data_source', 'worker_notes', 'special_status'
@@ -103,7 +100,11 @@ def run_update_process(
             final_df = fresh_df.copy()
 
         # 3. 為新進、在職員工設定狀態與預設值
-        final_df['accommodation_start_date'] = None # 先清空
+        # 先將住宿起日欄位轉換為 object 類型以容納 None
+        if 'accommodation_start_date' not in final_df.columns:
+            final_df['accommodation_start_date'] = None
+        final_df['accommodation_start_date'] = final_df['accommodation_start_date'].astype(object)
+
         for index, row in final_df.iterrows():
             uid = row['unique_id']
             if uid in added_ids:
@@ -119,7 +120,6 @@ def run_update_process(
 
         # 5. 執行資料庫寫入
         log_callback("INFO: 正在將最終整合結果寫入資料庫...")
-        # 確保 final_df 的欄位順序和資料庫一致
         cursor = conn.cursor()
         cursor.execute("PRAGMA table_info(Workers)")
         db_columns = [info[1] for info in cursor.fetchall()]
