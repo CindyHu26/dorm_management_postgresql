@@ -108,7 +108,10 @@ Thumbs.db
 # 個資/敏感資料
 *.xlsx
 *.db
+*.csv
+*.xls
 
 # 私用匯入腳本（不打算放版控）
 import_legacy_data.py
 import_xlsx_data.py
+import_master_sheet.py

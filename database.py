@@ -37,8 +37,6 @@ def create_indexes(cursor):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_workers_accommodation_end_date ON Workers(accommodation_end_date);")
     
     # --- 為儀表板提醒功能所需的日期欄位建立索引 ---
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_dorms_insurance_expiry ON Dormitories(insurance_expiry_date);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_dorms_fire_inspection ON Dormitories(next_fire_inspection_date);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_equipment_check_date ON DormitoryEquipment(next_check_date);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_leases_end_date ON Leases(lease_end_date);")
     
@@ -64,19 +62,18 @@ def create_all_tables_and_indexes():
             legacy_dorm_code TEXT,
             original_address TEXT,
             normalized_address TEXT NOT NULL UNIQUE,
-            managed_by TEXT,
-            legal_capacity INTEGER,
-            building_permit_info TEXT,
-            insurance_policy_number TEXT,
-            insurance_status TEXT,
-            insurance_expiry_date DATE,
-            last_fire_inspection_date DATE,
-            next_fire_inspection_date DATE,
-            fire_inspection_status TEXT,
-            dorm_notes TEXT
+            dorm_name TEXT, -- 對應 "名稱" 欄位
+            rent_payer TEXT DEFAULT '雇主',
+            utilities_payer TEXT DEFAULT '雇主',
+            cohabitation_rules TEXT, -- 對應 "可否合住"
+            insurance_info TEXT, -- 對應 "建築保險"
+            building_info TEXT, -- 對應 "建築"
+            fire_safety_info TEXT, -- 對應 "消防"
+            fire_equipment_info TEXT, -- 對應 "消防設備"
+            dorm_notes TEXT -- 用於儲存例如 "本宿舍僅限女性" 等備註
         );
         """)
-        print("SUCCESS: 表格 'Dormitories' 已建立。")
+        print("SUCCESS: 表格 'Dormitories' 結構已更新。")
 
         # 2. 房間表 (Rooms)
         cursor.execute("""
@@ -85,12 +82,12 @@ def create_all_tables_and_indexes():
             dorm_id INTEGER NOT NULL,
             room_number TEXT NOT NULL,
             capacity INTEGER,
-            gender_policy TEXT,
+            gender_policy TEXT DEFAULT '可混住',
             room_notes TEXT,
             FOREIGN KEY (dorm_id) REFERENCES Dormitories (id) ON DELETE CASCADE
         );
         """)
-        print("SUCCESS: 表格 'Rooms' 已建立。")
+        print("SUCCESS: 表格 'Rooms' 結構已更新。")
         
         # 3. 移工資料表 (Workers)
         cursor.execute("""
