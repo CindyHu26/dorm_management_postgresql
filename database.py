@@ -62,15 +62,16 @@ def create_all_tables_and_indexes():
             legacy_dorm_code TEXT,
             original_address TEXT,
             normalized_address TEXT NOT NULL UNIQUE,
-            dorm_name TEXT, -- 對應 "名稱" 欄位
-            rent_payer TEXT DEFAULT '雇主',
-            utilities_payer TEXT DEFAULT '雇主',
-            cohabitation_rules TEXT, -- 對應 "可否合住"
-            insurance_info TEXT, -- 對應 "建築保險"
-            building_info TEXT, -- 對應 "建築"
-            fire_safety_info TEXT, -- 對應 "消防"
-            fire_equipment_info TEXT, -- 對應 "消防設備"
-            dorm_notes TEXT -- 用於儲存例如 "本宿舍僅限女性" 等備註
+            dorm_name TEXT,
+            primary_manager TEXT,
+            rent_payer TEXT,
+            utilities_payer TEXT,
+            cohabitation_rules TEXT,
+            insurance_info TEXT,
+            building_info TEXT,
+            fire_safety_info TEXT,
+            fire_equipment_info TEXT,
+            dorm_notes TEXT
         );
         """)
         print("SUCCESS: 表格 'Dormitories' 結構已更新。")

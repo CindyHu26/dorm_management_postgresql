@@ -2,10 +2,10 @@ import pandas as pd
 import sqlite3
 from datetime import datetime
 from typing import Callable
-import traceback
 
-# 引用我們之前建立的模組
+# 匯入我們自訂的模組
 import database
+import generic_db_ops as db
 
 def run_update_process(
     fresh_df: pd.DataFrame,
@@ -13,106 +13,127 @@ def run_update_process(
 ):
     """
     執行核心的資料庫更新流程。
-
-    Args:
-        fresh_df (pd.DataFrame): 從 data_processor 來的最新、乾淨的移工資料。
-        log_callback (Callable[[str], None]): 日誌回呼函式。
+    1. 檢查並自動建立由爬蟲發現的新宿舍地址。
+    2. 比對移工資料，執行新增、更新(軟刪除)等操作。
     """
     log_callback("\n===== 開始執行核心資料庫更新程序 =====")
     today_str = datetime.today().strftime('%Y-%m-%d')
     
+    conn = database.get_db_connection()
+    if not conn:
+        log_callback("CRITICAL: 無法連接到資料庫，更新程序終止。")
+        return
+
     try:
-        conn = database.get_db_connection()
-        if not conn:
-            log_callback("CRITICAL: 無法連接到資料庫，更新程序終止。")
-            return
+        # --- 步驟一：處理爬蟲發現的新宿舍地址 ---
+        log_callback("INFO: 步驟 1/3 - 檢查是否有新地址需要建立...")
+        
+        # 取得資料庫中所有已知的正規化地址
+        db_dorms_df = db.read_records_as_df("SELECT normalized_address FROM Dormitories")
+        db_addresses = set(db_dorms_df['normalized_address']) if not db_dorms_df.empty else set()
 
-        # 1. 讀取資料庫中現有的所有移工資料
-        try:
-            # 讀取所有欄位，以便保留手動維護的資料
-            db_df = pd.read_sql('SELECT * FROM Workers', conn)
-            log_callback(f"INFO: 資料庫中現有 {len(db_df)} 筆移工總資料。")
-        except (pd.io.sql.DatabaseError, ValueError): 
-            db_df = pd.DataFrame(columns=['unique_id']) # 如果表格為空或不存在，建立一個空表
-            log_callback("INFO: 資料庫中尚無移工資料，本次抓取將全部視為新增。")
+        # 找出在新抓取資料中，但不存在於資料庫的地址
+        new_addresses_df = fresh_df[
+            fresh_df['normalized_address'].notna() & 
+            (fresh_df['normalized_address'] != '') & 
+            (~fresh_df['normalized_address'].isin(db_addresses))
+        ]
+        unique_new_dorms = new_addresses_df.drop_duplicates(subset=['normalized_address'])
 
-        # 2. 準備ID集合以供比對
+        if not unique_new_dorms.empty:
+            log_callback(f"INFO: 發現 {len(unique_new_dorms)} 個由爬蟲抓取到的新宿舍地址，將自動建立檔案...")
+            for index, row in unique_new_dorms.iterrows():
+                dorm_details = {
+                    "original_address": row['original_address'],
+                    "normalized_address": row['normalized_address'],
+                    "primary_manager": "我司", # 【核心邏輯】由爬蟲發現的新地址，預設為我司管理
+                    "rent_payer": "我司",       # 預設值
+                    "utilities_payer": "我司"  # 預設值
+                }
+                success, msg, dorm_id = db.create_record('Dormitories', dorm_details)
+                if success:
+                    log_callback(f"SUCCESS: {msg}")
+                    # 為新宿舍自動建立預設房間
+                    db.create_record('Rooms', {"dorm_id": dorm_id, "room_number": "[未分配房間]"})
+                else:
+                    log_callback(f"ERROR: 建立新宿舍 '{row['original_address']}' 失敗: {msg}")
+        else:
+            log_callback("INFO: 未發現需要新建的宿舍地址。")
+
+        # --- 步驟二：比對與處理移工資料 ---
+        log_callback("\nINFO: 步驟 2/3 - 比對與處理移工資料...")
+        
+        # 讀取資料庫現有所有移工資料
+        db_workers_df = db.read_records_as_df('SELECT * FROM Workers')
+        log_callback(f"INFO: 資料庫中現有 {len(db_workers_df)} 筆移工總資料。")
+
         fresh_ids = set(fresh_df['unique_id'])
-        db_ids = set(db_df['unique_id'])
+        db_ids = set(db_workers_df['unique_id']) if not db_workers_df.empty else set()
 
-        # 3. 找出三種狀態的人員ID
         added_ids = fresh_ids - db_ids
         deleted_ids = db_ids - fresh_ids
         existing_ids = fresh_ids.intersection(db_ids)
-
         log_callback(f"比對完成 -> 新增: {len(added_ids)} 人, 離職/資料移除: {len(deleted_ids)} 人, 狀態不變: {len(existing_ids)} 人")
-
-        # 4. 處理離職員工 (軟刪除)
-        # 我們只處理由系統管理的員工，手動管理的會被過濾掉
-        if not db_df.empty:
+        
+        # --- 步驟三：整合資料並寫入資料庫 ---
+        log_callback("\nINFO: 步驟 3/3 - 整合資料並準備寫入...")
+        
+        # 1. 處理離職員工 (軟刪除)
+        if not db_workers_df.empty:
             for uid in deleted_ids:
-                # 找到該員工在資料庫中的紀錄
-                worker_record = db_df[db_df['unique_id'] == uid]
-                if not worker_record.empty:
-                    # 【關鍵保護機制】檢查資料來源
-                    if worker_record.iloc[0]['data_source'] == '系統自動更新':
-                        # 如果住宿迄日是空的，才更新它
-                        if pd.isna(worker_record.iloc[0]['accommodation_end_date']):
-                            db_df.loc[db_df['unique_id'] == uid, 'accommodation_end_date'] = today_str
-                            log_callback(f"INFO: 系統管理的移工 '{uid}' 已不在最新名單，更新住宿迄日。")
-                    else:
-                        log_callback(f"INFO: 移工 '{uid}' 為手動管理，略過狀態更新。")
-        
-        # 5. 準備最終要寫入資料庫的完整DataFrame
-        #    核心思想：以最新的資料(fresh_df)為基礎，合併舊資料庫中需要保留的欄位
-        
-        # 定義需要從舊資料庫保留的欄位 (所有手動維護的欄位)
-        manual_cols = [
-            'unique_id', 'room_id', 'accommodation_start_date', 'accommodation_end_date',
-            'monthly_fee', 'fee_notes', 'payment_method', 'data_source',
-            'worker_notes', 'special_status'
-        ]
-        # 篩選出db_df中實際存在的欄位
-        existing_manual_cols = [col for col in manual_cols if col in db_df.columns]
+                worker_record = db_workers_df[db_workers_df['unique_id'] == uid].iloc[0]
+                if worker_record['data_source'] == '系統自動更新':
+                    if pd.isna(worker_record['accommodation_end_date']):
+                        db_workers_df.loc[db_workers_df['unique_id'] == uid, 'accommodation_end_date'] = worker_record.get('departure_date', today_str)
+                        log_callback(f"INFO: 系統管理的移工 '{uid}' 已不在最新名單，更新住宿迄日。")
+                else:
+                    log_callback(f"INFO: 移工 '{uid}' 為手動管理，略過狀態更新。")
 
-        if not db_df.empty:
-            final_df = pd.merge(fresh_df, db_df[existing_manual_cols], on='unique_id', how='left')
+        # 2. 準備最終要寫入的DataFrame
+        # 以最新的資料(fresh_df)為基礎，合併舊資料庫中需要保留的欄位
+        manual_cols = [
+            'unique_id', 'room_id', 'monthly_fee', 'fee_notes', 'payment_method', 
+            'data_source', 'worker_notes', 'special_status'
+        ]
+        existing_manual_cols = [col for col in manual_cols if col in db_workers_df.columns]
+
+        if not db_workers_df.empty:
+            final_df = pd.merge(fresh_df, db_workers_df[existing_manual_cols], on='unique_id', how='left')
         else:
             final_df = fresh_df.copy()
 
-        # 6. 為新進、在職員工設定狀態與預設值
+        # 3. 為新進、在職員工設定狀態與預設值
+        final_df['accommodation_start_date'] = None # 先清空
         for index, row in final_df.iterrows():
             uid = row['unique_id']
-            # 對於新員工
             if uid in added_ids:
-                # accommodation_start_date 預設為入境日
                 final_df.loc[index, 'accommodation_start_date'] = row['arrival_date']
-                # data_source 預設為系統更新
                 final_df.loc[index, 'data_source'] = '系統自動更新'
-            
-            # 對於所有在職的員工 (新進+既有)，確保其住宿迄日為空
             if uid in fresh_ids:
                  final_df.loc[index, 'accommodation_end_date'] = None
 
-        # 7. 將已標記為"離職"的舊員工，以及"手動管理"的員工加回最終表格
-        if not db_df.empty:
-            # 篩選出所有不在最新名單中的人(包含軟刪除和手動管理的)
-            archived_df = db_df[~db_df['unique_id'].isin(fresh_ids)]
-            # 合併回主表
-            final_df = pd.concat([final_df, archived_df], ignore_index=True)
+        # 4. 將已標記為"離職"或"手動管理"的舊員工加回最終表格
+        if not db_workers_df.empty:
+            archived_df = db_workers_df[~db_workers_df['unique_id'].isin(fresh_ids)]
+            final_df = pd.concat([final_df, archived_df], ignore_index=True, sort=False)
 
-        # 8. 執行資料庫寫入
+        # 5. 執行資料庫寫入
         log_callback("INFO: 正在將最終整合結果寫入資料庫...")
-        # 使用 'replace' 會先刪除舊表再建立新表並寫入，是原子性操作，非常安全
+        # 確保 final_df 的欄位順序和資料庫一致
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(Workers)")
+        db_columns = [info[1] for info in cursor.fetchall()]
+        final_df = final_df.reindex(columns=db_columns)
+
         final_df.to_sql('Workers', conn, if_exists='replace', index=False)
         log_callback(f"SUCCESS: 資料庫更新完成！目前資料庫總筆數: {len(final_df)}")
 
     except Exception as e:
-        log_callback(f"CRITICAL: 更新資料庫時發生嚴重錯誤: {e}\n{traceback.format_exc()}")
-        if 'conn' in locals() and conn:
+        log_callback(f"CRITICAL: 更新資料庫時發生嚴重錯誤: {e}")
+        if conn:
             conn.rollback()
     finally:
-        if 'conn' in locals() and conn:
+        if conn:
             conn.close()
 
 if __name__ == '__main__':
