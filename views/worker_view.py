@@ -1,27 +1,45 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-
 from data_models import worker_model, dormitory_model
 
 def render():
     """渲染「人員管理」頁面"""
     st.header("移工住宿人員管理")
 
-    # --- Session State 初始化 ---
     if 'selected_worker_id' not in st.session_state:
         st.session_state.selected_worker_id = None
-    if 'selected_dorm_for_worker' not in st.session_state:
-        st.session_state.selected_dorm_for_worker = None
 
-    # --- 1. 新增手動管理人員 ---
+    # --- 1. 新增手動管理人員 (完整版) ---
     with st.expander("➕ 新增手動管理人員 (他仲等)"):
         with st.form("new_manual_worker_form", clear_on_submit=True):
+            st.subheader("新人員基本資料")
             c1, c2, c3 = st.columns(3)
             employer_name = c1.text_input("雇主名稱 (必填)")
             worker_name = c2.text_input("移工姓名 (必填)")
-            passport_number = c3.text_input("護照號碼")
+            gender = c3.selectbox("性別", ["", "男", "女"])
+            nationality = c1.text_input("國籍")
+            passport_number = c2.text_input("護照號碼")
+            arc_number = c3.text_input("居留證號")
+
+            st.subheader("住宿與費用")
+            dorms = dormitory_model.get_dorms_for_selection()
+            dorm_options = {d['id']: d['original_address'] for d in dorms} if dorms else {}
             
+            selected_dorm_id_new = st.selectbox("宿舍地址", options=[None] + list(dorm_options.keys()), format_func=lambda x: "未分配" if x is None else dorm_options[x], key="new_dorm_select")
+            
+            rooms = dormitory_model.get_rooms_for_selection(selected_dorm_id_new)
+            room_options = {r['id']: r['room_number'] for r in rooms} if rooms else {}
+            selected_room_id_new = st.selectbox("房間號碼", options=[None] + list(room_options.keys()), format_func=lambda x: "未分配" if x is None else room_options[x], key="new_room_select")
+            
+            f1, f2, f3 = st.columns(3)
+            monthly_fee = f1.number_input("月費", min_value=0, step=100, key="new_fee")
+            payment_method = f2.selectbox("付款方", ["員工自付", "雇主支付"], key="new_payment")
+            accommodation_start_date = f3.date_input("起住日期", value=datetime.now())
+
+            worker_notes = st.text_area("個人備註", key="new_notes")
+            special_status = st.text_input("特殊狀況", key="new_status")
+
             submitted = st.form_submit_button("儲存新人員")
             if submitted:
                 if not employer_name or not worker_name:
@@ -29,10 +47,13 @@ def render():
                 else:
                     details = {
                         'unique_id': f"{employer_name}_{worker_name}",
-                        'employer_name': employer_name,
-                        'worker_name': worker_name,
-                        'passport_number': passport_number,
-                        'data_source': '手動管理(他仲)' # 直接設定
+                        'employer_name': employer_name, 'worker_name': worker_name,
+                        'gender': gender, 'nationality': nationality,
+                        'passport_number': passport_number, 'arc_number': arc_number,
+                        'room_id': selected_room_id_new,
+                        'monthly_fee': monthly_fee, 'payment_method': payment_method,
+                        'accommodation_start_date': str(accommodation_start_date) if accommodation_start_date else None,
+                        'worker_notes': worker_notes, 'special_status': special_status
                     }
                     success, message, _ = worker_model.add_manual_worker(details)
                     if success:

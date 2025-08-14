@@ -64,6 +64,14 @@ def update_worker_details(unique_id: str, details: dict):
     return db.update_record('Workers', unique_id, details, id_column='unique_id')
 
 def add_manual_worker(details: dict):
-    """新增一筆手動管理的移工資料。"""
+    """
+    新增一筆手動管理的移工資料。
+    【本次修改】確保 data_source 被正確設定。
+    """
     details['data_source'] = '手動管理(他仲)'
+    # 檢查 unique_id 是否已存在
+    existing = get_single_worker_details(details['unique_id'])
+    if existing:
+        return False, f"新增失敗：員工ID '{details['unique_id']}' 已存在。", None
+        
     return db.create_record('Workers', details)

@@ -97,3 +97,18 @@ def delete_record(table_name: str, record_id, id_column: str = 'id'):
         return False, f"刪除紀錄時發生錯誤: {e}"
     finally:
         if conn: conn.close()
+
+def execute_query(query: str, params=None):
+    """通用執行函式，用於執行不需要回傳結果的指令，例如 UPDATE, DELETE。"""
+    conn = database.get_db_connection()
+    if not conn: return False, "DB connection failed."
+    try:
+        cursor = conn.cursor()
+        cursor.execute(query, params or ())
+        conn.commit()
+        return True, "指令執行成功。"
+    except Exception as e:
+        conn.rollback()
+        return False, f"執行指令時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
