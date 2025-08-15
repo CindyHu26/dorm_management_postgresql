@@ -33,17 +33,6 @@ tmp/
 .nyc_output/
 coverage/
 
-# === Node.js ===
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-package-lock.json
-yarn.lock
-.pnp/
-.pnp.js
-
 # === Python ===
 .env
 .venv
@@ -98,21 +87,9 @@ coverage/
 .env.production.local
 config.ini
 config*.ini
-# 建議建立 config.example.ini 作為範例檔提交到版本控制
-
-# === macOS / Windows 系統垃圾檔 ===
-*.DS_Store
-ehthumbs.db
-Thumbs.db
 
 # 個資/敏感資料
 *.xlsx
 *.db
 *.csv
 *.xls
-
-# 私用匯入腳本（不打算放版控）
-import_legacy_data.py
-import_xlsx_data.py
-import_master_sheet.py
-debug_data_flow.py
