@@ -95,3 +95,30 @@ def add_expense_record(details: dict):
 def delete_expense_record(record_id: int):
     """刪除一筆費用紀錄。"""
     return db.delete_record('UtilityBills', record_id)
+
+def get_annual_expenses_for_dorm_as_df(dorm_id: int):
+    """查詢指定宿舍的所有年度費用紀錄。"""
+    if not dorm_id:
+        return pd.DataFrame()
+    query = """
+        SELECT 
+            id,
+            expense_item AS "費用項目",
+            payment_date AS "支付日期",
+            total_amount AS "總金額",
+            amortization_start_month AS "攤提起始月",
+            amortization_end_month AS "攤提結束月",
+            notes AS "備註"
+        FROM AnnualExpenses
+        WHERE dorm_id = ?
+        ORDER BY payment_date DESC
+    """
+    return db.read_records_as_df(query, params=(dorm_id,))
+
+def add_annual_expense_record(details: dict):
+    """新增一筆年度費用紀錄。"""
+    return db.create_record('AnnualExpenses', details)
+
+def delete_annual_expense_record(record_id: int):
+    """刪除一筆年度費用紀錄。"""
+    return db.delete_record('AnnualExpenses', record_id)

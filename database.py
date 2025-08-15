@@ -39,6 +39,9 @@ def create_indexes(cursor):
     # --- 為儀表板提醒功能所需的日期欄位建立索引 ---
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_equipment_check_date ON DormitoryEquipment(next_check_date);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_leases_end_date ON Leases(lease_end_date);")
+
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_annual_expenses_dorm_id ON AnnualExpenses(dorm_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_annual_expenses_amortization ON AnnualExpenses(amortization_start_month, amortization_end_month);")
     
     print("SUCCESS: 所有索引已建立。")
 
@@ -177,6 +180,21 @@ def create_all_tables_and_indexes():
         );
         """)
         print("SUCCESS: 表格 'UtilityBills' 已建立。")
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS AnnualExpenses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dorm_id INTEGER NOT NULL,
+            expense_item TEXT NOT NULL,          -- 費用項目 (例如: 建築保險, 消防安檢年費)
+            payment_date DATE,                   -- 實際支付日期
+            total_amount INTEGER NOT NULL,       -- 支付總金額
+            amortization_start_month TEXT,       -- 攤提起始月份 (格式: YYYY-MM)
+            amortization_end_month TEXT,         -- 攤提結束月份 (格式: YYYY-MM)
+            notes TEXT,                          -- 備註
+            FOREIGN KEY (dorm_id) REFERENCES Dormitories (id) ON DELETE CASCADE
+        );
+        """)
+        print("SUCCESS: 表格 'AnnualExpenses' 已建立。")
         
         # 在建立完所有表格後，呼叫建立索引的函式
         create_indexes(cursor)
@@ -194,15 +212,15 @@ def create_all_tables_and_indexes():
 if __name__ == '__main__':
     # 這個區塊的邏輯是為了方便您從零開始建立一個最乾淨、最佳化的資料庫。
     # 它會先刪除舊的檔案，再重新建立。
-    if os.path.exists(DB_NAME):
-        print(f"警告：資料庫檔案 '{DB_NAME}' 已存在，將被刪除以建立新的結構。")
-        try:
-            os.remove(DB_NAME)
-            print(f"INFO: 舊的資料庫檔案 '{DB_NAME}' 已刪除。")
-        except OSError as e:
-            print(f"錯誤：無法刪除舊的資料庫檔案，請檢查檔案是否被其他程式占用。錯誤訊息: {e}")
-            exit() # 如果無法刪除，則終止程式
+    # if os.path.exists(DB_NAME):
+    #     print(f"警告：資料庫檔案 '{DB_NAME}' 已存在，將被刪除以建立新的結構。")
+    #     try:
+    #         os.remove(DB_NAME)
+    #         print(f"INFO: 舊的資料庫檔案 '{DB_NAME}' 已刪除。")
+    #     except OSError as e:
+    #         print(f"錯誤：無法刪除舊的資料庫檔案，請檢查檔案是否被其他程式占用。錯誤訊息: {e}")
+    #         exit() # 如果無法刪除，則終止程式
     
-    print(f"正在建立全新的資料庫 '{DB_NAME}'...")
+    # print(f"正在建立全新的資料庫 '{DB_NAME}'...")
     create_all_tables_and_indexes()
     print(f"\n全新的資料庫 '{DB_NAME}' 已成功建立，並包含所有表格與最佳化索引。")

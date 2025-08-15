@@ -3,7 +3,7 @@ import configparser
 import os
 
 # 從 views 資料夾中，匯入各個頁面的模組
-from views import dashboard_view, scraper_view, dormitory_view, worker_view, rent_view, expense_view, batch_import_view
+from views import dashboard_view, scraper_view, dormitory_view, worker_view, rent_view, expense_view, batch_import_view, annual_expense_view
 
 def load_config():
     """載入設定檔"""
@@ -24,7 +24,7 @@ def main():
     with st.sidebar:
         st.header("功能選單")
         
-        page_options = ["儀表板", "房租管理", "費用管理", "系統爬取", "地址管理", "人員管理", "批次匯入"]
+        page_options = ["儀表板", "房租管理", "費用管理", "年度費用", "系統爬取", "地址管理", "人員管理", "批次匯入"]
         page = st.radio("請選擇功能頁面：", page_options, index=0) # index=0 讓儀表板成為預設頁面
 
     # 根據選擇的頁面，呼叫對應的 render 函式
@@ -34,6 +34,8 @@ def main():
         rent_view.render()
     elif page == "費用管理":
         expense_view.render()
+    elif page == "年度費用":
+        annual_expense_view.render()
     elif page == "系統爬取":
         scraper_view.render(config)
     elif page == "地址管理":
