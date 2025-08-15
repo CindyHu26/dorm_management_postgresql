@@ -1,0 +1,7 @@
+streamlit
+pandas
+requests
+lxml
+openpyxl
+python-dateutil
+pyinstaller

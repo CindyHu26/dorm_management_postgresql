@@ -33,6 +33,7 @@ tmp/
 .nyc_output/
 coverage/
 
+
 # === Python ===
 .env
 .venv
@@ -41,34 +42,12 @@ venv/
 pip-log.txt
 pip-delete-this-directory.txt
 
-# === Java ===
-*.jar
-*.war
-*.ear
-*.iml
-.idea/
-.gradle/
-build/
-
-# === Ruby ===
-.bundle/
-vendor/bundle/
-Gemfile.lock
-
-# === PHP ===
-vendor/
-composer.lock
-
-# === Go ===
-bin/
-*.test
-
-# === Rust ===
-target/
 
 # === 前端打包檔 ===
 *.map
 *.tsbuildinfo
+*.bat
+*.spec
 
 # === IDE / 編輯器設定 ===
 .vscode/
