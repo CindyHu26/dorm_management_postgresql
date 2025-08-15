@@ -73,8 +73,8 @@ def download_all_reports(
         log_callback(f"INFO: 正在下載第 {i+1}/{total_ranges} 批: {start_code} - {end_code} ...")
         
         payload = {
-            'CU00_BNO1': start_code,
-            'CU00_ENO1': end_code,
+            'CU00_BNO': start_code,
+            'CU00_ENO': end_code,
             'CU00_SDATE': '1',
             'CU00_BDATE': '',
             'CU00_EDATE': '',

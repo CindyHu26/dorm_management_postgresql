@@ -178,3 +178,16 @@ def render():
                         st.rerun()
                     else:
                         st.error(message)
+
+            st.markdown("---")
+            st.markdown("##### 危險操作區")
+            confirm_delete = st.checkbox("我了解並確認要刪除此移工的資料")
+            if st.button("🗑️ 刪除此移工", type="primary", disabled=not confirm_delete):
+                success, message = worker_model.delete_worker_by_id(worker_id)
+                if success:
+                    st.success(message)
+                    st.session_state.selected_worker_id = None
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error(message)

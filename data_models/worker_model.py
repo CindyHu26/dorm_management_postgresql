@@ -75,3 +75,11 @@ def add_manual_worker(details: dict):
         return False, f"新增失敗：員工ID '{details['unique_id']}' 已存在。", None
         
     return db.create_record('Workers', details)
+
+def delete_worker_by_id(unique_id: str):
+    """
+    根據 unique_id 刪除一筆移工資料。
+    """
+    # 由於移工資料是核心，刪除操作應謹慎。
+    # 這裡直接呼叫通用刪除函式。未來可增加更多業務規則檢查。
+    return db.delete_record('Workers', unique_id, id_column='unique_id')
