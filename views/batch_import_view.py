@@ -18,17 +18,18 @@ def render():
     # --- 1. 變動費用匯入區塊 ---
     with st.container(border=True):
         st.subheader("變動費用批次匯入 (水電、網路等)")
-        st.info("請下載新版範本，依照帳單上的【起訖日】和【總金額】填寫。")
+        st.info("請下載新版範本，依照帳單上的【起訖日】和【總金額】填寫。若為多錶宿舍，請務必填寫【對應錶號】。")
         
-        # 【本次修改】提供全新的範本
+        # 【本次修改】提供全新的範本，增加「對應錶號」
         expense_template_df = pd.DataFrame({
             "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號"],
             "費用類型": ["電費"],
             "帳單金額": [6500],
             "帳單起始日": ["2025-06-15"],
             "帳單結束日": ["2025-08-14"],
+            "對應錶號": ["07-12-3333-44-5"],
             "是否已請款": ["N"],
-            "備註": ["夏季電費"]
+            "備註": ["1F公共電費"]
         })
         st.download_button(
             label="📥 下載變動費用匯入範本",
@@ -45,7 +46,6 @@ def render():
                 st.dataframe(df_monthly.head())
                 if st.button("🚀 開始匯入變動費用", type="primary", key="monthly_import_btn"):
                     with st.spinner("正在處理與匯入資料..."):
-                        # 【本次修改】呼叫的函式名稱不變，但背後邏輯已更新
                         success, failed_df = importer_model.batch_import_expenses(df_monthly)
                     st.success(f"匯入完成！成功 {success} 筆。")
                     if not failed_df.empty:

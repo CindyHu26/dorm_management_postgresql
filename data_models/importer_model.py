@@ -5,7 +5,7 @@ from data_processor import normalize_taiwan_address
 def batch_import_expenses(df: pd.DataFrame):
     """
     批次匯入【每月/變動費用】的核心邏輯。
-    【v1.2 修改】已完全更新為處理包含起訖日的「帳單式」匯入。
+    【v1.3 新增】支援匹配對應的電水錶號。
     """
     success_count = 0
     failed_records = []
@@ -14,52 +14,61 @@ def batch_import_expenses(df: pd.DataFrame):
     
     for index, row in df.iterrows():
         original_address = row.get('宿舍地址')
-        bill_type = row.get('費用類型')
-        amount = pd.to_numeric(row.get('帳單金額'), errors='coerce')
-        start_date_raw = row.get('帳單起始日')
-        end_date_raw = row.get('帳單結束日')
+        billing_month_raw = row.get('費用月份')
 
-        # --- 1. 驗證基本資料 ---
-        if not all([original_address, bill_type, pd.notna(amount), pd.notna(start_date_raw), pd.notna(end_date_raw)]):
-            row['錯誤原因'] = "必填欄位(地址,類型,金額,起訖日)有缺漏"
+        if not original_address or pd.isna(billing_month_raw):
+            row['錯誤原因'] = "宿舍地址或費用月份為空"
             failed_records.append(row)
             continue
             
         try:
-            start_date = pd.to_datetime(start_date_raw).strftime('%Y-%m-%d')
-            end_date = pd.to_datetime(end_date_raw).strftime('%Y-%m-%d')
-            if start_date > end_date:
-                row['錯誤原因'] = "帳單起始日不能晚於結束日"
-                failed_records.append(row)
-                continue
+            billing_month = pd.to_datetime(billing_month_raw).strftime('%Y-%m')
         except (ValueError, TypeError):
-            row['錯誤原因'] = f"日期格式不正確: {start_date_raw} 或 {end_date_raw}"
+            row['錯誤原因'] = f"費用月份 '{billing_month_raw}' 格式不正確"
             failed_records.append(row)
             continue
             
-        # --- 2. 查找宿舍ID ---
         dorm_id = dorms_map.get(original_address)
         if not dorm_id:
             row['錯誤原因'] = f"在資料庫中找不到對應的宿舍地址: {original_address}"
             failed_records.append(row)
             continue
+
+        # --- 【核心修改】查找對應的 meter_id ---
+        meter_id = None
+        meter_number = row.get('對應錶號')
+        if meter_number and pd.notna(meter_number):
+            meter_number = str(meter_number).strip()
+            meter_query = "SELECT id FROM Meters WHERE dorm_id = ? AND meter_number = ?"
+            meter_result = db.read_records(meter_query, params=(dorm_id, meter_number), fetch_one=True)
+            if meter_result:
+                meter_id = meter_result['id']
+            else:
+                row['錯誤原因'] = f"在宿舍 '{original_address}' 中找不到錶號為 '{meter_number}' 的紀錄"
+                failed_records.append(row)
+                continue
+        # --- 修改結束 ---
             
-        # --- 3. 準備寫入資料 ---
         details = {
             "dorm_id": dorm_id,
-            "bill_type": bill_type,
-            "amount": int(amount),
-            "bill_start_date": start_date,
-            "bill_end_date": end_date,
+            "meter_id": meter_id, # 將找到的 meter_id 加入
+            "bill_type": row.get('費用類型'),
+            "amount": pd.to_numeric(row.get('帳單金額'), errors='coerce'),
+            "bill_start_date": pd.to_datetime(row.get('帳單起始日'), errors='coerce').strftime('%Y-%m-%d'),
+            "bill_end_date": pd.to_datetime(row.get('帳單結束日'), errors='coerce').strftime('%Y-%m-%d'),
             "is_invoiced": True if str(row.get('是否已請款')).strip().upper() in ['Y', 'TRUE', 'V', '是'] else False,
             "notes": str(row.get('備註', ''))
         }
         
-        # --- 4. 執行寫入 (Upsert: 如果存在則更新，不存在則新增) ---
-        # 以 (宿舍, 類型, 起始日, 金額) 作為判斷重複的依據
         query = "SELECT id FROM UtilityBills WHERE dorm_id = ? AND bill_type = ? AND bill_start_date = ? AND amount = ?"
-        existing = db.read_records(query, params=(dorm_id, bill_type, start_date, int(amount)), fetch_one=True)
-        
+        # 增加 meter_id 作為判斷依據
+        if meter_id:
+            query += " AND meter_id = ?"
+            existing = db.read_records(query, params=(dorm_id, details['bill_type'], details['bill_start_date'], details['amount'], meter_id), fetch_one=True)
+        else:
+            query += " AND meter_id IS NULL"
+            existing = db.read_records(query, params=(dorm_id, details['bill_type'], details['bill_start_date'], details['amount']), fetch_one=True)
+
         if existing:
             success, message = db.update_record('UtilityBills', existing['id'], details)
         else:
@@ -72,7 +81,6 @@ def batch_import_expenses(df: pd.DataFrame):
             failed_records.append(row)
 
     return success_count, pd.DataFrame(failed_records)
-
 
 def batch_import_annual_expenses(df: pd.DataFrame):
     """
