@@ -61,39 +61,34 @@ def batch_update_rent(dorm_ids: list, old_rent: int, new_rent: int):
     else:
         return False, f"更新房租時發生錯誤: {message}"
 
-def get_expenses_for_dorm_as_df(dorm_id: int):
-    """查詢指定宿舍的所有費用紀錄。"""
+def get_bill_records_for_dorm_as_df(dorm_id: int):
+    """查詢指定宿舍的所有獨立帳單紀錄。"""
     if not dorm_id:
         return pd.DataFrame()
     query = """
         SELECT 
-            id,
-            billing_month AS "費用月份",
-            electricity_fee AS "電費",
-            water_fee AS "水費",
-            gas_fee AS "瓦斯費",
-            internet_fee AS "網路費",
-            other_fee AS "其他費用",
-            is_invoiced AS "是否已請款"
-        FROM UtilityBills
-        WHERE dorm_id = ?
-        ORDER BY billing_month DESC
+            b.id,
+            b.bill_type AS "費用類型",
+            b.amount AS "帳單金額",
+            b.bill_start_date AS "帳單起始日",
+            b.bill_end_date AS "帳單結束日",
+            m.meter_number AS "對應錶號",
+            b.is_invoiced AS "是否已請款",
+            b.notes AS "備註"
+        FROM UtilityBills b
+        LEFT JOIN Meters m ON b.meter_id = m.id
+        WHERE b.dorm_id = ?
+        ORDER BY b.bill_end_date DESC
     """
     return db.read_records_as_df(query, params=(dorm_id,))
 
-def add_expense_record(details: dict):
-    """新增一筆費用紀錄。"""
-    # 檢查是否已有該月份的紀錄
-    query = "SELECT id FROM UtilityBills WHERE dorm_id = ? AND billing_month = ?"
-    existing = db.read_records(query, params=(details['dorm_id'], details['billing_month']), fetch_one=True)
-    
-    if existing:
-        return False, f"新增失敗：宿舍ID {details['dorm_id']} 在月份 {details['billing_month']} 已有費用紀錄。"
-        
+def add_bill_record(details: dict):
+    """新增一筆獨立的帳單紀錄。"""
+    # 可以在此處增加業務邏輯，例如檢查同一錶號的帳單日期是否重疊
     return db.create_record('UtilityBills', details)
 
-def delete_expense_record(record_id: int):
-    """刪除一筆費用紀錄。"""
+def delete_bill_record(record_id: int):
+    """刪除一筆帳單紀錄。"""
     return db.delete_record('UtilityBills', record_id)
 
 def get_annual_expenses_for_dorm_as_df(dorm_id: int):
