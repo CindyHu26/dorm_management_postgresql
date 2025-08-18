@@ -1,58 +1,53 @@
 import sqlite3
 import os
+import pandas as pd
 
-# --- 資料庫設定 ---
 DB_NAME = "dorm_management.db"
 
 def get_db_connection():
     """建立並回傳資料庫連線。"""
     try:
         conn = sqlite3.connect(DB_NAME)
-        # 啟用外鍵約束，確保資料的關聯完整性
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.row_factory = sqlite3.Row
         return conn
     except sqlite3.Error as e:
         print(f"資料庫連線失敗: {e}")
         return None
 
 def create_indexes(cursor):
-    """
-    建立所有必要的索引以提升查詢效能。
-    使用 IF NOT EXISTS 確保指令的冪等性，重複執行也不會出錯。
-    """
+    """建立所有必要的索引以提升查詢效能。"""
     print("INFO: 開始建立資料庫索引...")
     
-    # --- 為所有外鍵建立索引 (大幅提升JOIN查詢速度) ---
+    # --- 為所有外鍵建立索引 ---
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_rooms_dorm_id ON Rooms(dorm_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_workers_room_id ON Workers(room_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_equipment_dorm_id ON DormitoryEquipment(dorm_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_meters_dorm_id ON Meters(dorm_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_leases_dorm_id ON Leases(dorm_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_bills_dorm_id ON UtilityBills(dorm_id);")
-    
-    # --- 為經常被搜尋或篩選的欄位建立索引 ---
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_bills_meter_id ON UtilityBills(meter_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_annual_expenses_dorm_id ON AnnualExpenses(dorm_id);")
+
+    # --- 為常用查詢欄位建立索引 ---
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_dorms_legacy_code ON Dormitories(legacy_dorm_code);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_workers_employer_name ON Workers(employer_name);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_workers_data_source ON Workers(data_source);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_workers_accommodation_end_date ON Workers(accommodation_end_date);")
     
-    # --- 為儀表板提醒功能所需的日期欄位建立索引 ---
+    # --- 為日期/攤提相關欄位建立索引 ---
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_equipment_check_date ON DormitoryEquipment(next_check_date);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_leases_end_date ON Leases(lease_end_date);")
-
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_annual_expenses_dorm_id ON AnnualExpenses(dorm_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_annual_expenses_amortization ON AnnualExpenses(amortization_start_month, amortization_end_month);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_bills_dates ON UtilityBills(bill_start_date, bill_end_date);")
     
     print("SUCCESS: 所有索引已建立。")
 
 
 def create_all_tables_and_indexes():
-    """
-    執行所有 CREATE TABLE 和 CREATE INDEX 指令，一次性建立完整的資料庫結構。
-    """
+    """執行所有 CREATE TABLE 和 CREATE INDEX 指令。"""
     conn = get_db_connection()
-    if not conn:
-        return
+    if not conn: return
 
     try:
         cursor = conn.cursor()
@@ -66,18 +61,20 @@ def create_all_tables_and_indexes():
             original_address TEXT,
             normalized_address TEXT NOT NULL UNIQUE,
             dorm_name TEXT,
-            primary_manager TEXT,
-            rent_payer TEXT,
-            utilities_payer TEXT,
-            cohabitation_rules TEXT,
-            insurance_info TEXT,
-            building_info TEXT,
-            fire_safety_info TEXT,
-            fire_equipment_info TEXT,
+            primary_manager TEXT DEFAULT '雇主',
+            rent_payer TEXT DEFAULT '雇主',
+            utilities_payer TEXT DEFAULT '雇主',
+            insurance_fee INTEGER,
+            insurance_start_date DATE,
+            insurance_end_date DATE,
+            fire_safety_fee INTEGER,
+            fire_safety_start_date DATE,
+            fire_safety_end_date DATE,
+            management_notes TEXT,
             dorm_notes TEXT
         );
         """)
-        print("SUCCESS: 表格 'Dormitories' 結構已更新。")
+        print("SUCCESS: 表格 'Dormitories' 已建立。")
 
         # 2. 房間表 (Rooms)
         cursor.execute("""
@@ -87,11 +84,12 @@ def create_all_tables_and_indexes():
             room_number TEXT NOT NULL,
             capacity INTEGER,
             gender_policy TEXT DEFAULT '可混住',
+            nationality_policy TEXT DEFAULT '不限',
             room_notes TEXT,
             FOREIGN KEY (dorm_id) REFERENCES Dormitories (id) ON DELETE CASCADE
         );
         """)
-        print("SUCCESS: 表格 'Rooms' 結構已更新。")
+        print("SUCCESS: 表格 'Rooms' 已建立。")
         
         # 3. 移工資料表 (Workers)
         cursor.execute("""
@@ -164,43 +162,43 @@ def create_all_tables_and_indexes():
         """)
         print("SUCCESS: 表格 'Leases' 已建立。")
 
-        # 7. 水電雜費表 (UtilityBills)
+        # 7. 每月費用表 (UtilityBills) - 已重構為帳單式
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS UtilityBills (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             dorm_id INTEGER NOT NULL,
-            billing_month TEXT NOT NULL,
-            electricity_fee INTEGER,
-            water_fee INTEGER,
-            gas_fee INTEGER,
-            internet_fee INTEGER,
-            other_fee INTEGER,
+            meter_id INTEGER,
+            bill_type TEXT NOT NULL,
+            amount INTEGER NOT NULL,
+            bill_start_date DATE NOT NULL,
+            bill_end_date DATE NOT NULL,
             is_invoiced BOOLEAN,
-            FOREIGN KEY (dorm_id) REFERENCES Dormitories (id) ON DELETE CASCADE
+            notes TEXT,
+            FOREIGN KEY (dorm_id) REFERENCES Dormitories (id) ON DELETE CASCADE,
+            FOREIGN KEY (meter_id) REFERENCES Meters (id) ON DELETE SET NULL
         );
         """)
-        print("SUCCESS: 表格 'UtilityBills' 已建立。")
-
+        print("SUCCESS: 表格 'UtilityBills' 已重構。")
+        
+        # 8. 年度費用攤提表 (AnnualExpenses)
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS AnnualExpenses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             dorm_id INTEGER NOT NULL,
-            expense_item TEXT NOT NULL,          -- 費用項目 (例如: 建築保險, 消防安檢年費)
-            payment_date DATE,                   -- 實際支付日期
-            total_amount INTEGER NOT NULL,       -- 支付總金額
-            amortization_start_month TEXT,       -- 攤提起始月份 (格式: YYYY-MM)
-            amortization_end_month TEXT,         -- 攤提結束月份 (格式: YYYY-MM)
-            notes TEXT,                          -- 備註
+            expense_item TEXT NOT NULL,
+            payment_date DATE,
+            total_amount INTEGER NOT NULL,
+            amortization_start_month TEXT,
+            amortization_end_month TEXT,
+            notes TEXT,
             FOREIGN KEY (dorm_id) REFERENCES Dormitories (id) ON DELETE CASCADE
         );
         """)
         print("SUCCESS: 表格 'AnnualExpenses' 已建立。")
         
-        # 在建立完所有表格後，呼叫建立索引的函式
         create_indexes(cursor)
-
         conn.commit()
-        print("\nINFO: 所有表格與索引均已成功建立於 'dorm_management.db' 中！")
+        print("\nINFO: 所有表格與索引均已成功建立！")
 
     except sqlite3.Error as e:
         print(f"建立資料庫時發生錯誤: {e}")

@@ -31,3 +31,17 @@ def delete_meter_record(record_id: int):
     刪除一筆電水錶紀錄。
     """
     return db.delete_record('Meters', record_id)
+
+def get_meters_for_selection(dorm_id: int):
+    """
+    取得指定宿舍下的 (id, 類型與錶號) 的列表，用於下拉選單。
+    """
+    if not dorm_id:
+        return []
+    query = "SELECT id, meter_type, meter_number, area_covered FROM Meters WHERE dorm_id = ? ORDER BY meter_type, meter_number"
+    meters = db.read_records(query, params=(dorm_id,))
+    # 格式化顯示名稱
+    if meters:
+        for meter in meters:
+            meter['display_name'] = f"{meter['meter_type']} ({meter['meter_number']}) - {meter['area_covered']}"
+    return meters
