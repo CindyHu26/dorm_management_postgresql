@@ -42,6 +42,7 @@ venv/
 pip-log.txt
 pip-delete-this-directory.txt
 temp_downloads/
+dorm_env/
 
 # === 前端打包檔 ===
 *.map
