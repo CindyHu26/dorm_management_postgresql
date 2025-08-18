@@ -37,8 +37,8 @@ def render():
             
             c1, c2, c3 = st.columns(3)
             meter_type = c1.selectbox("電錶/水錶", ["電錶", "水錶"])
-            meter_number = c2.text_input("錶號", placeholder="例如: 81234567")
-            area_covered = c3.text_input("對應區域/房號", placeholder="例如: 1F-2F, A01房")
+            meter_number = c2.text_input("錶號", placeholder="例如: 07-12-3333-44-5")
+            area_covered = c3.text_input("對應區域/房號", placeholder="例如: 1F, 1F-1")
             
             submitted = st.form_submit_button("儲存紀錄")
             if submitted:

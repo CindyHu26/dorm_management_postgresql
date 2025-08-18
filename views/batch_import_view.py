@@ -15,36 +15,47 @@ def render():
     """渲染「批次匯入」頁面"""
     st.header("批次資料匯入中心")
 
-    # --- 1. 每月費用匯入區塊 ---
+    # --- 1. 變動費用匯入區塊 ---
     with st.container(border=True):
-        st.subheader("每月費用批次匯入 (水電、雜費等)")
+        st.subheader("變動費用批次匯入 (水電、網路等)")
+        st.info("請下載新版範本，依照帳單上的【起訖日】和【總金額】填寫。")
         
-        # 在程式中直接建立範本 DataFrame
+        # 【本次修改】提供全新的範本
         expense_template_df = pd.DataFrame({
-            "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號"], "費用月份": ["2025-08"],
-            "電費": [5000], "水費": [1200], "瓦斯費": [800], "網路費": [600],
-            "其他費用": [0], "是否已請款": ["Y"]
+            "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號"],
+            "費用類型": ["電費"],
+            "帳單金額": [6500],
+            "帳單起始日": ["2025-06-15"],
+            "帳單結束日": ["2025-08-14"],
+            "是否已請款": ["N"],
+            "備註": ["夏季電費"]
         })
         st.download_button(
-            label="📥 下載每月費用匯入範本",
+            label="📥 下載變動費用匯入範本",
             data=to_excel(expense_template_df),
-            file_name="expense_import_template.xlsx"
+            file_name="utility_bill_import_template.xlsx"
         )
 
-        uploaded_monthly_file = st.file_uploader("上傳【每月費用】Excel 檔案", type=["xlsx"], key="monthly_uploader")
+        uploaded_monthly_file = st.file_uploader("上傳【變動費用】Excel 檔案", type=["xlsx"], key="monthly_uploader")
 
         if uploaded_monthly_file:
             try:
                 df_monthly = pd.read_excel(uploaded_monthly_file)
                 st.markdown("##### 檔案內容預覽：")
                 st.dataframe(df_monthly.head())
-                if st.button("🚀 開始匯入每月費用", type="primary", key="monthly_import_btn"):
+                if st.button("🚀 開始匯入變動費用", type="primary", key="monthly_import_btn"):
                     with st.spinner("正在處理與匯入資料..."):
+                        # 【本次修改】呼叫的函式名稱不變，但背後邏輯已更新
                         success, failed_df = importer_model.batch_import_expenses(df_monthly)
                     st.success(f"匯入完成！成功 {success} 筆。")
                     if not failed_df.empty:
                         st.error(f"有 {len(failed_df)} 筆資料匯入失敗：")
                         st.dataframe(failed_df)
+                        st.download_button(
+                            label="📥 下載失敗紀錄報告",
+                            data=to_excel(failed_df),
+                            file_name="import_failed_report.xlsx"
+                        )
             except Exception as e:
                 st.error(f"處理檔案時發生錯誤：{e}")
 
