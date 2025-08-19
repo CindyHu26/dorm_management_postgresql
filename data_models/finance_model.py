@@ -91,6 +91,15 @@ def delete_bill_record(record_id: int):
     """刪除一筆帳單紀錄。"""
     return db.delete_record('UtilityBills', record_id)
 
+def get_single_bill_details(record_id: int):
+    """查詢單一筆費用帳單的詳細資料。"""
+    query = "SELECT * FROM UtilityBills WHERE id = ?"
+    return db.read_records(query, params=(record_id,), fetch_one=True)
+
+def update_bill_record(record_id: int, details: dict):
+    """更新一筆已存在的費用帳單。"""
+    return db.update_record('UtilityBills', record_id, details)
+
 def get_annual_expenses_for_dorm_as_df(dorm_id: int):
     """查詢指定宿舍的所有年度費用紀錄。"""
     if not dorm_id:
