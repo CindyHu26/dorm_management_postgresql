@@ -97,17 +97,11 @@ from typing import List, Callable, Dict
 
 # ... (檔案上半部的地址正規化函式 arabic_to_chinese_numerals 和 normalize_taiwan_address 維持不變) ...
 def arabic_to_chinese_numerals(text: str) -> str:
-    """將字串中的阿拉伯數字轉換為中文國字數字 (逐字轉換)。"""
-    if not isinstance(text, str):
-        return ""
-    num_map = {
-        '0': '〇', '1': '一', '2': '二', '3': '三', '4': '四',
-        '5': '五', '6': '六', '7': '七', '8': '八', '9': '九'
-    }
+    if not isinstance(text, str): return ""
+    num_map = {'0': '〇','1': '一','2': '二','3': '三','4': '四','5': '五','6': '六','7': '七','8': '八','9': '九'}
     return "".join(num_map.get(char, char) for char in text)
 
 def normalize_taiwan_address(address: str) -> Dict[str, str]:
-    """對台灣地址進行深度正規化 (v1.3版)。"""
     if not isinstance(address, str) or pd.isna(address) or not address.strip():
         return {'full': "", 'city': "", 'district': ""}
     addr = address.strip().upper().replace(" ", "").replace("\u3000", "").replace("臺", "台")
@@ -144,15 +138,18 @@ def normalize_taiwan_address(address: str) -> Dict[str, str]:
     parts['number'] = arabic_to_chinese_numerals(parts.get('number', ''))
     parts['floor'] = arabic_to_chinese_numerals(parts.get('floor', ''))
     parts['rest'] = arabic_to_chinese_numerals(parts.get('rest', ''))
+    if parts.get('road'):
+        village_part = ''
+    else:
+        village_part = parts.get('village', '')
     normalized_full = (
-        f"{parts.get('city', '')}{parts.get('district', '')}{parts.get('village', '')}{parts.get('road', '')}"
+        f"{parts.get('city', '')}{parts.get('district', '')}{village_part}{parts.get('road', '')}"
         f"{parts.get('section', '')}{parts.get('lane', '')}{parts.get('alley', '')}"
         f"{parts.get('number', '')}{parts.get('floor', '')}{parts.get('rest', '')}"
         f"{parts.get('main_address', '')}"
     )
     normalized_full = re.sub(r'\s+', '', normalized_full).strip()
     return {'full': normalized_full, 'city': parts.get('city', ''), 'district': parts.get('district', '')}
-
 
 # ==============================================================================
 # 主要處理函式 (v1.8)
