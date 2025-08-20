@@ -73,3 +73,4 @@ config*.ini
 *.db
 *.csv
 *.xls
+db_backup/

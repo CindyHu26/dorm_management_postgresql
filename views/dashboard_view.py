@@ -13,8 +13,7 @@ def render():
     with tab1:
         st.subheader("各宿舍即時住宿統計")
         if st.button("🔄 重新整理住宿數據", key="refresh_overview"):
-            # 清除對應的快取
-            get_overview_data.clear()
+            st.cache_data.clear()
 
         @st.cache_data
         def get_overview_data():
@@ -26,7 +25,6 @@ def render():
         if overview_df is None or overview_df.empty:
             st.warning("目前沒有任何在住人員的資料可供統計。")
         else:
-            # --- 總覽指標 ---
             total_residents = int(overview_df['總人數'].sum())
             manager_summary = overview_df.groupby('主要管理人')['總人數'].sum()
             my_company_residents = int(manager_summary.get('我司', 0))
@@ -37,7 +35,6 @@ def render():
             col2.metric("我司管理宿舍人數", f"{my_company_residents} 人")
             col3.metric("雇主管理宿舍人數", f"{employer_residents} 人")
             
-            # --- 數據表格 ---
             st.markdown("##### 各宿舍詳細統計")
             manager_filter = st.selectbox(
                 "篩選主要管理人：",
@@ -50,16 +47,27 @@ def render():
             else:
                 display_df = overview_df
             
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            # --- 修正所有 format 字串 ---
+            st.dataframe(
+                display_df, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "總人數": st.column_config.NumberColumn(format="%d 人"),
+                    "男性人數": st.column_config.NumberColumn(format="%d 人"),
+                    "女性人數": st.column_config.NumberColumn(format="%d 人"),
+                    "月租金總額": st.column_config.NumberColumn(format="NT$ %d"),
+                    "最多人數租金": st.column_config.NumberColumn(format="NT$ %d"),
+                    "平均租金": st.column_config.NumberColumn(format="NT$ %d")
+                }
+            )
 
     # --- 頁籤二：財務分析 ---
     with tab2:
         st.subheader("我司管理宿舍 - 財務分析")
 
-        # --- 營運費用估算區塊 ---
         with st.container(border=True):
             st.markdown("##### 營運費用估算 (基於過去12個月數據)")
-            
             @st.cache_data
             def get_forecast():
                 return dashboard_model.get_expense_forecast_data()
@@ -78,14 +86,12 @@ def render():
                     st.markdown(f"- **變動成本 (水電等)**：每日平均約 NT$ {forecast_data['utilities_part']:,.0f} 元")
             else:
                 st.info("尚無足夠歷史數據進行估算。")
-
+        
         st.markdown("---")
 
-        # --- 每月預估損益 ---
         st.subheader("每月預估損益 (實際入帳)")
-        st.info("此報表統計「預計總收入」(在住人員月費總和)與「預計總支出」(宿舍月租+當月帳單攤銷+年度費用攤銷)的差額。")
+        st.info("此報表統計「預計總收入」與「預計總支出」(宿舍月租+當月帳單攤銷+年度費用攤銷)的差額。")
 
-        # 時間選擇器
         today = datetime.now()
         c1, c2 = st.columns(2)
         selected_year = c1.selectbox("選擇年份", options=range(today.year - 2, today.year + 2), index=2)
@@ -93,7 +99,7 @@ def render():
         year_month_str = f"{selected_year}-{selected_month:02d}"
 
         if st.button("🔍 產生財務報表"):
-            get_finance_data.clear() # 清除快取以重新查詢
+            get_finance_data.clear()
 
         @st.cache_data
         def get_finance_data(period):
@@ -104,7 +110,6 @@ def render():
         if finance_df is None or finance_df.empty:
             st.warning(f"在 {year_month_str} 沒有找到任何「我司管理」宿舍的收支數據。")
         else:
-            # 總覽指標
             total_income = int(finance_df['預計總收入'].sum())
             total_expense = int(finance_df['預計總支出'].sum())
             profit_loss = total_income - total_expense
@@ -116,13 +121,17 @@ def render():
 
             st.markdown("##### 各宿舍損益詳情")
             
-            # 為損益欄位上色
-            def style_profit(val):
-                color = 'red' if val < 0 else 'green' if val > 0 else 'grey'
-                return f'color: {color}'
-
+            # --- 修正所有 format 字串 ---
             st.dataframe(
-                finance_df.style.apply(lambda x: x.map(lambda y: style_profit(y) if x.name == '預估損益' else None)),
+                finance_df,
                 use_container_width=True, 
-                hide_index=True
+                hide_index=True,
+                column_config={
+                    "預計總收入": st.column_config.NumberColumn(format=" %d"),
+                    "宿舍月租": st.column_config.NumberColumn(format=" %d"),
+                    "變動雜費": st.column_config.NumberColumn(format=" %d"),
+                    "長期攤銷": st.column_config.NumberColumn(format=" %d"),
+                    "預計總支出": st.column_config.NumberColumn(format=" %d"),
+                    "預估損益": st.column_config.NumberColumn(format=" %d")
+                }
             )
