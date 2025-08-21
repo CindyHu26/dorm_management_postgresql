@@ -5,6 +5,7 @@ import os
 # 從 views 資料夾中，匯入所有頁面的模組
 from views import (
     dashboard_view, 
+    dorm_analyzer_view, 
     scraper_view, 
     dormitory_view, 
     worker_view, 
@@ -26,10 +27,11 @@ def load_config():
         config.read(config_path, encoding='utf-8')
     return config
 
-# --- 【本次修改】將頁面結構化 ---
+# --- 將頁面結構化 ---
 PAGES = {
     "總覽與報表": {
         "儀表板": dashboard_view,
+        "宿舍深度分析": dorm_analyzer_view,
         "匯出報表": report_view
     },
     "核心業務管理": {
@@ -57,7 +59,7 @@ def main():
 
     config = load_config()
     
-    # --- 【本次修改】全新的階層式導航 ---
+    # --- 全新的階層式導航 ---
     with st.sidebar:
         st.title("宿舍管理系統")
         

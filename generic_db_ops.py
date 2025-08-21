@@ -64,7 +64,6 @@ def read_records_as_df(query: str, params=None):
 
 
 def update_record(table_name: str, record_id, data: dict, id_column: str = 'id'):
-    # ... (此函式內容不變) ...
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed."
     try:
