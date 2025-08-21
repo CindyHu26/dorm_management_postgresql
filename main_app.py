@@ -4,7 +4,8 @@ import os
 
 # 從 views 資料夾中，匯入所有頁面的模組
 from views import (
-    dashboard_view, 
+    dashboard_view,
+    reminder_view, 
     dorm_analyzer_view, 
     scraper_view, 
     dormitory_view, 
@@ -33,6 +34,7 @@ def load_config():
 PAGES = {
     "總覽與報表": {
         "儀表板": dashboard_view,
+        "智慧提醒": reminder_view,
         "宿舍深度分析": dorm_analyzer_view,
         "匯出報表": report_view
     },

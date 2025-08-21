@@ -1,8 +1,22 @@
 import sqlite3
 import os
+import sys # 【本次新增】匯入 sys 模組
 import pandas as pd
 
-DB_NAME = "dorm_management.db"
+def get_base_path():
+    """
+    獲取資源的基礎路徑，無論是在開發環境還是打包後的 .exe 環境。
+    """
+    if getattr(sys, 'frozen', False):
+        # 如果是打包後的 .exe，基礎路徑是 .exe 檔案所在的目錄
+        # sys.executable 指向 .exe 檔案本身
+        return os.path.dirname(sys.executable)
+    else:
+        # 如果是在開發環境，基礎路徑是目前 .py 檔案所在的目錄
+        return os.path.dirname(os.path.abspath(__file__))
+
+# 將 DB_NAME 定義為一個動態的絕對路徑
+DB_NAME = os.path.join(get_base_path(), "dorm_management.db")
 
 def get_db_connection(db_name=None):
     """建立並回傳資料庫連線。"""
