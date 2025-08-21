@@ -34,7 +34,22 @@ def render():
             col1.metric("總在住人數", f"{total_residents} 人")
             col2.metric("我司管理宿舍人數", f"{my_company_residents} 人")
             col3.metric("雇主管理宿舍人數", f"{employer_residents} 人")
-            
+
+            # --- 特殊狀況人員統計 ---
+            st.markdown("---")
+            st.subheader("特殊狀況人員統計")
+
+            @st.cache_data
+            def get_status_summary():
+                return dashboard_model.get_special_status_summary()
+
+            status_df = get_status_summary()
+
+            if status_df is None or status_df.empty:
+                st.info("目前沒有任何註記特殊狀況的在住人員。")
+            else:
+                st.dataframe(status_df, use_container_width=True, hide_index=True)
+
             st.markdown("##### 各宿舍詳細統計")
             manager_filter = st.selectbox(
                 "篩選主要管理人：",
