@@ -49,13 +49,11 @@ def chinese_to_arabic(cn_num_str: str) -> str:
         num = _trans(sec[0])
     return str(num)
 
-
 def normalize_taiwan_address(address: str) -> Dict[str, str]:
-    """對台灣地址進行深度正規化 (最終版，統一轉為阿拉伯數字)。"""
+    """對台灣地址進行深度正規化 (v2.8 最終版)。"""
     if not isinstance(address, str) or pd.isna(address) or not address.strip():
         return {'full': "", 'city': "", 'district': ""}
     
-    # 1. 基礎清理
     addr = address.strip().upper().replace(" ", "").replace("\u3000", "").replace("臺", "台")
     addr = addr.replace('.', '、').replace('-', '之')
     full_width_nums = "０１２３４５６７８９"
@@ -66,25 +64,24 @@ def normalize_taiwan_address(address: str) -> Dict[str, str]:
     addr = re.sub(r'(\d+)鄰', '', addr)
     addr = re.sub(r'(縣|市|區|鄉|鎮|村|里|路|街|段|巷|弄|號|樓)\1+', r'\1', addr)
 
-    # 2. 【核心修改】將所有中文數字統一轉換為阿拉伯數字
-    addr = re.sub(r'([〇一二三四五六七八九十百]+)(?=段|巷|弄|號|樓|街)', lambda m: chinese_to_arabic(m.group(1)), addr)
+    addr = re.sub(r'([一二三四五六七八九十百]+)(?=段|巷|弄|號|樓|街)', lambda m: chinese_to_arabic(m.group(1)), addr)
 
-    # 3. 特殊城市映射
-    county_map = {"彰化市": "彰化縣彰化市", "嘉義市": "嘉義縣嘉義市", "新竹市": "新竹縣新竹市"} # 簡化
+    county_map = {"鹿港鎮": "彰化縣鹿港鎮", "彰化市": "彰化縣彰化市", "嘉義市": "嘉義縣嘉義市", "新竹市": "新竹縣新竹市"} # 簡化
     for city_short, city_full in county_map.items():
         if addr.startswith(city_short):
             addr = addr.replace(city_short, city_full, 1)
             break
 
-    # 4. 解析元件
     pattern = r'(?P<city>\D+?[縣市])?(?P<district>\D+?[區鄉鎮市])?(?P<village>\D+?[村里])?(?P<road>.*?((路|街|大道|道)(?!.*(路|街|大道|道))))?(?P<section>\d+[段])?(?P<lane>\d+[巷])?(?P<alley>\d+[弄])?(?P<number>[\d之、-]+[號])?(?P<floor>\d+[樓])?(?P<rest>.*)'
     match = re.search(pattern, addr)
     if not match: return {'full': addr, 'city': "", 'district': ""}
     parts = match.groupdict(default='')
     
-    # 5. 權威性重組
+    # --- 【核心修正】擴充權威性判斷規則 ---
     village_part = parts.get('village', '')
-    if parts.get('road') or parts.get('section'): village_part = ''
+    # 如果地址中包含路/街/段，或「巷」，則村里為贅述，應忽略
+    if parts.get('road') or parts.get('section') or parts.get('lane'):
+        village_part = ''
         
     normalized_full = f"{parts.get('city', '')}{parts.get('district', '')}{village_part}{parts.get('road', '')}{parts.get('section', '')}{parts.get('lane', '')}{parts.get('alley', '')}{parts.get('number', '')}{parts.get('floor', '')}{parts.get('rest', '')}"
     normalized_full = re.sub(r'\s+', '', normalized_full).strip()

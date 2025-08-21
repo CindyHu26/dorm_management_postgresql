@@ -34,7 +34,7 @@ def render():
         c2.metric("租金支付方", basic_info.get('rent_payer'))
         c3.metric("水電支付方", basic_info.get('utilities_payer'))
         
-        # --- 【本次修改】更安全的格式化方式 ---
+        # --- 更安全的格式化方式 ---
         rent_value = basic_info.get('monthly_rent') or 0
         c4.metric("當前月租", f"NT$ {int(rent_value):,}")
         # --- 修改結束 ---
@@ -79,3 +79,15 @@ def render():
     total_expense = int(expense_data_df['金額'].sum())
     st.metric("預估總支出", f"NT$ {total_expense:,}")
     st.dataframe(expense_data_df, use_container_width=True, hide_index=True)
+
+    # --- 4. 【本次新增】在住人員詳細名單 ---
+    st.markdown("---")
+    st.subheader(f"{year_month_str} 在住人員詳細名單")
+    
+    # 從後端獲取詳細名單
+    resident_details_df = single_dorm_analyzer.get_resident_details_as_df(selected_dorm_id, year_month_str)
+
+    if resident_details_df.empty:
+        st.info("此宿舍於該月份沒有在住人員。")
+    else:
+        st.dataframe(resident_details_df, use_container_width=True, hide_index=True)
