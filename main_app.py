@@ -9,14 +9,16 @@ from views import (
     scraper_view, 
     dormitory_view, 
     worker_view, 
-    rent_view, 
+    rent_view,
+    income_view,
     expense_view, 
     annual_expense_view, 
     lease_view, 
     equipment_view, 
     meter_view, 
     batch_import_view, 
-    report_view
+    report_view,
+    maintenance_view
 )
 
 def load_config():
@@ -38,15 +40,17 @@ PAGES = {
         "人員管理": worker_view,
         "地址管理": dormitory_view,
         "房租管理": rent_view,
+        "其他收入管理": income_view,
         "費用管理": expense_view,
         "年度費用": annual_expense_view,
         "合約管理": lease_view,
         "設備管理": equipment_view,
         "電水錶管理": meter_view
     },
-    "資料匯入與同步": {
+    "資料與系統維護": {
         "批次匯入": batch_import_view,
-        "系統爬取": scraper_view
+        "系統爬取": scraper_view,
+        "系統維護": maintenance_view
     }
 }
 

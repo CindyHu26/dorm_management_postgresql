@@ -148,7 +148,16 @@ def parse_and_process_reports(file_paths: List[str], log_callback: Callable[[str
         '居留地址': 'original_address',
     }
     master_df.rename(columns=column_mapping, inplace=True)
-    
+
+    log_callback("INFO: 正在強制統一所有日期欄位格式為 YYYY-MM-DD...")
+    date_columns = ['arrival_date', 'departure_date', 'work_permit_expiry_date']
+    for col in date_columns:
+        if col in master_df.columns:
+            # errors='coerce' 會將無法解析的日期變為 NaT (空值)，確保程式不會崩潰
+            master_df[col] = pd.to_datetime(master_df[col], errors='coerce').dt.strftime('%Y-%m-%d')
+            # 將 pandas 的 <NaT> 空值轉換為 Python 的 None
+            master_df[col] = master_df[col].where(pd.notna(master_df[col]), None)
+
     regex_pattern = r'\s?\(接\)$|\s?\(遞:.*?\)$'
     master_df['employer_name'] = master_df['employer_name'].str.replace(regex_pattern, '', regex=True).str.strip()
     
