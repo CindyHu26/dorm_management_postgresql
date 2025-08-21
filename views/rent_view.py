@@ -39,26 +39,38 @@ def render():
     else:
         st.dataframe(workers_df, use_container_width=True, hide_index=True)
 
-        # --- 3. 批次更新 ---
-        st.subheader("步驟三：批次更新房租 (可選)")
-        with st.form("batch_update_rent_form"):
-            st.warning("注意：此操作將會修改所有符合條件人員的房租，請謹慎操作。")
-            
-            c1, c2, c3 = st.columns(3)
-            old_rent = c1.number_input("原房租金額", min_value=0, step=100, help="請輸入您要變更的『舊』租金金額。")
-            new_rent = c2.number_input("新房租金額", min_value=0, step=100, help="請輸入要更新成的『新』租金金額。")
-            
-            submitted = c3.form_submit_button("執行批次更新")
-            
-            if submitted:
-                if old_rent == new_rent:
-                    st.error("新舊房租金額相同，無需更新。")
-                else:
-                    with st.spinner("正在更新中..."):
-                        success, message = finance_model.batch_update_rent(selected_dorm_ids, old_rent, new_rent)
-                        if success:
-                            st.success(message)
-                            # 清除快取，讓上面的DataFrame能立即刷新
-                            st.cache_data.clear()
-                        else:
-                            st.error(message)
+    # --- 3. 批次更新 ---
+    st.subheader("步驟三：批次更新房租 (可選)")
+    with st.form("batch_update_rent_form"):
+        st.warning("注意：此操作將會修改所有符合條件人員的房租，請謹慎操作。")
+        
+        update_nulls_only = st.checkbox("✅ 只更新目前房租為「未設定」的人員")
+        
+        c1, c2, c3 = st.columns(3)
+        
+        # 當勾選上方選項時，自動禁用「原房租金額」
+        old_rent = c1.number_input("原房租金額", min_value=0, step=100, help="請輸入您要變更的『舊』租金金額。", disabled=update_nulls_only)
+        new_rent = c2.number_input("新房租金額", min_value=0, step=100, help="請輸入要更新成的『新』租金金額。")
+        
+        submitted = c3.form_submit_button("執行批次更新")
+        
+        if submitted:
+            # 根據是否勾選，決定 old_rent 的值
+            effective_old_rent = 0 if update_nulls_only else old_rent
+
+            if not update_nulls_only and effective_old_rent == new_rent:
+                st.error("新舊房租金額相同，無需更新。")
+            else:
+                with st.spinner("正在更新中..."):
+                    # 將 update_nulls_only 旗標傳遞給後端
+                    success, message = finance_model.batch_update_rent(
+                        selected_dorm_ids, 
+                        effective_old_rent, 
+                        new_rent, 
+                        update_nulls=update_nulls_only
+                    )
+                    if success:
+                        st.success(message)
+                        st.cache_data.clear()
+                    else:
+                        st.error(message)

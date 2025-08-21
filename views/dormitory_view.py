@@ -23,8 +23,8 @@ def render():
             st.subheader("責任歸屬")
             rc1, rc2, rc3 = st.columns(3)
             primary_manager = rc1.selectbox("主要管理人", ["我司", "雇主"], key="new_pm")
-            rent_payer = rc2.selectbox("租金支付方", ["我司", "雇主"], key="new_rp")
-            utilities_payer = rc3.selectbox("水電支付方", ["我司", "雇主"], key="new_up")
+            rent_payer = rc2.selectbox("租金支付方", ["我司", "雇主", "工人"], key="new_rp")
+            utilities_payer = rc3.selectbox("水電支付方", ["我司", "雇主", "工人"], key="new_up")
             management_notes = st.text_area("管理模式備註 (可記錄特殊約定)")
             
             norm_addr_preview = normalize_taiwan_address(original_address)['full'] if original_address else ""
@@ -95,7 +95,7 @@ def render():
                     
                     st.markdown("##### 責任歸屬")
                     edit_rc1, edit_rc2, edit_rc3 = st.columns(3)
-                    manager_options = ["我司", "雇主"]
+                    manager_options = ["我司", "雇主", "工人"]
                     primary_manager = edit_rc1.selectbox("主要管理人", manager_options, index=manager_options.index(dorm_details.get('primary_manager')) if dorm_details.get('primary_manager') in manager_options else 0)
                     rent_payer = edit_rc2.selectbox("租金支付方", manager_options, index=manager_options.index(dorm_details.get('rent_payer')) if dorm_details.get('rent_payer') in manager_options else 0)
                     utilities_payer = edit_rc3.selectbox("水電支付方", manager_options, index=manager_options.index(dorm_details.get('utilities_payer')) if dorm_details.get('utilities_payer') in manager_options else 0)

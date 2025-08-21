@@ -27,40 +27,51 @@ def get_workers_for_rent_management(dorm_ids: list):
     """
     return db.read_records_as_df(query, params=tuple(dorm_ids))
 
-def batch_update_rent(dorm_ids: list, old_rent: int, new_rent: int):
+def batch_update_rent(dorm_ids: list, old_rent: int, new_rent: int, update_nulls: bool = False):
     """
-    批次更新指定宿舍內，符合特定舊租金的所有在住移工的月費。
+    批次更新指定宿舍內移工的月費。
+    【v1.2 修改】增加 update_nulls 參數，用以區分是更新特定金額，還是更新未設定(NULL)的金額。
     """
     if not dorm_ids:
         return False, "未選擇任何宿舍。"
         
     placeholders = ', '.join('?' for _ in dorm_ids)
     
-    select_query = f"""
-        SELECT unique_id FROM Workers w
-        JOIN Rooms r ON w.room_id = r.id
-        WHERE r.dorm_id IN ({placeholders})
-        AND w.monthly_fee = ?
-        AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date = '')
-    """
+    # --- 動態建立 SQL 查詢條件 ---
+    where_clause_parts = [
+        f"r.dorm_id IN ({placeholders})",
+        "(w.accommodation_end_date IS NULL OR w.accommodation_end_date = '')"
+    ]
+    params = list(dorm_ids)
+
+    if update_nulls:
+        where_clause_parts.append("w.monthly_fee IS NULL")
+        target_description = "目前房租為『未設定』"
+    else:
+        where_clause_parts.append("w.monthly_fee = ?")
+        params.append(old_rent)
+        target_description = f"目前月費為 {old_rent}"
     
-    target_workers = db.read_records(select_query, params=tuple(dorm_ids + [old_rent]))
+    where_clause = " AND ".join(where_clause_parts)
+    
+    # --- 執行查詢與更新 ---
+    select_query = f"SELECT unique_id FROM Workers w JOIN Rooms r ON w.room_id = r.id WHERE {where_clause}"
+    target_workers = db.read_records(select_query, params=tuple(params))
 
     if not target_workers:
-        return False, f"在選定宿舍中，找不到目前月費為 {old_rent} 的在住人員。"
+        return False, f"在選定宿舍中，找不到{target_description}的在住人員。"
 
     target_ids = [w['unique_id'] for w in target_workers]
     id_placeholders = ', '.join('?' for _ in target_ids)
 
     update_query = f"UPDATE Workers SET monthly_fee = ? WHERE unique_id IN ({id_placeholders})"
-    
     success, message = db.execute_query(update_query, params=tuple([new_rent] + target_ids))
     
     if success:
-        return True, f"成功更新了 {len(target_ids)} 位人員的房租，從 {old_rent} 元調整為 {new_rent} 元。"
+        return True, f"成功更新了 {len(target_ids)} 位人員的房租。"
     else:
         return False, f"更新房租時發生錯誤: {message}"
-
+    
 def get_bill_records_for_dorm_as_df(dorm_id: int):
     """查詢指定宿舍的所有獨立帳單紀錄。"""
     if not dorm_id:
