@@ -4,11 +4,15 @@ from datetime import datetime
 from data_models import finance_model, dormitory_model, meter_model
 
 def render():
-    """Renders the 'Expense Management' page with a stable selection flow and flexible input."""
+    """渲染「費用管理」頁面 (帳單式)"""
     st.header("我司管理宿舍 - 費用帳單管理")
     st.info("用於登錄每一筆獨立的水電、網路等費用帳單，系統將根據帳單起訖日自動計算每月攤分費用。")
 
-    # --- 1. Dormitory Selection ---
+    # --- Session State 初始化 ---
+    if 'selected_bill_id' not in st.session_state:
+        st.session_state.selected_bill_id = None
+
+    # --- 1. 宿舍選擇 ---
     my_dorms = dormitory_model.get_my_company_dorms_for_selection()
     if not my_dorms:
         st.warning("目前資料庫中沒有主要管理人為「我司」的宿舍。")
@@ -26,18 +30,14 @@ def render():
 
     st.markdown("---")
 
-    # --- 2. Add New Bill Record ---
+    # --- 2. 新增帳單紀錄 ---
     with st.expander("📝 新增一筆費用帳單"):
         with st.form("new_bill_form", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
-
-            # Flexible 'Other' option for new bills
-            bill_type_options = ["電費", "水費", "瓦斯費", "網路費", "其他費用", "其他 (請手動輸入)"]
-            selected_bill_type = c1.selectbox("費用類型", bill_type_options, key="new_bill_type")
-
-            custom_bill_type = ""
-            if selected_bill_type == "其他 (請手動輸入)":
-                custom_bill_type = c1.text_input("請輸入自訂費用類型：", key="new_custom_bill_type")
+            
+            bill_type_options = ["電費", "水費", "瓦斯費", "網路費", "子母車", "其他 (請手動輸入)"]
+            selected_bill_type = c1.selectbox("費用類型", bill_type_options)
+            custom_bill_type = c1.text_input("自訂費用類型", help="若上方選擇「其他 (請手動輸入)」，請務必在此填寫")
 
             amount = c2.number_input("帳單總金額", min_value=0, step=100)
             
@@ -77,7 +77,7 @@ def render():
 
     st.markdown("---")
     
-    # --- 3. Bill History and Management ---
+    # --- 3. 帳單歷史紀錄與管理 ---
     st.subheader(f"歷史帳單總覽: {dorm_options.get(selected_dorm_id)}")
 
     if st.button("🔄 重新整理帳單列表"):
@@ -117,43 +117,41 @@ def render():
                 with st.form("edit_bill_form"):
                     st.markdown(f"##### 正在編輯 ID: {bill_details['id']} 的帳單")
                     c1, c2, c3 = st.columns(3)
-
-                    # Flexible 'Other' option for editing
-                    bill_type_options = ["電費", "水費", "瓦斯費", "網路費", "其他費用", "其他 (請手動輸入)"]
+                    
+                    bill_type_options = ["電費", "水費", "瓦斯費", "網路費", "子母車", "其他 (請手動輸入)"]
                     current_bill_type = bill_details['bill_type']
                     
                     if current_bill_type in bill_type_options:
                         default_index = bill_type_options.index(current_bill_type)
+                        pre_fill_custom = ""
                     else:
                         default_index = bill_type_options.index("其他 (請手動輸入)")
+                        pre_fill_custom = current_bill_type
                     
-                    selected_edit_type = c1.selectbox("費用類型", bill_type_options, index=default_index, key="edit_bill_type")
-                    
-                    custom_edit_type = ""
-                    if selected_edit_type == "其他 (請手動輸入)":
-                        pre_fill_custom = current_bill_type if current_bill_type not in bill_type_options else ""
-                        custom_edit_type = c1.text_input("請輸入自訂費用類型：", value=pre_fill_custom, key="edit_custom_bill_type")
+                    selected_edit_type = c1.selectbox("費用類型", bill_type_options, index=default_index)
+                    custom_edit_type = c1.text_input("自訂費用類型", value=pre_fill_custom, help="若上方選擇「其他 (請手動輸入)」，請務必在此填寫")
 
-                    amount = c2.number_input("帳單總金額", min_value=0, step=100, value=bill_details['amount'], key="edit_amount")
+                    amount = c2.number_input("帳單總金額", min_value=0, step=100, value=bill_details['amount'])
                     
                     meters = meter_model.get_meters_for_dorm_as_df(selected_dorm_id)
                     meter_options = {m['id']: f"{m['類型']} ({m['錶號']})" for _, m in meters.iterrows()}
                     meter_ids = [None] + list(meter_options.keys())
                     current_meter_index = meter_ids.index(bill_details.get('meter_id')) if bill_details.get('meter_id') in meter_ids else 0
-                    meter_id = c3.selectbox("對應電水錶 (可選)", options=meter_ids, format_func=lambda x: "無" if x is None else meter_options.get(x), index=current_meter_index, key="edit_meter")
+                    meter_id = c3.selectbox("對應電水錶 (可選)", options=meter_ids, format_func=lambda x: "無" if x is None else meter_options.get(x), index=current_meter_index)
 
                     dc1, dc2 = st.columns(2)
                     start_date = datetime.strptime(bill_details['bill_start_date'], '%Y-%m-%d').date()
                     end_date = datetime.strptime(bill_details['bill_end_date'], '%Y-%m-%d').date()
-                    bill_start_date = dc1.date_input("帳單起始日", value=start_date, key="edit_start")
-                    bill_end_date = dc2.date_input("帳單結束日", value=end_date, key="edit_end")
+                    bill_start_date = dc1.date_input("帳單起始日", value=start_date)
+                    bill_end_date = dc2.date_input("帳單結束日", value=end_date)
                     
-                    is_invoiced = st.checkbox("已向雇主/員工請款?", value=bool(bill_details.get('is_invoiced')), key="edit_invoiced")
-                    notes = st.text_area("備註", value=bill_details.get('notes', ''), key="edit_notes")
+                    is_invoiced = st.checkbox("已向雇主/員工請款?", value=bool(bill_details.get('is_invoiced')))
+                    notes = st.text_area("備註", value=bill_details.get('notes', ''))
                     
                     submitted = st.form_submit_button("儲存變更")
                     if submitted:
                         final_edit_bill_type = custom_edit_type if selected_edit_type == "其他 (請手動輸入)" else selected_edit_type
+                            
                         update_data = {
                             "meter_id": meter_id, "bill_type": final_edit_bill_type, "amount": amount,
                             "bill_start_date": str(bill_start_date), "bill_end_date": str(bill_end_date),
