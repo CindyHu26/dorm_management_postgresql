@@ -65,22 +65,38 @@ def render():
 
             st.markdown("---")
 
-            # --- 【核心修改】各宿舍住宿分佈總覽 (表格版) ---
+            # --- 各宿舍住宿分佈總覽 (大幅升級) ---
             st.subheader("各宿舍住宿分佈總覽")
+
+            # --- 在總覽上方增加指標 ---
+            total_workers = len(report_df)
+            my_company_managed_count = len(report_df[report_df['主要管理人'] == '我司'])
             
-            # 使用 pandas groupby 和 agg 進行數據聚合
-            dorm_summary_df = report_df.groupby('宿舍地址').agg(
-                總人數=('姓名', 'count'),
-                男性人數=('性別', lambda x: (x == '男').sum()),
-                女性人數=('性別', lambda x: (x == '女').sum()),
-                國籍分佈=('國籍', lambda x: ", ".join([f"{nat[0]}:{count}" for nat, count in x.value_counts().items()]))
-            ).reset_index() # 將分組的索引變回欄位
+            s_col1, s_col2 = st.columns(2)
+            s_col1.metric("該雇主總在住員工數", f"{total_workers} 人")
+            s_col2.metric("住在我司管理宿舍人數", f"{my_company_managed_count} 人")
+
+            # --- 為聚合函式增加特殊狀況的計算 ---
+            def aggregate_dorm_data(group):
+                # 篩選出有內容的特殊狀況
+                special_status = group['特殊狀況'].dropna()
+                status_counts = special_status[special_status != ''].value_counts()
+                
+                agg_data = {
+                    '總人數': group['姓名'].count(),
+                    '男性人數': (group['性別'] == '男').sum(),
+                    '女性人數': (group['性別'] == '女').sum(),
+                    '國籍分佈': ", ".join([f"{nat}:{count}" for nat, count in group['國籍'].value_counts().items()]),
+                    '特殊狀況總計': ", ".join([f"{status}:{count}人" for status, count in status_counts.items()])
+                }
+                return pd.Series(agg_data)
+
+            dorm_summary_df = report_df.groupby(['宿舍地址', '主要管理人']).apply(aggregate_dorm_data).reset_index()
 
             st.dataframe(dorm_summary_df, use_container_width=True, hide_index=True)
-            # --- 修改結束 ---
-
+            
             st.markdown("---")
 
-            # --- 人員詳情列表 (維持不變) ---
+            # --- 人員詳情列表 ---
             st.subheader(f"「{selected_employer}」員工住宿詳情")
             st.dataframe(report_df, use_container_width=True, hide_index=True)
