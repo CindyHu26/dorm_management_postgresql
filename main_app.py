@@ -43,11 +43,11 @@ PAGES = {
     "核心業務管理": {
         "人員管理": worker_view,
         "地址管理": dormitory_view,
-        "房租管理": rent_view,
+        "工人房租管理": rent_view,
         "其他收入管理": income_view,
         "費用管理": expense_view,
         "年度費用": annual_expense_view,
-        "合約管理": lease_view,
+        "房租合約管理": lease_view,
         "設備管理": equipment_view,
         "電水錶管理": meter_view
     },

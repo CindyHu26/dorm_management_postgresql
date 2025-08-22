@@ -60,12 +60,15 @@ def render():
 
             f_col1, f_col2, f_col3 = st.columns(3)
             f_col1.metric("預估總收入 (員工月費)", f"NT$ {finance_summary['total_income']:,}")
-            f_col2.metric("預估分攤支出", f"NT$ {finance_summary['total_expense']:,} (開發中)")
+            f_col2.metric("預估分攤總支出", f"NT$ {finance_summary['total_expense']:,}")
             f_col3.metric("預估淨貢獻", f"NT$ {finance_summary['profit_loss']:,}", delta=f"{finance_summary['profit_loss']:,}")
+
+            with st.expander("查看支出細項 (按人數比例分攤)"):
+                st.dataframe(pd.DataFrame(list(finance_summary['details'].items()), columns=['費用項目', '分攤金額']), use_container_width=True, hide_index=True)
 
             st.markdown("---")
 
-            # --- 各宿舍住宿分佈總覽 (大幅升級) ---
+            # --- 各宿舍住宿分佈總覽---
             st.subheader("各宿舍住宿分佈總覽")
 
             # --- 在總覽上方增加指標 ---

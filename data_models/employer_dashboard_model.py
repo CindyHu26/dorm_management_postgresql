@@ -9,8 +9,8 @@ def get_all_employers():
     if not conn: return []
     try:
         query = "SELECT DISTINCT employer_name FROM Workers ORDER BY employer_name"
-        employers = pd.read_sql_query(query, conn)
-        return employers['employer_name'].tolist()
+        df = pd.read_sql_query(query, conn)
+        return df['employer_name'].tolist()
     finally:
         if conn: conn.close()
 
@@ -43,38 +43,93 @@ def get_employer_resident_details(employer_name: str):
         if conn: conn.close()
 
 def get_employer_financial_summary(employer_name: str, year_month: str):
-    """為指定雇主和月份，計算預估的收支與損益。"""
+    """為指定雇主和月份，計算預估的收支與損益細項。"""
     conn = database.get_db_connection()
-    if not conn: return {"total_income": 0, "total_expense": 0, "profit_loss": 0}
+    if not conn: return {"total_income": 0, "total_expense": 0, "profit_loss": 0, "details": {}}
     try:
-        # 1. 計算總收入
-        income_query = """
-            SELECT SUM(monthly_fee) as total_income
-            FROM Workers
-            WHERE employer_name = ?
-            AND (accommodation_end_date IS NULL OR accommodation_end_date = '' OR date(accommodation_end_date) > date(?))
+        # 這是整個系統中最複雜的查詢，它會計算成本分攤
+        query = """
+            WITH DateParams AS (
+                SELECT
+                    :year_month || '-01' as first_day_of_month,
+                    date(:year_month || '-01', '+1 month') as first_day_of_next_month
+            ),
+            DormOccupancy AS (
+                -- 步驟1: 計算每個宿舍的總人數，以及目標雇主的員工人數
+                SELECT
+                    r.dorm_id,
+                    COUNT(w.unique_id) AS total_residents,
+                    SUM(CASE WHEN w.employer_name = :employer_name THEN 1 ELSE 0 END) AS employer_residents
+                FROM Workers w
+                JOIN Rooms r ON w.room_id = r.id
+                WHERE (w.accommodation_end_date IS NULL OR w.accommodation_end_date = '' OR date(w.accommodation_end_date) >= (SELECT first_day_of_month FROM DateParams))
+                  AND (w.accommodation_start_date IS NULL OR date(w.accommodation_start_date) < (SELECT first_day_of_next_month FROM DateParams))
+                GROUP BY r.dorm_id
+            ),
+            DormProration AS (
+                -- 步驟2: 計算目標雇主在每個宿舍的佔用比例
+                SELECT
+                    dorm_id,
+                    CAST(employer_residents AS REAL) / total_residents AS proration_ratio
+                FROM DormOccupancy
+                WHERE employer_residents > 0 AND total_residents > 0
+            ),
+            DormMonthlyExpenses AS (
+                -- 步驟3: 計算每個宿舍的【總支出細項】(邏輯與主儀表板類似)
+                SELECT
+                    d.id as dorm_id,
+                    IFNULL(l.monthly_rent, 0) AS rent_expense,
+                    IFNULL(pu.total_utilities, 0) AS utilities_expense,
+                    IFNULL(ae.total_amortized, 0) AS amortized_expense
+                FROM Dormitories d
+                LEFT JOIN (SELECT dorm_id, monthly_rent FROM Leases WHERE date(lease_start_date) < (SELECT first_day_of_next_month FROM DateParams) AND (lease_end_date IS NULL OR date(lease_end_date) >= (SELECT first_day_of_month FROM DateParams))) l ON d.id = l.dorm_id
+                LEFT JOIN (SELECT b.dorm_id, SUM(CAST(b.amount AS REAL) / (julianday(b.bill_end_date) - julianday(b.bill_start_date) + 1) * (MIN(julianday(date((SELECT first_day_of_next_month FROM DateParams), '-1 day')), julianday(b.bill_end_date)) - MAX(julianday((SELECT first_day_of_month FROM DateParams)), julianday(b.bill_start_date)) + 1)) as total_utilities FROM UtilityBills b WHERE date(b.bill_start_date) < (SELECT first_day_of_next_month FROM DateParams) AND date(b.bill_end_date) >= (SELECT first_day_of_month FROM DateParams) GROUP BY b.dorm_id) pu ON d.id = pu.dorm_id
+                LEFT JOIN (SELECT dorm_id, SUM(ROUND(total_amount * 1.0 / ((strftime('%Y', amortization_end_month || '-01') - strftime('%Y', amortization_start_month || '-01')) * 12 + (strftime('%m', amortization_end_month || '-01') - strftime('%m', amortization_start_month || '-01')) + 1))) as total_amortized FROM AnnualExpenses WHERE amortization_start_month <= :year_month AND amortization_end_month >= :year_month GROUP BY dorm_id) ae ON d.id = ae.dorm_id
+            ),
+            -- 【核心修正】最終步驟: 先計算總分攤支出，再獨立計算總收入
+            EmployerProratedExpenses AS (
+                SELECT
+                    SUM(dme.rent_expense * dp.proration_ratio) as total_rent_expense,
+                    SUM(dme.utilities_expense * dp.proration_ratio) as total_utilities_expense,
+                    SUM(dme.amortized_expense * dp.proration_ratio) as total_amortized_expense
+                FROM DormProration dp
+                JOIN DormMonthlyExpenses dme ON dp.dorm_id = dme.dorm_id
+            )
+            SELECT
+                (SELECT SUM(w.monthly_fee) 
+                 FROM Workers w 
+                 JOIN Rooms r ON w.room_id = r.id
+                 WHERE w.employer_name = :employer_name
+                   AND r.dorm_id IN (SELECT dorm_id FROM DormProration)
+                   AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date = '' OR date(w.accommodation_end_date) >= (SELECT first_day_of_month FROM DateParams))
+                   AND (w.accommodation_start_date IS NULL OR date(w.accommodation_start_date) < (SELECT first_day_of_next_month FROM DateParams))
+                ) as total_income,
+                epe.total_rent_expense,
+                epe.total_utilities_expense,
+                epe.total_amortized_expense
+            FROM EmployerProratedExpenses epe
         """
-        income_df = pd.read_sql_query(income_query, conn, params=(employer_name, f"{year_month}-01"))
-        total_income = income_df['total_income'].sum() if not income_df.empty and pd.notna(income_df['total_income'].sum()) else 0
-
-        # 2. 計算按比例分攤的總支出 (這是一個簡化計算，主要用於估算)
-        # 找出該雇主員工住過的所有宿舍
-        dorms_query = "SELECT DISTINCT r.dorm_id FROM Workers w JOIN Rooms r ON w.room_id = r.id WHERE w.employer_name = ?"
-        dorms_df = pd.read_sql_query(dorms_query, conn, params=(employer_name,))
-        if dorms_df.empty:
-            return {"total_income": total_income, "total_expense": 0, "profit_loss": total_income}
-            
-        dorm_ids = tuple(dorms_df['dorm_id'].tolist())
+        params = {"employer_name": employer_name, "year_month": year_month}
+        summary = pd.read_sql_query(query, conn, params=params)
         
-        # 計算這些宿舍的總支出
-        # ... 此處可複用 dashboard_model 中的複雜支出計算邏輯 ...
-        # 為了簡化，我們先計算一個大概值：月租金 + (上月雜費 / 總人數 * 該雇主員工人數)
-        total_expense = 0 # 預留給更複雜的計算
-
+        if summary.empty or summary.iloc[0].isnull().all():
+            return {"total_income": 0, "total_expense": 0, "profit_loss": 0, "details": {}}
+            
+        income = summary.loc[0, 'total_income'] or 0
+        rent = summary.loc[0, 'total_rent_expense'] or 0
+        utils = summary.loc[0, 'total_utilities_expense'] or 0
+        amortized = summary.loc[0, 'total_amortized_expense'] or 0
+        total_expense = rent + utils + amortized
+        
         return {
-            "total_income": total_income,
-            "total_expense": total_expense, # 暫時為0
-            "profit_loss": total_income - total_expense
+            "total_income": int(income),
+            "total_expense": int(total_expense),
+            "profit_loss": int(income - total_expense),
+            "details": {
+                "分攤月租": int(rent),
+                "分攤雜費(水電等)": int(utils),
+                "分攤長期費用(保險等)": int(amortized)
+            }
         }
     finally:
         if conn: conn.close()
