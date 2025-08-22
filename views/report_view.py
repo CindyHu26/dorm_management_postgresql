@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
-from data_models import report_model, dormitory_model, worker_model
+from data_models import report_model, dormitory_model, worker_model, export_model
 
 def to_excel(df_dict: dict):
     """
@@ -24,7 +24,37 @@ def render():
     """渲染「匯出報表」頁面的所有 Streamlit UI 元件。"""
     st.header("各式報表匯出")
 
-    # --- 1. 單一宿舍深度分析報表 ---
+    # --- 1. 上傳至雲端儀表板 ---
+    with st.container(border=True):
+        st.subheader("更新至雲端儀表板 (Google Sheet)")
+        st.info("點擊下方按鈕，系統將會查詢最新的「人員清冊」與「設備清單」，並將其上傳至 Google Sheet。")
+        
+        if st.button("🚀 開始上傳", type="primary"):
+            with st.spinner("正在查詢並上傳最新數據至雲端..."):
+                # 1. 獲取人員數據
+                worker_data = export_model.get_data_for_export()
+                # 2. 獲取設備數據
+                equipment_data = export_model.get_equipment_for_export()
+                
+                # 3. 準備要上傳的資料包
+                data_package = {}
+                if worker_data is not None and not worker_data.empty:
+                    data_package["人員清冊"] = worker_data
+                if equipment_data is not None and not equipment_data.empty:
+                    data_package["設備清冊"] = equipment_data
+
+                if not data_package:
+                    st.warning("目前沒有任何人員或設備資料可供上傳。")
+                else:
+                    # 4. 執行上傳
+                    success, message = export_model.update_google_sheet(data_package)
+                    if success:
+                        st.success(message)
+                    else:
+                        st.error(message)
+    st.markdown("---")
+
+    # --- 2. 單一宿舍深度分析報表 ---
     with st.container(border=True):
         st.subheader("單一宿舍深度分析報表")
         st.info("選擇一個我司管理的宿舍，產生一份包含人數、國籍、性別統計與人員詳情的完整報告。")
@@ -108,7 +138,7 @@ def render():
 
     st.markdown("---")
 
-    # --- 2. 通用總覽報表 ---
+    # --- 3. 通用總覽報表 ---
     with st.container(border=True):
         st.subheader("通用總覽報表")
         
