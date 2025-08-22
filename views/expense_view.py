@@ -35,7 +35,7 @@ def render():
         with st.form("new_bill_form", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
             
-            bill_type_options = ["電費", "水費", "瓦斯費", "網路費", "子母車", "其他 (請手動輸入)"]
+            bill_type_options = ["電費", "水費", "天然氣", "瓦斯費", "網路費", "子母車", "其他 (請手動輸入)"]
             selected_bill_type = c1.selectbox("費用類型", bill_type_options)
             custom_bill_type = c1.text_input("自訂費用類型", help="若上方選擇「其他 (請手動輸入)」，請務必在此填寫")
 
@@ -118,7 +118,7 @@ def render():
                     st.markdown(f"##### 正在編輯 ID: {bill_details['id']} 的帳單")
                     c1, c2, c3 = st.columns(3)
                     
-                    bill_type_options = ["電費", "水費", "瓦斯費", "網路費", "子母車", "其他 (請手動輸入)"]
+                    bill_type_options = ["電費", "水費", "天然氣", "瓦斯費", "網路費", "子母車", "其他 (請手動輸入)"]
                     current_bill_type = bill_details['bill_type']
                     
                     if current_bill_type in bill_type_options:
