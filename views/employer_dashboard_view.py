@@ -8,7 +8,7 @@ def render():
     st.header("雇主視角儀表板")
     st.info("請從下方選擇一位雇主，以檢視其所有在住員工的詳細住宿分佈與財務貢獻情況。")
 
-    # --- 1. 雇主選擇 ---
+    # --- 1. 雇主與月份選擇 ---
     @st.cache_data
     def get_employers_list():
         return employer_dashboard_model.get_all_employers()
@@ -31,7 +31,6 @@ def render():
     selected_month = c2.selectbox("選擇月份", options=range(1, 13), index=today.month - 1)
     year_month_str = f"{selected_year}-{selected_month:02d}"
 
-
     if st.button("🔄 重新整理數據"):
         st.cache_data.clear()
 
@@ -40,25 +39,7 @@ def render():
     # --- 2. 顯示結果 ---
     if selected_employer:
         
-        # --- 財務總覽 ---
-        st.subheader(f"財務總覽 ({year_month_str})")
-        
-        @st.cache_data
-        def get_finance_summary(employer, period):
-            return employer_dashboard_model.get_employer_financial_summary(employer, period)
-
-        finance_summary = get_finance_summary(selected_employer, year_month_str)
-
-        f_col1, f_col2, f_col3 = st.columns(3)
-        f_col1.metric("預估總收入 (員工月費)", f"NT$ {finance_summary['total_income']:,}")
-        f_col2.metric("預估分攤支出", f"NT$ {finance_summary['total_expense']:,} (開發中)")
-        f_col3.metric("預估淨貢獻", f"NT$ {finance_summary['profit_loss']:,}", delta=f"{finance_summary['profit_loss']:,}")
-
-        st.markdown("---")
-
-        # --- 人員詳情 ---
-        st.subheader(f"「{selected_employer}」員工住宿詳情")
-        
+        # --- 獲取數據 ---
         @st.cache_data
         def get_details(employer):
             return employer_dashboard_model.get_employer_resident_details(employer)
@@ -68,4 +49,38 @@ def render():
         if report_df.empty:
             st.info("這位雇主目前沒有任何在住員工的住宿紀錄。")
         else:
+            # --- 財務總覽 (維持不變) ---
+            st.subheader(f"財務總覽 ({year_month_str})")
+            
+            @st.cache_data
+            def get_finance_summary(employer, period):
+                return employer_dashboard_model.get_employer_financial_summary(employer, period)
+
+            finance_summary = get_finance_summary(selected_employer, year_month_str)
+
+            f_col1, f_col2, f_col3 = st.columns(3)
+            f_col1.metric("預估總收入 (員工月費)", f"NT$ {finance_summary['total_income']:,}")
+            f_col2.metric("預估分攤支出", f"NT$ {finance_summary['total_expense']:,} (開發中)")
+            f_col3.metric("預估淨貢獻", f"NT$ {finance_summary['profit_loss']:,}", delta=f"{finance_summary['profit_loss']:,}")
+
+            st.markdown("---")
+
+            # --- 【核心修改】各宿舍住宿分佈總覽 (表格版) ---
+            st.subheader("各宿舍住宿分佈總覽")
+            
+            # 使用 pandas groupby 和 agg 進行數據聚合
+            dorm_summary_df = report_df.groupby('宿舍地址').agg(
+                總人數=('姓名', 'count'),
+                男性人數=('性別', lambda x: (x == '男').sum()),
+                女性人數=('性別', lambda x: (x == '女').sum()),
+                國籍分佈=('國籍', lambda x: ", ".join([f"{nat[0]}:{count}" for nat, count in x.value_counts().items()]))
+            ).reset_index() # 將分組的索引變回欄位
+
+            st.dataframe(dorm_summary_df, use_container_width=True, hide_index=True)
+            # --- 修改結束 ---
+
+            st.markdown("---")
+
+            # --- 人員詳情列表 (維持不變) ---
+            st.subheader(f"「{selected_employer}」員工住宿詳情")
             st.dataframe(report_df, use_container_width=True, hide_index=True)
