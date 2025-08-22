@@ -7,6 +7,7 @@ from views import (
     dashboard_view,
     reminder_view, 
     dorm_analyzer_view, 
+    employer_dashboard_view,
     scraper_view, 
     dormitory_view, 
     worker_view, 
@@ -36,6 +37,7 @@ PAGES = {
         "儀表板": dashboard_view,
         "智慧提醒": reminder_view,
         "宿舍深度分析": dorm_analyzer_view,
+        "雇主儀表板": employer_dashboard_view,
         "匯出報表": report_view
     },
     "核心業務管理": {

@@ -134,9 +134,18 @@ def get_expense_forecast_data(lookback_days: int = 365):
         if bills_df.empty:
             avg_daily_utilities = 0
         else:
-            bills_df['bill_start_date'] = pd.to_datetime(bills_df['bill_start_date'])
-            bills_df['bill_end_date'] = pd.to_datetime(bills_df['bill_end_date'])
+            # --- 【本次修改】明確指定日期格式 ---
+            bills_df['bill_start_date'] = pd.to_datetime(bills_df['bill_start_date'], format='%Y-%m-%d', errors='coerce')
+            bills_df['bill_end_date'] = pd.to_datetime(bills_df['bill_end_date'], format='%Y-%m-%d', errors='coerce')
+            
+            # 移除轉換失敗的行
+            bills_df.dropna(subset=['bill_start_date', 'bill_end_date'], inplace=True)
+            
             bills_df['duration_days'] = (bills_df['bill_end_date'] - bills_df['bill_start_date']).dt.days + 1
+            
+            # 避免除以零的錯誤
+            bills_df = bills_df[bills_df['duration_days'] > 0]
+            
             bills_df['daily_avg'] = bills_df['amount'] / bills_df['duration_days']
             avg_daily_utilities = bills_df['daily_avg'].mean()
 
