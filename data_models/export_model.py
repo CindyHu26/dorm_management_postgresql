@@ -52,8 +52,10 @@ def get_equipment_for_export():
                 d.original_address AS "宿舍地址",
                 e.equipment_name AS "設備名稱",
                 e.location AS "位置",
+                e.last_replaced_date AS "上次更換/檢查日",
                 e.next_check_date AS "下次更換/檢查日",
-                e.status AS "狀態"
+                e.status AS "狀態",
+                e.report_path AS "文件路徑"
             FROM DormitoryEquipment e
             JOIN Dormitories d ON e.dorm_id = d.id
             WHERE d.primary_manager = '我司'
