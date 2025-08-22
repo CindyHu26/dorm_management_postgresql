@@ -102,11 +102,18 @@ def create_all_tables_and_indexes():
         # 4. DormitoryEquipment
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS DormitoryEquipment (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, dorm_id INTEGER NOT NULL, equipment_name TEXT NOT NULL,
-            location TEXT, last_replaced_date DATE, next_check_date DATE, status TEXT,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dorm_id INTEGER NOT NULL,
+            equipment_name TEXT NOT NULL,
+            location TEXT,
+            last_replaced_date DATE,
+            next_check_date DATE,
+            status TEXT,
+            report_path TEXT,
             FOREIGN KEY (dorm_id) REFERENCES Dormitories (id) ON DELETE CASCADE
         );
         """)
+        print("SUCCESS: 表格 'DormitoryEquipment' 結構已更新。")
         # 5. Meters
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS Meters (
