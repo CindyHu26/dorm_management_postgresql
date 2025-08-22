@@ -5,6 +5,7 @@ from gspread_dataframe import set_with_dataframe
 from oauth2client.service_account import ServiceAccountCredentials
 import database
 import traceback
+import utils
 
 # 匯入其他 model 以複用查詢邏輯
 from . import worker_model 
@@ -77,7 +78,7 @@ def update_google_sheet(data_to_upload: dict):
         print("--- DEBUG: 步驟 1/5 - 正在讀取憑證檔案... ---")
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         base_path = os.path.dirname(os.path.abspath(__file__))
-        creds_path = os.path.join(base_path, '..', CREDENTIALS_FILE)
+        creds_path = utils.get_resource_path(CREDENTIALS_FILE)
 
         creds = ServiceAccountCredentials.from_json_keyfile_name(creds_path, scope)
         # print(f"--- DEBUG: 憑證讀取成功，服務帳戶 Email: {creds.service_account_email} ---")

@@ -33,7 +33,7 @@ def render():
             c1, c2, c3 = st.columns(3)
             
             # --- 費用項目的彈性選項 ---
-            equipment_options = ["滅火器", "緊急照明燈", "偵煙器", "消防公安單", "其他 (請手動輸入)"]
+            equipment_options = ["滅火器", "緊急照明燈", "偵煙器", "建物申報單", "其他 (請手動輸入)"]
             selected_equipment_name = c1.selectbox("設備名稱", equipment_options)
             custom_equipment_name = c1.text_input("自訂設備名稱", help="若上方選擇「其他」，請在此處填寫")
             
@@ -103,7 +103,7 @@ def render():
                     ec1, ec2, ec3 = st.columns(3)
 
                     # --- 編輯區塊的彈性選項 ---
-                    equipment_options_edit = ["滅火器", "緊急照明燈", "偵煙器", "消防公安單", "其他 (請手動輸入)"]
+                    equipment_options_edit = ["滅火器", "緊急照明燈", "偵煙器", "建物申報單", "其他 (請手動輸入)"]
                     current_name = details.get('equipment_name', '')
                     
                     if current_name in equipment_options_edit:

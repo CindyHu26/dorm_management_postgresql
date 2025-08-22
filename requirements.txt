@@ -5,3 +5,7 @@ lxml
 openpyxl
 python-dateutil
 pyinstaller
+gspread
+gspread-dataframe
+oauth2client
+
