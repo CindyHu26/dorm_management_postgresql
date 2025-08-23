@@ -38,6 +38,7 @@ def render():
                 if success:
                     st.success(message)
                     st.cache_data.clear()
+                    st.rerun()
                 else:
                     st.error(message)
 
@@ -56,7 +57,7 @@ def render():
 
     leases_df = get_leases(dorm_id_filter)
     
-    # 【本次修改】移除 on_select 功能，讓表格回歸純粹的顯示
+    # 【核心修改】移除 on_select 功能，讓表格回歸純粹的顯示
     st.dataframe(leases_df, use_container_width=True, hide_index=True)
     
     st.markdown("---")
@@ -67,7 +68,6 @@ def render():
     if leases_df.empty:
         st.info("目前沒有可供操作的合約紀錄。")
     else:
-        # 建立一個選項字典，方便 format_func 使用
         lease_options_dict = {
             row['id']: f"ID:{row['id']} - {row['宿舍地址']} ({row['合約起始日']})" 
             for _, row in leases_df.iterrows()
@@ -95,8 +95,8 @@ def render():
                     e_lease_end_date = ec2.date_input("合約截止日", value=end_date_val)
                     
                     ec3, ec4, ec5 = st.columns(3)
-                    e_monthly_rent = ec3.number_input("月租金", min_value=0, step=1000, value=lease_details.get('monthly_rent', 0))
-                    e_deposit = ec4.number_input("押金", min_value=0, step=1000, value=lease_details.get('deposit', 0))
+                    e_monthly_rent = ec3.number_input("月租金", min_value=0, step=1000, value=int(lease_details.get('monthly_rent') or 0))
+                    e_deposit = ec4.number_input("押金", min_value=0, step=1000, value=int(lease_details.get('deposit') or 0))
                     e_utilities_included = ec5.checkbox("租金含水電", value=bool(lease_details.get('utilities_included', False)))
 
                     edit_submitted = st.form_submit_button("儲存變更")

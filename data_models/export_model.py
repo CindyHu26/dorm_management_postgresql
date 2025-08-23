@@ -18,26 +18,38 @@ CREDENTIALS_FILE = "credentials.json"
 def get_data_for_export():
     """
     從本地資料庫中，獲取【經過篩選】的人員清冊數據。
-    【v1.4 修改】增加篩選邏輯：只選擇「我司管理」且「在住」的人員。
+    【v1.5 修改】導出的地址欄位改為使用正規化地址。
     """
     print("INFO: 正在從本地資料庫查詢最新人員清冊...")
     
-    # 1. 先獲取所有人員的完整資料
-    # 我們傳遞一個空的 filter，代表先不篩選，拿到最原始的數據
-    full_df = worker_model.get_workers_for_view(filters={})
-
-    if full_df.empty:
-        print("INFO: 資料庫中沒有任何人員資料。")
-        return pd.DataFrame()
-        
-    # 2. 在記憶體中進行精準篩選
-    filtered_df = full_df[
-        (full_df['主要管理人'] == '我司') & 
-        (full_df['在住狀態'] == '在住')
-    ].copy() # 使用 .copy() 避免 pandas 的 SettingWithCopyWarning
-
-    print(f"INFO: 查詢完成，共篩選出 {len(filtered_df)} 筆符合條件 (我司管理、在住) 的人員資料。")
-    return filtered_df
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        # 建立一個專為導出設計的查詢，使用正規化地址
+        query = """
+            SELECT
+                d.primary_manager AS '主要管理人',
+                d.normalized_address as '宿舍地址', -- 【核心修改】
+                r.room_number as '房號',
+                w.employer_name AS '雇主',
+                w.worker_name AS '姓名',
+                w.gender AS '性別',
+                w.nationality AS '國籍',
+                w.monthly_fee as '月費',
+                w.special_status AS '特殊狀況'
+            FROM Workers w
+            LEFT JOIN Rooms r ON w.room_id = r.id
+            LEFT JOIN Dormitories d ON r.dorm_id = d.id
+            WHERE 
+                d.primary_manager = '我司' AND
+                (w.accommodation_end_date IS NULL OR w.accommodation_end_date = '' OR date(w.accommodation_end_date) > date('now', 'localtime'))
+            ORDER BY d.normalized_address, r.room_number, w.worker_name
+        """
+        df = pd.read_sql_query(query, conn)
+        print(f"INFO: 查詢完成，共篩選出 {len(df)} 筆符合條件 (我司管理、在住) 的人員資料。")
+        return df
+    finally:
+        if conn: conn.close()
 
 def get_equipment_for_export():
     """
@@ -49,7 +61,7 @@ def get_equipment_for_export():
     try:
         query = """
             SELECT
-                d.original_address AS "宿舍地址",
+                d.normalized_address AS "宿舍地址",
                 e.equipment_name AS "設備名稱",
                 e.location AS "位置",
                 e.last_replaced_date AS "上次更換/檢查日",

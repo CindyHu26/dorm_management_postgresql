@@ -54,16 +54,15 @@ def render():
     # --- 2. 宿舍總覽與篩選 ---
     st.subheader("現有宿舍總覽")
     
+    search_term = st.text_input("搜尋宿舍 (可輸入舊編號、名稱、原始或正規化地址)")
+    
     @st.cache_data
-    def get_dorms_df():
-        return dormitory_model.get_all_dorms_for_view()
+    def get_dorms_df(search=None):
+        # 將搜尋條件傳遞給後端
+        return dormitory_model.get_all_dorms_for_view(search_term=search)
 
-    dorms_df = get_dorms_df()
-
-    search_term = st.text_input("搜尋宿舍 (可輸入舊編號、名稱或地址關鍵字)")
-    if search_term and not dorms_df.empty:
-        search_mask = dorms_df.apply(lambda row: row.astype(str).str.contains(search_term, case=False, na=False).any(), axis=1)
-        dorms_df = dorms_df[search_mask]
+    # 執行搜尋
+    dorms_df = get_dorms_df(search_term)
     
     selection = st.dataframe(dorms_df, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row")
 

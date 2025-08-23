@@ -120,11 +120,13 @@ def render():
                     e_status = ec3.selectbox("目前狀態", ["正常", "需更換", "已過期", "維修中"], index=["正常", "需更換", "已過期", "維修中"].index(details.get('status')) if details.get('status') in ["正常", "需更換", "已過期", "維修中"] else 0)
 
                     ec4, ec5 = st.columns(2)
-                    last_date = datetime.strptime(details['last_replaced_date'], '%Y-%-m-%d').date() if details.get('last_replaced_date') else None
-                    next_date = datetime.strptime(details['next_check_date'], '%Y-%-m-%d').date() if details.get('next_check_date') else None
+
+                    last_date = datetime.strptime(details['last_replaced_date'], '%Y-%m-%d').date() if details.get('last_replaced_date') else None
+                    next_date = datetime.strptime(details['next_check_date'], '%Y-%m-%d').date() if details.get('next_check_date') else None
+
                     e_last_replaced_date = ec4.date_input("上次更換/檢查日期", value=last_date)
                     e_next_check_date = ec5.date_input("下次更換/檢查日期", value=next_date)
-                    
+                
                     e_report_path = st.text_input("文件路徑", value=details.get('report_path', ''))
 
                     edit_submitted = st.form_submit_button("儲存變更")

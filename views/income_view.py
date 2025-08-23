@@ -13,7 +13,7 @@ def render():
         return
 
     dorm_options = {d['id']: d['original_address'] for d in my_dorms}
-    selected_dorm_id = st.selectbox("請選擇宿舍：", options=dorm_options.keys(), format_func=lambda x: dorm_options.get(x))
+    selected_dorm_id = st.selectbox("請選擇宿舍：", options=list(dorm_options.keys()), format_func=lambda x: dorm_options.get(x))
 
     if not selected_dorm_id: return
     st.markdown("---")
@@ -36,9 +36,49 @@ def render():
                 if success:
                     st.success(message)
                     st.cache_data.clear()
+                    st.rerun()
                 else:
                     st.error(message)
 
+    st.markdown("---")
     st.subheader("歷史收入紀錄")
-    income_df = income_model.get_income_for_dorm_as_df(selected_dorm_id)
-    st.dataframe(income_df, use_container_width=True, hide_index=True)
+
+    if st.button("🔄 重新整理列表"):
+        st.cache_data.clear()
+        
+    @st.cache_data
+    def get_income_df(dorm_id):
+        return income_model.get_income_for_dorm_as_df(dorm_id)
+        
+    income_df = get_income_df(selected_dorm_id)
+    
+    if income_df.empty:
+        st.info("此宿舍尚無任何其他收入紀錄。")
+    else:
+        st.dataframe(income_df, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+        st.subheader("刪除單筆紀錄")
+        
+        # 【核心修改】使用獨立的下拉選單來選擇要刪除的項目
+        options_dict = {
+            row['id']: f"ID:{row['id']} - {row['收入日期']} {row['收入項目']} 金額:{row['金額']}" 
+            for _, row in income_df.iterrows()
+        }
+        
+        selected_income_id = st.selectbox(
+            "請從上方列表選擇一筆紀錄進行刪除：",
+            options=[None] + list(options_dict.keys()),
+            format_func=lambda x: "請選擇..." if x is None else options_dict.get(x)
+        )
+
+        if selected_income_id:
+            confirm_delete = st.checkbox("我了解並確認要刪除此筆收入紀錄")
+            if st.button("🗑️ 刪除選定紀錄", type="primary", disabled=not confirm_delete):
+                success, message = income_model.delete_income_record(selected_income_id)
+                if success:
+                    st.success(message)
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error(message)

@@ -21,6 +21,7 @@ def get_workers_for_view(filters: dict):
                 w.nationality AS '國籍',
                 w.passport_number AS '護照號碼',
                 d.original_address as '宿舍地址',
+                d.normalized_address as '正規化地址',
                 r.room_number as '房號',
                 CASE 
                     WHEN w.accommodation_end_date IS NOT NULL 
@@ -44,8 +45,9 @@ def get_workers_for_view(filters: dict):
         
         if filters.get('name_search'):
             term = f"%{filters['name_search']}%"
-            where_clauses.append("(w.worker_name LIKE ? OR w.employer_name LIKE ? OR d.original_address LIKE ?)")
-            params.extend([term, term, term])
+            # 【本次修改】在搜尋條件中，增加對 d.normalized_address 的比對
+            where_clauses.append("(w.worker_name LIKE ? OR w.employer_name LIKE ? OR d.original_address LIKE ? OR d.normalized_address LIKE ?)")
+            params.extend([term, term, term, term]) # 參數數量也要對應增加
             
         if filters.get('dorm_id'):
             where_clauses.append("d.id = ?")
