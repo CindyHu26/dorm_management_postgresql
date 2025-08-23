@@ -9,7 +9,8 @@ from views import (
     dorm_analyzer_view, 
     employer_dashboard_view,
     scraper_view, 
-    dormitory_view, 
+    dormitory_view,
+    placement_view,  
     worker_view, 
     rent_view,
     income_view,
@@ -43,6 +44,7 @@ PAGES = {
     "核心業務管理": {
         "人員管理": worker_view,
         "地址管理": dormitory_view,
+        "空床位查詢": placement_view,
         "工人房租管理": rent_view,
         "其他收入管理": income_view,
         "費用管理": expense_view,

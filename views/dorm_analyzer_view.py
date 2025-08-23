@@ -37,7 +37,6 @@ def render():
         # --- 更安全的格式化方式 ---
         rent_value = basic_info.get('monthly_rent') or 0
         c4.metric("當前月租", f"NT$ {int(rent_value):,}")
-        # --- 修改結束 ---
 
         st.write(f"**租賃合約期間:** {basic_info.get('lease_start_date', 'N/A')} ~ {basic_info.get('lease_end_date', 'N/A')}")
 
@@ -75,10 +74,52 @@ def render():
         st.markdown("**房租簡表**")
         st.dataframe(resident_data['rent_summary'], use_container_width=True, hide_index=True)
 
+    # --- 3-2. 數據分析區塊 (徹底重構) ---
+    st.subheader(f"{year_month_str} 宿舍營運分析")
+    
+    # 獲取所有分析數據
+    analysis_data = single_dorm_analyzer.get_dorm_analysis_data(selected_dorm_id, year_month_str)
+
+    if not analysis_data:
+        st.error("分析數據時發生錯誤，請檢查資料庫連線。")
+    else:
+        # A. 宿舍容量與概況
+        st.markdown("##### Ａ. 宿舍容量與概況")
+        st.metric("宿舍總床位容量", f"{analysis_data['total_capacity']} 床")
+        
+        # B. 當月實際住宿分析
+        st.markdown("##### Ｂ. 當月實際住宿分析")
+        ar = analysis_data['actual_residents']
+        er = analysis_data['external_residents']
+        ab = analysis_data['available_beds']
+
+        b_col1, b_col2, b_col3 = st.columns(3)
+        b_col1.metric("目前實際住宿人數", f"{ar['total']} 人", help="計算方式：所有住在該宿舍的人員，扣除『掛宿外住』者。")
+        b_col2.metric("掛宿外住人數", f"{er['total']} 人", help="計算方式：統計特殊狀況為『掛宿外住』的人員總數。")
+        b_col3.metric("一般可住空床數", f"{ab['total']} 床", help="計算方式：[總容量] - [實際住宿人數] - [特殊房間獨立空床數]。代表可自由安排的床位。")
+
+        st.markdown(f"**實際住宿性別比**：男 {ar['male']} 人 / 女 {ar['female']} 人")
+        st.markdown(f"**掛宿外住性別比**：男 {er['male']} 人 / 女 {er['female']} 人")
+
+        # C. 特殊房間註記與獨立空床
+        st.markdown("##### Ｃ. 特殊房間註記與獨立空床")
+        special_rooms_df = analysis_data['special_rooms']
+        if special_rooms_df.empty:
+            st.info("此宿舍沒有任何註記特殊備註的房間。")
+        else:
+            st.warning("注意：下方所列房間的空床位『不』計入上方的一般可住空床數，需獨立評估安排。")
+            st.dataframe(
+                special_rooms_df[['room_number', 'room_notes', 'capacity', '目前住的人數', '獨立空床數']],
+                use_container_width=True,
+                hide_index=True
+            )
+    st.markdown("---")
+
     st.markdown(f"#### {year_month_str} 預估支出分析")
     total_expense = int(expense_data_df['金額'].sum())
     st.metric("預估總支出", f"NT$ {total_expense:,}")
     st.dataframe(expense_data_df, use_container_width=True, hide_index=True)
+
 
     # --- 4. 【本次新增】在住人員詳細名單 ---
     st.markdown("---")
