@@ -135,37 +135,81 @@ def render():
                 rooms_df = dormitory_model.get_rooms_for_dorm_as_df(dorm_id)
                 st.dataframe(rooms_df, use_container_width=True, hide_index=True)
 
-                c1, c2 = st.columns([3,1])
-                with c1:
-                    with st.form("new_room_form", clear_on_submit=True):
-                        st.markdown("###### 新增房間至此宿舍")
-                        rc1, rc2, rc3 = st.columns(3)
-                        room_number = rc1.text_input("房號")
-                        capacity = rc2.number_input("房間容量", min_value=0, step=1)
-                        gender_policy = rc3.selectbox("性別限制", ["可混住", "僅限男性", "僅限女性"])
-                        if st.form_submit_button("新增房間"):
-                            if not room_number:
-                                st.error("房號為必填欄位！")
-                            else:
-                                room_details = {'dorm_id': dorm_id, 'room_number': room_number, 'capacity': capacity, 'gender_policy': gender_policy}
-                                success, msg, _ = dormitory_model.add_new_room_to_dorm(room_details)
-                                if success:
-                                    st.success(msg)
-                                    st.rerun()
-                                else:
-                                    st.error(msg)
-                with c2:
-                    with st.form("delete_room_form", clear_on_submit=True):
-                        st.markdown("###### 刪除房間")
-                        room_to_delete = st.selectbox("選擇要刪除的房間", options=[""] + rooms_df['room_number'].tolist())
-                        if st.form_submit_button("刪除選定房間", type="primary"):
-                            if not room_to_delete:
-                                st.warning("請選擇一個房間。")
-                            else:
-                                room_id_to_delete = rooms_df[rooms_df['room_number'] == room_to_delete].iloc[0]['id']
-                                success, message = dormitory_model.delete_room_by_id(room_id_to_delete)
+                st.markdown("---")
+                st.subheader("新增、編輯或刪除房間")
+
+                room_options = {row['id']: f"{row['房號']} (容量: {row.get('容量', 'N/A')})" for _, row in rooms_df.iterrows()}
+                selected_room_id = st.selectbox(
+                    "選擇要編輯或刪除的房間：",
+                    options=[None] + list(room_options.keys()),
+                    format_func=lambda x: "請選擇..." if x is None else room_options.get(x)
+                )
+
+                if selected_room_id:
+                    room_details = dormitory_model.get_single_room_details(selected_room_id)
+                    if room_details:
+                        with st.form("edit_room_form"):
+                            st.markdown(f"###### 正在編輯房號: {room_details.get('room_number')}")
+                            ec1, ec2, ec3 = st.columns(3)
+                            e_capacity = ec1.number_input("房間容量", min_value=0, step=1, value=int(room_details.get('capacity') or 0))
+                            e_gender_policy = ec2.selectbox("性別限制", ["可混住", "僅限男性", "僅限女性"], index=["可混住", "僅限男性", "僅限女性"].index(room_details.get('gender_policy')) if room_details.get('gender_policy') in ["可混住", "僅限男性", "僅限女性"] else 0)
+                            e_nationality_policy = ec3.selectbox("國籍限制", ["不限", "單一國籍"], index=0 if room_details.get('nationality_policy') != '單一國籍' else 1)
+                            e_room_notes = st.text_area("房間備註", value=room_details.get('room_notes', ''))
+
+                            edit_submitted = st.form_submit_button("儲存房間變更")
+                            if edit_submitted:
+                                updated_details = {
+                                    "capacity": e_capacity,
+                                    "gender_policy": e_gender_policy,
+                                    "nationality_policy": e_nationality_policy,
+                                    "room_notes": e_room_notes
+                                }
+                                success, message = dormitory_model.update_room_details(selected_room_id, updated_details)
                                 if success:
                                     st.success(message)
+                                    st.cache_data.clear()
                                     st.rerun()
                                 else:
                                     st.error(message)
+
+                        confirm_delete = st.checkbox("我了解並確認要刪除此房間")
+                        if st.button("🗑️ 刪除此房間", type="primary", disabled=not confirm_delete):
+                            success, message = dormitory_model.delete_room_by_id(selected_room_id)
+                            if success:
+                                st.success(message)
+                                st.cache_data.clear()
+                                st.rerun()
+                            else:
+                                st.error(message)
+                
+                with st.form("new_room_form", clear_on_submit=True):
+                    st.markdown("###### 或新增一個房間至此宿舍")
+                    nc1, nc2, nc3 = st.columns(3)
+                    room_number = nc1.text_input("新房號 (例如: A01)")
+                    capacity = nc2.number_input("房間容量", min_value=1, step=1, value=4)
+                    gender_policy = nc3.selectbox("性別限制 ", ["可混住", "僅限男性", "僅限女性"])
+                    
+                    # --- 【核心修改】在此處新增欄位 ---
+                    nc_c1, nc_c2 = st.columns(2)
+                    nationality_policy = nc_c1.selectbox("國籍限制 ", ["不限", "單一國籍"])
+                    room_notes = nc_c2.text_area("房間備註 ")
+                    # --- 修改結束 ---
+                    
+                    room_submitted = st.form_submit_button("新增房間")
+                    if room_submitted:
+                        if not room_number:
+                            st.error("房號為必填欄位！")
+                        else:
+                            room_details = {
+                                'dorm_id': dorm_id, 'room_number': room_number,
+                                'capacity': capacity, 'gender_policy': gender_policy,
+                                'nationality_policy': nationality_policy, # 新增
+                                'room_notes': room_notes # 新增
+                            }
+                            success, msg, _ = dormitory_model.add_new_room_to_dorm(room_details)
+                            if success:
+                                st.success(msg)
+                                st.cache_data.clear()
+                                st.rerun()
+                            else:
+                                st.error(msg)

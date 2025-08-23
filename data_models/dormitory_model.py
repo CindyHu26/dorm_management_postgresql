@@ -106,12 +106,58 @@ def delete_dormitory_by_id(dorm_id: int):
         if conn: conn.close()
 
 def get_rooms_for_dorm_as_df(dorm_id: int):
-    """查詢指定宿舍下的所有房間。"""
+    """
+    查詢指定宿舍下的所有房間。
+    【本次修改】查詢所有欄位以便在總覽中顯示。
+    """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
-        query = "SELECT id, room_number, capacity, gender_policy, room_notes FROM Rooms WHERE dorm_id = ? ORDER BY room_number"
+        query = """
+            SELECT 
+                id, 
+                room_number AS "房號", 
+                capacity AS "容量", 
+                gender_policy AS "性別限制", 
+                nationality_policy AS "國籍限制", 
+                room_notes AS "房間備註"
+            FROM Rooms 
+            WHERE dorm_id = ? 
+            ORDER BY room_number
+        """
         return pd.read_sql_query(query, conn, params=(dorm_id,))
+    finally:
+        if conn: conn.close()
+
+# --- 【本次新增】查詢與更新單一房間的函式 ---
+def get_single_room_details(room_id: int):
+    """取得單一房間的詳細資料。"""
+    conn = database.get_db_connection()
+    if not conn: return None
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM Rooms WHERE id = ?", (room_id,))
+        record = cursor.fetchone()
+        return dict(record) if record else None
+    finally:
+        if conn: conn.close()
+
+def update_room_details(room_id: int, details: dict):
+    """更新一筆已存在的房間紀錄。"""
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗"
+    try:
+        cursor = conn.cursor()
+        fields = ', '.join([f'"{key}" = ?' for key in details.keys()])
+        values = list(details.values())
+        values.append(room_id)
+        sql = f"UPDATE Rooms SET {fields} WHERE id = ?"
+        cursor.execute(sql, tuple(values))
+        conn.commit()
+        return True, "房間資料更新成功！"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"更新房間時發生錯誤: {e}"
     finally:
         if conn: conn.close()
 
