@@ -56,7 +56,7 @@ def render():
             if submitted:
                 final_bill_type = custom_bill_type if selected_bill_type == "其他 (請手動輸入)" else selected_bill_type
 
-                if not all([bill_start_date, bill_end_date, amount > 0, final_bill_type]):
+                if not all([bill_start_date, bill_end_date, amount >= 0, final_bill_type]):
                     st.error("「費用類型」、「帳單起訖日」和「總金額」為必填欄位！")
                 elif bill_start_date > bill_end_date:
                     st.error("帳單起始日不能晚於結束日！")

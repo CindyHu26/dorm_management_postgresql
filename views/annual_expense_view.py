@@ -60,7 +60,7 @@ def render():
             if submitted:
                 final_expense_item = custom_expense_item if selected_expense_item == "其他 (請手動輸入)" else selected_expense_item
 
-                if not final_expense_item or not total_amount:
+                if not final_expense_item or pd.isna(total_amount):
                     st.error("「費用項目」和「總金額」為必填欄位！")
                 else:
                     details = {
