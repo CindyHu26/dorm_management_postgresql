@@ -5,14 +5,22 @@ import sqlite3
 import database
 
 def get_all_dorms_for_view(search_term: str = None):
-    """取得所有宿舍的基本資料，並支援關鍵字搜尋。"""
+    """
+    取得所有宿舍的基本資料，用於UI列表顯示。
+    在 SELECT 中增加 rent_payer 和 utilities_payer 欄位。
+    """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
         query = """
             SELECT 
-                id, legacy_dorm_code AS '舊編號', primary_manager AS '主要管理人',
-                original_address AS '原始地址', normalized_address AS '正規化地址', 
+                id, 
+                legacy_dorm_code AS '舊編號', 
+                primary_manager AS '主要管理人',
+                rent_payer AS '租金支付方',
+                utilities_payer AS '水電支付方',
+                original_address AS '原始地址', 
+                normalized_address AS '正規化地址', 
                 dorm_name AS '宿舍名稱'
             FROM Dormitories
         """
@@ -26,6 +34,7 @@ def get_all_dorms_for_view(search_term: str = None):
         return pd.read_sql_query(query, conn, params=params)
     finally:
         if conn: conn.close()
+
 
 def get_dorm_details_by_id(dorm_id: int):
     """取得單一宿舍的詳細資料。"""

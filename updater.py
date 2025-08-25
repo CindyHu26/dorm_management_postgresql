@@ -61,7 +61,8 @@ def build_address_to_room_map(conn, log_callback: Callable[[str], None]) -> dict
 
 def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], None]):
     """
-    執行核心的資料庫更新流程 (v1.5 最終自給自足版)。
+    執行核心的資料庫更新流程 (v1.7 - 最終安全版)。
+    採用逐筆 INSERT, UPDATE, 軟刪除，不再使用 'replace'。
     """
     log_callback("\n===== 開始執行核心資料庫更新程序 =====")
     today_str = datetime.today().strftime('%Y-%m-%d')
@@ -72,66 +73,98 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
         return
         
     try:
-        # --- 執行所有操作 ---
-        sync_dormitories(conn, fresh_df, log_callback)
+        cursor = conn.cursor()
+        
+        # --- 步驟 1: 地址同步 (邏輯不變) ---
+        log_callback("INFO: 步驟 1/3 - 同步宿舍地址...")
+        db_dorms_df = pd.read_sql_query("SELECT id, normalized_address FROM Dormitories", conn)
+        db_addresses = set(db_dorms_df['normalized_address']) if not db_dorms_df.empty else set()
+        unique_new_dorms = fresh_df[~fresh_df['normalized_address'].isin(db_addresses) & fresh_df['normalized_address'].notna()].drop_duplicates(subset=['normalized_address'])
+
+        if not unique_new_dorms.empty:
+            log_callback(f"INFO: 發現 {len(unique_new_dorms)} 個新宿舍地址，將自動建立...")
+            for _, row in unique_new_dorms.iterrows():
+                dorm_details = {"original_address": row['original_address'], "normalized_address": row['normalized_address'], "primary_manager": "雇主"}
+                columns = ', '.join(f'"{k}"' for k in dorm_details.keys())
+                placeholders = ', '.join(['?'] * len(dorm_details))
+                cursor.execute(f"INSERT INTO Dormitories ({columns}) VALUES ({placeholders})", tuple(dorm_details.values()))
+                dorm_id = cursor.lastrowid
+                cursor.execute("INSERT INTO Rooms (dorm_id, room_number) VALUES (?, ?)", (dorm_id, "[未分配房間]"))
+        
         conn.commit() # 提交宿舍新增的變更
 
-        address_room_map = build_address_to_room_map(conn, log_callback)
-        
-        log_callback("INFO: 步驟 3/4 - 為新抓取的人員資料配對【預設】房間ID...")
+        # --- 步驟 2: 準備資料與映射 ---
+        log_callback("INFO: 步驟 2/3 - 準備資料與映射...")
+        address_room_df = pd.read_sql_query("SELECT d.normalized_address, r.id as room_id FROM Rooms r JOIN Dormitories d ON r.dorm_id = d.id WHERE r.room_number = '[未分配房間]'", conn)
+        address_room_map = pd.Series(address_room_df.room_id.values, index=address_room_df.normalized_address).to_dict()
         fresh_df['room_id'] = fresh_df['normalized_address'].map(address_room_map)
-        
-        log_callback("INFO: 步驟 4/4 - 比對與更新移工資料庫...")
+
         db_workers_df = pd.read_sql_query('SELECT * FROM Workers', conn)
         
-        if not db_workers_df.empty:
-            db_workers_df.set_index('unique_id', inplace=True)
-        fresh_df.set_index('unique_id', inplace=True)
-
-        fresh_ids = set(fresh_df.index)
-        db_ids = set(db_workers_df.index) if not db_workers_df.empty else set()
+        # --- 步驟 3: 執行全新的逐筆比對與更新 ---
+        log_callback("INFO: 步驟 3/3 - 正在執行全新的逐筆資料比對與更新...")
         
-        added_ids = fresh_ids - db_ids
-        deleted_ids = db_ids - fresh_ids
-        existing_ids = fresh_ids.intersection(db_ids)
-        log_callback(f"比對完成 -> 新增: {len(added_ids)} 人, 離職: {len(deleted_ids)} 人, 在職: {len(existing_ids)} 人")
+        processed_ids = set()
+        added_count, updated_count, deleted_count = 0, 0, 0
 
-        # 處理離職員工
-        for uid in deleted_ids:
-            if not db_workers_df.empty and uid in db_workers_df.index and db_workers_df.loc[uid, 'data_source'] == '系統自動更新':
-                if pd.isna(db_workers_df.loc[uid, 'accommodation_end_date']):
-                    db_workers_df.loc[uid, 'accommodation_end_date'] = today_str
+        for index, fresh_worker in fresh_df.iterrows():
+            employer = fresh_worker['employer_name']
+            name = fresh_worker['worker_name']
+            passport = fresh_worker.get('passport_number')
+            
+            # 查找匹配的既有員工
+            match_query = "SELECT * FROM Workers WHERE employer_name = ? AND worker_name = ?"
+            cursor.execute(match_query, (employer, name))
+            existing_matches = [dict(row) for row in cursor.fetchall()]
+            
+            target_worker_id = None
+            if existing_matches:
+                if passport: # 有護照，用護照精準匹配
+                    for match in existing_matches:
+                        if match.get('passport_number') == passport:
+                            target_worker_id = match['unique_id']
+                            break
+                else: # 沒護照，匹配第一個找到的
+                    target_worker_id = existing_matches[0]['unique_id']
+
+            # 執行操作
+            if target_worker_id:
+                # 更新在職員工
+                update_cols = ['gender', 'nationality', 'passport_number', 'arc_number', 'arrival_date', 'departure_date', 'work_permit_expiry_date']
+                update_details = {col: fresh_worker.get(col) for col in update_cols if col in fresh_worker}
+                update_details['accommodation_end_date'] = None # 確保在職
+                
+                fields = ', '.join([f'"{key}" = ?' for key in update_details.keys()])
+                values = list(update_details.values()) + [target_worker_id]
+                cursor.execute(f"UPDATE Workers SET {fields} WHERE unique_id = ?", tuple(values))
+                updated_count += 1
+                processed_ids.add(target_worker_id)
+            else:
+                # 新增員工
+                new_worker_details = fresh_worker.to_dict()
+                new_worker_details['data_source'] = '系統自動更新'
+                new_worker_details['accommodation_start_date'] = new_worker_details.get('arrival_date')
+                
+                cols_to_keep = [col[1] for col in cursor.execute("PRAGMA table_info(Workers)").fetchall()]
+                final_details = {k: v for k, v in new_worker_details.items() if k in cols_to_keep}
+                
+                columns = ', '.join(f'"{k}"' for k in final_details.keys())
+                placeholders = ', '.join(['?'] * len(final_details))
+                cursor.execute(f"INSERT INTO Workers ({columns}) VALUES ({placeholders})", tuple(final_details.values()))
+                added_count += 1
+        
+        # 處理離職員工 (軟刪除)
+        db_system_ids = set(db_workers_df[db_workers_df['data_source'] == '系統自動更新']['unique_id'])
+        deleted_ids = db_system_ids - processed_ids
+        if deleted_ids:
+            for uid in deleted_ids:
+                cursor.execute("UPDATE Workers SET accommodation_end_date = ? WHERE unique_id = ? AND accommodation_end_date IS NULL", (today_str, uid))
+                if cursor.rowcount > 0:
+                    deleted_count += 1
                     log_callback(f"INFO: 移工 '{uid}' 已不在最新名單，更新住宿迄日。")
 
-        # 處理在職員工
-        scraped_cols = ['employer_name', 'worker_name', 'gender', 'nationality', 
-                        'passport_number', 'arc_number', 'arrival_date', 
-                        'departure_date', 'work_permit_expiry_date']
-        for uid in existing_ids:
-            for col in scraped_cols:
-                if col in fresh_df.columns:
-                    db_workers_df.loc[uid, col] = fresh_df.loc[uid, col]
-            db_workers_df.loc[uid, 'accommodation_end_date'] = None
-        
-        # 處理新進員工
-        new_workers_df = fresh_df.loc[list(added_ids)].copy()
-        new_workers_df['data_source'] = '系統自動更新'
-        new_workers_df['accommodation_start_date'] = new_workers_df['arrival_date']
-        
-        final_df = pd.concat([db_workers_df, new_workers_df], sort=False)
-        if db_workers_df.empty:
-            final_df = new_workers_df
-        
-        # 寫回資料庫
-        final_df.reset_index(inplace=True)
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA table_info(Workers)")
-        db_columns = [info[1] for info in cursor.fetchall()]
-        final_df = final_df.reindex(columns=db_columns)
-        
-        final_df.to_sql('Workers', conn, if_exists='replace', index=False)
         conn.commit()
-        log_callback(f"SUCCESS: 資料庫更新完成！目前資料庫總筆數: {len(final_df)}")
+        log_callback(f"SUCCESS: 資料庫更新完成！新增: {added_count}, 更新: {updated_count}, 標記離職: {deleted_count}。")
 
     except Exception as e:
         log_callback(f"CRITICAL: 更新資料庫時發生嚴重錯誤: {e}")

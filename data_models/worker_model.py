@@ -17,13 +17,14 @@ def get_workers_for_view(filters: dict):
             SELECT
                 w.unique_id,
                 d.primary_manager AS '主要管理人',
-                w.employer_name AS '雇主',
-                w.worker_name AS '姓名',
                 w.gender AS '性別',
                 w.nationality AS '國籍',
-                w.passport_number AS '護照號碼',
                 d.original_address as '宿舍地址',
                 r.room_number as '房號',
+                w.accommodation_start_date AS '入住日期',
+                w.accommodation_end_date AS '離住日期',
+                w.arrival_date AS '抵台日期',
+                w.work_permit_expiry_date AS '工作限期',
                 (SELECT status FROM WorkerStatusHistory 
                  WHERE worker_unique_id = w.unique_id AND end_date IS NULL 
                  ORDER BY start_date DESC LIMIT 1) as '特殊狀況',
@@ -35,7 +36,11 @@ def get_workers_for_view(filters: dict):
                     ELSE '在住'
                 END as '在住狀態',
                 w.monthly_fee as '月費',
-                w.worker_notes AS '個人備註', -- 【核心修改】
+                w.worker_notes AS '個人備註',
+                w.employer_name AS '雇主',
+                w.worker_name AS '姓名',
+                w.passport_number AS '護照號碼',
+                w.arc_number AS '居留證號碼',
                 w.data_source as '資料來源'
             FROM Workers w
             LEFT JOIN Rooms r ON w.room_id = r.id
@@ -152,7 +157,9 @@ def delete_worker_by_id(unique_id: str):
         if conn: conn.close()
 
 def get_my_company_workers_for_selection():
-    """只取得「我司」管理的宿舍中，所有「在住」移工的列表，用於編輯下拉選單。"""
+    """
+    所有移工的列表，用於編輯下拉選單。
+    """
     conn = database.get_db_connection()
     if not conn: return []
     try:
@@ -162,8 +169,6 @@ def get_my_company_workers_for_selection():
             FROM Workers w
             JOIN Rooms r ON w.room_id = r.id
             JOIN Dormitories d ON r.dorm_id = d.id
-            WHERE d.primary_manager = '我司'
-            AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date = '')
             ORDER BY d.original_address, w.worker_name
         """
         cursor = conn.cursor()

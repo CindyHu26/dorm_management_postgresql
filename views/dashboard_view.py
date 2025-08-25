@@ -34,8 +34,7 @@ def render():
             col1.metric("總在住人數", f"{total_residents} 人")
             col2.metric("我司管理宿舍人數", f"{my_company_residents} 人")
             col3.metric("雇主管理宿舍人數", f"{employer_residents} 人")
-
-            # --- 特殊狀況人員統計 ---
+            
             st.markdown("---")
             st.subheader("特殊狀況人員統計")
 
@@ -49,22 +48,11 @@ def render():
                 st.info("目前沒有任何註記特殊狀況的在住人員。")
             else:
                 st.dataframe(status_df, use_container_width=True, hide_index=True)
-
-            st.markdown("##### 各宿舍詳細統計")
-            manager_filter = st.selectbox(
-                "篩選主要管理人：",
-                options=["全部"] + overview_df['主要管理人'].unique().tolist(),
-                key="overview_manager_filter"
-            )
-
-            if manager_filter != "全部":
-                display_df = overview_df[overview_df['主要管理人'] == manager_filter]
-            else:
-                display_df = overview_df
             
-            # --- 修正所有 format 字串 ---
+            st.markdown("---")
+            st.subheader("各宿舍詳細統計")
             st.dataframe(
-                display_df, 
+                overview_df, 
                 use_container_width=True, 
                 hide_index=True,
                 column_config={
@@ -87,18 +75,15 @@ def render():
         selected_month = c2.selectbox("選擇月份", options=range(1, 13), index=today.month - 1)
         year_month_str = f"{selected_year}-{selected_month:02d}"
 
-        # --- 【核心修改】將兩個預測功能整合在此 ---
         with st.container(border=True):
             st.markdown("##### 費用預測分析")
             
-            # 1. 年均預測 (適合長期規劃)
             @st.cache_data
             def get_annual_forecast():
                 return dashboard_model.get_expense_forecast_data()
             
             annual_forecast_data = get_annual_forecast()
             
-            # 2. 季節性預測 (適合短期規劃)
             @st.cache_data
             def get_seasonal_forecast(period):
                 return dashboard_model.get_seasonal_expense_forecast(period)
@@ -119,7 +104,7 @@ def render():
                     st.metric(
                         label=f"預估 {year_month_str} 單月總支出 (季節性)",
                         value=f"NT$ {seasonal_forecast_data['estimated_monthly_expense']:,.0f}",
-                        help=f"此估算基於去年同期 ({seasonal_forecast_data['lookback_period']}) 的數據，更能反映季節性差異（如夏季電費），適合用於近期的現金流規劃。"
+                        help=f"此估算基於去年同期 ({seasonal_forecast_data.get('lookback_period', 'N/A')}) 的數據，更能反映季節性差異（如夏季電費）。"
                     )
             else:
                 st.info("尚無足夠歷史數據進行預測。")
@@ -152,9 +137,23 @@ def render():
 
             st.markdown("##### 各宿舍損益詳情")
             
+            # --- 重新引入 style.applymap 來為損益欄位上色 ---
+            def style_profit(val):
+                color = 'red' if val < 0 else 'green' if val > 0 else 'grey'
+                return f'color: {color}'
+            
+            # 將 column_config 和 style.applymap 結合使用
             st.dataframe(
-                finance_df,
+                finance_df.style.apply(lambda x: x.map(lambda y: style_profit(y) if x.name == '預估損益' else None)),
                 use_container_width=True, 
                 hide_index=True,
-                column_config={"預估損益": st.column_config.NumberColumn(format="NT$ %d")}
+                column_config={
+                    "預計總收入": st.column_config.NumberColumn(format="NT$ %d"),
+                    "宿舍月租": st.column_config.NumberColumn(format="NT$ %d"),
+                    "變動雜費": st.column_config.NumberColumn(format="NT$ %d"),
+                    "長期攤銷": st.column_config.NumberColumn(format="NT$ %d"),
+                    "預計總支出": st.column_config.NumberColumn(format="NT$ %d"),
+                    # 我們仍然可以為上色後的欄位設定數字格式
+                    "預估損益": st.column_config.NumberColumn(format="NT$ %d")
+                }
             )
