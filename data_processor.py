@@ -88,7 +88,10 @@ def normalize_taiwan_address(address: str) -> Dict[str, str]:
     
     return {'full': normalized_full, 'city': parts.get('city', ''), 'district': parts.get('district', '')}
 
-def parse_and_process_reports(file_paths: List[str], log_callback: Callable[[str], None]) -> pd.DataFrame:
+def parse_and_process_reports(
+    file_paths: List[str],
+    log_callback: Callable[[str], None]
+) -> pd.DataFrame:
     """
     解析所有下載的XML報表檔案，進行清理、正規化。
     """
@@ -150,16 +153,25 @@ def parse_and_process_reports(file_paths: List[str], log_callback: Callable[[str
     date_columns = ['arrival_date', 'departure_date', 'work_permit_expiry_date']
     for col in date_columns:
         if col in master_df.columns:
-            # errors='coerce' 會將無法解析的日期變為 NaT (空值)，確保程式不會崩潰
             master_df[col] = pd.to_datetime(master_df[col], errors='coerce').dt.strftime('%Y-%m-%d')
-            # 將 pandas 的 <NaT> 空值轉換為 Python 的 None
             master_df[col] = master_df[col].where(pd.notna(master_df[col]), None)
 
     regex_pattern = r'\s?\(接\)$|\s?\(遞:.*?\)$'
     master_df['employer_name'] = master_df['employer_name'].str.replace(regex_pattern, '', regex=True).str.strip()
     
-    master_df['unique_id'] = master_df['employer_name'].astype(str).str.strip() + '_' + master_df['worker_name'].astype(str).str.strip()
-    
+    log_callback("INFO: 正在根據最新規則生成 Unique ID...")
+    def generate_unique_id(row):
+        employer = str(row.get('employer_name', '')).strip()
+        name = str(row.get('worker_name', '')).strip()
+        passport = str(row.get('passport_number', '')).strip()
+        
+        if passport:
+            return f"{employer}_{name}_{passport}"
+        else:
+            return f"{employer}_{name}"
+
+    master_df['unique_id'] = master_df.apply(generate_unique_id, axis=1)
+
     addr_info = master_df['original_address'].apply(normalize_taiwan_address).apply(pd.Series)
     master_df[['normalized_address', 'city', 'district']] = addr_info[['full', 'city', 'district']]
     
@@ -169,7 +181,10 @@ def parse_and_process_reports(file_paths: List[str], log_callback: Callable[[str
         'work_permit_expiry_date', 'original_address', 'normalized_address', 'city', 'district'
     ]
     existing_final_columns = [col for col in final_columns if col in master_df.columns]
-    final_df = master_df[existing_final_columns].drop_duplicates(subset=['unique_id'], keep='first').copy()
+    
+    # 在去重複前，確保 unique_id 不是空的
+    final_df = master_df[master_df['unique_id'] != '_'].copy()
+    final_df = final_df[existing_final_columns].drop_duplicates(subset=['unique_id'], keep='first')
     
     log_callback(f"INFO: 資料清理與正規化完成，最終處理完畢資料共 {len(final_df)} 筆。")
     return final_df
