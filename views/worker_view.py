@@ -218,10 +218,72 @@ def render():
                             else:
                                 st.error(message)
                     
-                    st.markdown("---")
                     st.markdown("##### 狀態歷史紀錄")
                     history_df = worker_model.get_worker_status_history(selected_worker_id)
-                    st.dataframe(history_df, use_container_width=True, hide_index=True)
+                    st.dataframe(history_df, use_container_width=True, hide_index=True, column_config={"id": None})
+
+                    st.markdown("---")
+                    st.subheader("編輯或刪除狀態")
+
+                    # 狀態選取下拉選單
+                    if history_df.empty:
+                        st.info("此員工尚無任何歷史狀態紀錄。")
+                        selected_status_id = None
+                    else:
+                        status_options = {row['id']: f"{row['起始日']} | {row['狀態']}" for _, row in history_df.iterrows()}
+                        selected_status_id = st.selectbox(
+                            "選擇要編輯或刪除的狀態紀錄：",
+                            options=[None] + list(status_options.keys()),
+                            format_func=lambda x: "請選擇..." if x is None else status_options.get(x)
+                        )
+
+                    # --- 編輯區塊 ---
+                    if selected_status_id:
+                        status_details = worker_model.get_single_status_details(selected_status_id)
+                        if status_details:
+                            with st.form("edit_status_form"):
+                                st.markdown(f"###### 正在編輯 ID: {status_details['id']} 的狀態")
+                                es_c1, es_c2, es_c3 = st.columns(3)
+                                
+                                status_options_edit = ["在住", "掛宿外住(不收費)", "掛宿外住(收費)", "費用不同", "其他"]
+                                current_status = status_details.get('status')
+                                edit_status = es_c1.selectbox("狀態", status_options_edit, index=status_options_edit.index(current_status) if current_status in status_options_edit else 0)
+                                
+                                start_val = datetime.strptime(status_details['start_date'], '%Y-%m-%d').date() if status_details.get('start_date') else None
+                                end_val = datetime.strptime(status_details['end_date'], '%Y-%m-%d').date() if status_details.get('end_date') else None
+                                
+                                edit_start_date = es_c2.date_input("起始日", value=start_val)
+                                edit_end_date = es_c3.date_input("結束日 (若留空代表此為當前狀態)", value=end_val)
+                                
+                                edit_notes = st.text_area("狀態備註", value=status_details.get('notes', ''))
+
+                                edit_submitted = st.form_submit_button("儲存狀態變更")
+                                if edit_submitted:
+                                    updated_details = {
+                                        "status": edit_status,
+                                        "start_date": str(edit_start_date) if edit_start_date else None,
+                                        "end_date": str(edit_end_date) if edit_end_date else None,
+                                        "notes": edit_notes
+                                    }
+                                    success, message = worker_model.update_worker_status(selected_status_id, updated_details)
+                                    if success:
+                                        st.success(message)
+                                        st.cache_data.clear()
+                                        st.rerun()
+                                    else:
+                                        st.error(message)
+
+                            confirm_delete = st.checkbox("我了解並確認要刪除此筆狀態紀錄")
+                            if st.button("🗑️ 刪除此狀態", type="primary", disabled=not confirm_delete):
+                                success, message = worker_model.delete_worker_status(selected_status_id)
+                                if success:
+                                    st.success(message)
+                                    st.cache_data.clear()
+                                    st.rerun()
+                                else:
+                                    st.error(message)
+
+    
                         
     st.markdown("---")
     

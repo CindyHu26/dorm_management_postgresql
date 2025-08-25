@@ -179,11 +179,24 @@ def get_my_company_workers_for_selection():
         if conn: conn.close()
 
 def get_worker_status_history(unique_id: str):
-    """查詢單一移工的所有歷史狀態紀錄。"""
+    """
+    查詢單一移工的所有歷史狀態紀錄。
+    【本次修改】查詢時一併查出 id，供前端選取。
+    """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
-        query = "SELECT status AS '狀態', start_date AS '起始日', end_date AS '結束日', notes AS '備註' FROM WorkerStatusHistory WHERE worker_unique_id = ? ORDER BY start_date DESC"
+        query = """
+            SELECT 
+                id,
+                status AS '狀態', 
+                start_date AS '起始日', 
+                end_date AS '結束日', 
+                notes AS '備註' 
+            FROM WorkerStatusHistory 
+            WHERE worker_unique_id = ? 
+            ORDER BY start_date DESC
+        """
         return pd.read_sql_query(query, conn, params=(unique_id,))
     finally:
         if conn: conn.close()
@@ -203,5 +216,52 @@ def add_new_worker_status(details: dict):
     except Exception as e:
         if conn: conn.rollback()
         return False, f"新增狀態時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
+
+
+def get_single_status_details(status_id: int):
+    """取得單筆狀態歷史的詳細資料。"""
+    conn = database.get_db_connection()
+    if not conn: return None
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM WorkerStatusHistory WHERE id = ?", (status_id,))
+        record = cursor.fetchone()
+        return dict(record) if record else None
+    finally:
+        if conn: conn.close()
+
+def update_worker_status(status_id: int, details: dict):
+    """更新一筆已存在的狀態歷史紀錄。"""
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗"
+    try:
+        cursor = conn.cursor()
+        fields = ', '.join([f'"{key}" = ?' for key in details.keys()])
+        values = list(details.values())
+        values.append(status_id)
+        sql = f"UPDATE WorkerStatusHistory SET {fields} WHERE id = ?"
+        cursor.execute(sql, tuple(values))
+        conn.commit()
+        return True, "狀態紀錄更新成功！"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"更新狀態時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
+
+def delete_worker_status(status_id: int):
+    """刪除一筆狀態歷史紀錄。"""
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗"
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM WorkerStatusHistory WHERE id = ?", (status_id,))
+        conn.commit()
+        return True, "狀態紀錄已成功刪除。"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"刪除狀態時發生錯誤: {e}"
     finally:
         if conn: conn.close()
