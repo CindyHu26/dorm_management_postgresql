@@ -1,5 +1,6 @@
 import pandas as pd
 import sqlite3
+from datetime import datetime
 
 # 只依賴最基礎的 database 模組
 import database
@@ -7,7 +8,7 @@ import database
 def get_dorm_report_data(dorm_id: int):
     """
     為指定的單一宿舍，查詢產生深度分析報告所需的所有在住人員詳細資料。
-    (已更新為自給自足模式)
+    (已更新為從 WorkerStatusHistory 獲取狀態)
     """
     if not dorm_id:
         return pd.DataFrame()
@@ -25,11 +26,10 @@ def get_dorm_report_data(dorm_id: int):
                 w.gender,
                 w.nationality,
                 w.monthly_fee,
-                w.special_status,
-                w.worker_notes,
-                w.accommodation_start_date,
-                w.accommodation_end_date,
-                w.work_permit_expiry_date
+                (SELECT status FROM WorkerStatusHistory 
+                 WHERE worker_unique_id = w.unique_id AND end_date IS NULL 
+                 ORDER BY start_date DESC LIMIT 1) as special_status,
+                w.worker_notes
             FROM Workers w
             JOIN Rooms r ON w.room_id = r.id
             WHERE r.dorm_id = ?
@@ -49,13 +49,13 @@ def get_dorm_report_data(dorm_id: int):
 def get_monthly_exception_report(year_month: str):
     """
     查詢指定月份中，所有「當月離住」或「有特殊狀況」的人員。
+    (已更新為從 WorkerStatusHistory 查詢狀態)
     """
     conn = database.get_db_connection()
     if not conn: 
         return pd.DataFrame()
         
     try:
-        # 使用 UNION 來合併兩種不同條件的人員
         query = """
             -- 查詢一：找出所有在該月份離住的人員
             SELECT

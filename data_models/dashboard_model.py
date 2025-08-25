@@ -196,3 +196,62 @@ def get_special_status_summary():
     finally:
         if conn:
             conn.close()
+
+def get_seasonal_expense_forecast(year_month: str):
+    """
+    分析【去年同期】的數據，以估算指定月份的【季節性】支出。
+    """
+    conn = database.get_db_connection()
+    if not conn: return {}
+    try:
+        # 1. 計算查詢所需的時間邊界
+        target_date = datetime.strptime(f"{year_month}-01", "%Y-%m-%d")
+        # 我們通常會看前一個月的帳單來預估，所以往前推一個月
+        lookback_start = (target_date - relativedelta(years=1, months=1)).strftime('%Y-%m-%d')
+        lookback_end = (target_date - relativedelta(years=1) + relativedelta(months=2, days=-1)).strftime('%Y-%m-%d')
+        
+        # 2. 計算「我司管理」宿舍的【當前】總月租
+        rent_query = """
+            SELECT SUM(monthly_rent) as total_rent FROM Leases l
+            JOIN Dormitories d ON l.dorm_id = d.id
+            WHERE d.primary_manager = '我司'
+            AND date(l.lease_start_date) <= date('now', 'localtime')
+            AND (l.lease_end_date IS NULL OR date(l.lease_end_date) >= date('now', 'localtime'))
+        """
+        rent_df = pd.read_sql_query(rent_query, conn)
+        total_monthly_rent = rent_df['total_rent'].sum() if not rent_df.empty and pd.notna(rent_df['total_rent'].sum()) else 0
+        avg_daily_rent = total_monthly_rent / 30.4375
+
+        # 3. 計算【去年同期】所有變動費用的每日平均
+        bills_query = """
+            SELECT b.amount, b.bill_start_date, b.bill_end_date
+            FROM UtilityBills b
+            JOIN Dormitories d ON b.dorm_id = d.id
+            WHERE d.primary_manager = '我司'
+            AND date(b.bill_end_date) >= ? AND date(b.bill_start_date) <= ?
+        """
+        bills_df = pd.read_sql_query(bills_query, conn, params=(lookback_start, lookback_end))
+
+        if bills_df.empty:
+            avg_seasonal_daily_utilities = 0
+        else:
+            bills_df['bill_start_date'] = pd.to_datetime(bills_df['bill_start_date'], format='%Y-%m-%d', errors='coerce')
+            bills_df['bill_end_date'] = pd.to_datetime(bills_df['bill_end_date'], format='%Y-%m-%d', errors='coerce')
+            bills_df.dropna(subset=['bill_start_date', 'bill_end_date'], inplace=True)
+            bills_df['duration_days'] = (bills_df['bill_end_date'] - bills_df['bill_start_date']).dt.days + 1
+            bills_df = bills_df[bills_df['duration_days'] > 0]
+            bills_df['daily_avg'] = bills_df['amount'] / bills_df['duration_days']
+            avg_seasonal_daily_utilities = bills_df['daily_avg'].mean()
+
+        # 4. 匯總結果
+        total_avg_daily_expense = avg_daily_rent + avg_seasonal_daily_utilities
+        estimated_monthly_expense = total_avg_daily_expense * 30.4375
+
+        return {
+            "estimated_monthly_expense": estimated_monthly_expense,
+            "lookback_period": f"{lookback_start} ~ {lookback_end}",
+            "rent_part": avg_daily_rent * 30.4375,
+            "utilities_part": avg_seasonal_daily_utilities * 30.4375
+        }
+    finally:
+        if conn: conn.close()

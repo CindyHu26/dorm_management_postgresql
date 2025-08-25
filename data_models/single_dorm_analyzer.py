@@ -188,22 +188,32 @@ def get_resident_details_as_df(dorm_id: int, year_month: str):
 def get_dorm_analysis_data(dorm_id: int, year_month: str):
     """
     為指定的單一宿舍和月份，執行全方位的營運數據分析。
+    (已更新為從 WorkerStatusHistory 獲取狀態)
     """
     conn = database.get_db_connection()
     if not conn: return None
 
     try:
         # --- 1. 獲取基礎資料 ---
-        # 獲取宿舍所有房間的資料
         rooms_df = pd.read_sql_query("SELECT * FROM Rooms WHERE dorm_id = ?", conn, params=(dorm_id,))
         
-        # 獲取該月份所有相關人員的資料
         first_day_of_month = f"{year_month}-01"
         first_day_of_next_month = (datetime.strptime(first_day_of_month, "%Y-%m-%d") + relativedelta(months=1)).strftime('%Y-%m-%d')
+        
+        # 【核心修正】JOIN WorkerStatusHistory 來獲取當前狀態
         workers_query = """
-            SELECT w.*, r.room_number, r.capacity as room_capacity, r.room_notes
+            SELECT 
+                w.*, 
+                r.room_number, 
+                r.capacity as room_capacity, 
+                r.room_notes,
+                h.status as current_status
             FROM Workers w
             JOIN Rooms r ON w.room_id = r.id
+            LEFT JOIN (
+                SELECT worker_unique_id, status FROM WorkerStatusHistory
+                WHERE end_date IS NULL
+            ) h ON w.unique_id = h.worker_unique_id
             WHERE r.dorm_id = ?
               AND (w.accommodation_start_date IS NULL OR date(w.accommodation_start_date) < ?)
               AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date = '' OR date(w.accommodation_end_date) >= ?)
@@ -211,17 +221,13 @@ def get_dorm_analysis_data(dorm_id: int, year_month: str):
         workers_df = pd.read_sql_query(workers_query, conn, params=(dorm_id, first_day_of_next_month, first_day_of_month))
 
         # --- 2. 執行計算 ---
-        
-        # A. 宿舍容量與概況
         total_capacity = int(rooms_df['capacity'].sum())
 
-        # B. 當月實際住宿分析
-        # 篩選出外住人員
-        is_external = workers_df['special_status'].str.contains("掛宿外住", na=False)
+        # 【核心修正】使用新的 'current_status' 欄位來判斷
+        is_external = workers_df['current_status'].str.contains("掛宿外住", na=False)
         external_workers_df = workers_df[is_external]
         actual_residents_df = workers_df[~is_external]
 
-        # 計算各項指標
         total_actual_residents = len(actual_residents_df)
         male_actual_residents = len(actual_residents_df[actual_residents_df['gender'] == '男'])
         female_actual_residents = len(actual_residents_df[actual_residents_df['gender'] == '女'])
@@ -230,7 +236,6 @@ def get_dorm_analysis_data(dorm_id: int, year_month: str):
         male_external = len(external_workers_df[external_workers_df['gender'] == '男'])
         female_external = len(external_workers_df[external_workers_df['gender'] == '女'])
         
-        # C. 特殊房間註記與獨立空床
         special_rooms_df = rooms_df[rooms_df['room_notes'].notna() & (rooms_df['room_notes'] != '')].copy()
         if not special_rooms_df.empty:
             special_room_occupancy = actual_residents_df[actual_residents_df['room_id'].isin(special_rooms_df['id'])]\
@@ -238,7 +243,6 @@ def get_dorm_analysis_data(dorm_id: int, year_month: str):
             special_rooms_df = special_rooms_df.merge(special_room_occupancy, left_on='id', right_index=True, how='left').fillna(0)
             special_rooms_df['獨立空床數'] = special_rooms_df['capacity'] - special_rooms_df['目前住的人數']
             
-        # 計算總可住人數 (總容量 - 實際住的人 - 特殊房間的獨立空床)
         total_special_empty_beds = int(special_rooms_df['獨立空床數'].sum()) if not special_rooms_df.empty else 0
         total_available_beds = total_capacity - total_actual_residents - total_special_empty_beds
         
@@ -246,9 +250,8 @@ def get_dorm_analysis_data(dorm_id: int, year_month: str):
             "total_capacity": total_capacity,
             "actual_residents": {"total": total_actual_residents, "male": male_actual_residents, "female": female_actual_residents},
             "external_residents": {"total": total_external, "male": male_external, "female": female_external},
-            "available_beds": {"total": total_available_beds}, # 未來可擴充男女
+            "available_beds": {"total": total_available_beds},
             "special_rooms": special_rooms_df
         }
-
     finally:
         if conn: conn.close()

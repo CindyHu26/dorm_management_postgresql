@@ -81,37 +81,53 @@ def render():
     with tab2:
         st.subheader("我司管理宿舍 - 財務分析")
 
-        with st.container(border=True):
-            st.markdown("##### 營運費用估算 (基於過去12個月數據)")
-            @st.cache_data
-            def get_forecast():
-                return dashboard_model.get_expense_forecast_data()
-            
-            forecast_data = get_forecast()
-            
-            if forecast_data:
-                f_col1, f_col2, f_col3 = st.columns(3)
-                f_col1.metric("預估每日總支出", f"NT$ {forecast_data['avg_daily_expense']:,.0f}")
-                f_col2.metric("預估單月總支出 (月均)", f"NT$ {forecast_data['estimated_monthly_expense']:,.0f}")
-                f_col3.metric("預估年度總支出 (年均)", f"NT$ {forecast_data['estimated_annual_expense']:,.0f}")
-
-                with st.expander("查看估算細節"):
-                    st.write(f"此估算基於過去 {forecast_data['lookback_days']} 天的數據分析得出：")
-                    st.markdown(f"- **固定成本 (月租)**：每日平均約 NT$ {forecast_data['rent_part']:,.0f} 元")
-                    st.markdown(f"- **變動成本 (水電等)**：每日平均約 NT$ {forecast_data['utilities_part']:,.0f} 元")
-            else:
-                st.info("尚無足夠歷史數據進行估算。")
-        
-        st.markdown("---")
-
-        st.subheader("每月預估損益 (實際入帳)")
-        st.info("此報表統計「預計總收入」與「預計總支出」(宿舍月租+當月帳單攤銷+年度費用攤銷)的差額。")
-
         today = datetime.now()
         c1, c2 = st.columns(2)
         selected_year = c1.selectbox("選擇年份", options=range(today.year - 2, today.year + 2), index=2)
         selected_month = c2.selectbox("選擇月份", options=range(1, 13), index=today.month - 1)
         year_month_str = f"{selected_year}-{selected_month:02d}"
+
+        # --- 【核心修改】將兩個預測功能整合在此 ---
+        with st.container(border=True):
+            st.markdown("##### 費用預測分析")
+            
+            # 1. 年均預測 (適合長期規劃)
+            @st.cache_data
+            def get_annual_forecast():
+                return dashboard_model.get_expense_forecast_data()
+            
+            annual_forecast_data = get_annual_forecast()
+            
+            # 2. 季節性預測 (適合短期規劃)
+            @st.cache_data
+            def get_seasonal_forecast(period):
+                return dashboard_model.get_seasonal_expense_forecast(period)
+                
+            seasonal_forecast_data = get_seasonal_forecast(year_month_str)
+            
+            if annual_forecast_data and seasonal_forecast_data:
+                f_col1, f_col2 = st.columns(2)
+                
+                with f_col1:
+                    st.metric(
+                        label="預估單月總支出 (年均)",
+                        value=f"NT$ {annual_forecast_data['estimated_monthly_expense']:,.0f}",
+                        help=f"此估算基於過去 {annual_forecast_data['lookback_days']} 天的數據，適合用於整年度的宏觀預算規劃。"
+                    )
+                
+                with f_col2:
+                    st.metric(
+                        label=f"預估 {year_month_str} 單月總支出 (季節性)",
+                        value=f"NT$ {seasonal_forecast_data['estimated_monthly_expense']:,.0f}",
+                        help=f"此估算基於去年同期 ({seasonal_forecast_data['lookback_period']}) 的數據，更能反映季節性差異（如夏季電費），適合用於近期的現金流規劃。"
+                    )
+            else:
+                st.info("尚無足夠歷史數據進行預測。")
+
+        st.markdown("---")
+
+        st.subheader("每月實際損益")
+        st.info("此報表統計實際發生的「總收入」(員工月費+其他收入)與「總支出」(宿舍月租+當月帳單攤銷+年度費用攤銷)的差額。")
 
         if st.button("🔍 產生財務報表"):
             get_finance_data.clear()
@@ -136,17 +152,9 @@ def render():
 
             st.markdown("##### 各宿舍損益詳情")
             
-            # --- 修正所有 format 字串 ---
             st.dataframe(
                 finance_df,
                 use_container_width=True, 
                 hide_index=True,
-                column_config={
-                    "預計總收入": st.column_config.NumberColumn(format=" %d"),
-                    "宿舍月租": st.column_config.NumberColumn(format=" %d"),
-                    "變動雜費": st.column_config.NumberColumn(format=" %d"),
-                    "長期攤銷": st.column_config.NumberColumn(format=" %d"),
-                    "預計總支出": st.column_config.NumberColumn(format=" %d"),
-                    "預估損益": st.column_config.NumberColumn(format=" %d")
-                }
+                column_config={"預估損益": st.column_config.NumberColumn(format="NT$ %d")}
             )

@@ -5,17 +5,28 @@ from data_models import analytics_model, dormitory_model, meter_model
 def render():
     """渲染「費用分析」儀表板"""
     st.header("水電費用分析儀表板")
-    st.info("此工具用於追蹤單一電水錶的歷史費用趨勢，並自動偵測潛在的異常帳單。")
+    st.info("此工具用於追蹤單一電水錶的歷史費用，並自動偵測潛在的異常帳單。")
     
     if st.button("🔄 重新整理所有數據"):
         st.cache_data.clear()
 
     st.markdown("---")
 
-    # --- 【全新功能】異常數據警告區塊 ---
+    # --- 異常數據警告區塊 (升級版) ---
     with st.container(border=True):
         st.subheader("🚨 費用異常數據警告")
         
+        with st.expander("點此查看異常判斷說明"):
+            st.markdown("""
+            系統採用統計學中的 **IQR (四分位距)** 方法來自動偵測異常值：
+            1.  **分組計算**：將同一個電水錶的所有歷史帳單分為一組。
+            2.  **找出中間值**：計算這組數據中，排名在25% (Q1)和75% (Q3)的金額。
+            3.  **定義正常範圍**：系統會定義一個合理的「正常費用範圍」。
+            4.  **揪出異常**：任何**遠遠超出**這個正常範圍的帳單，就會被標記為「費用過高」或「費用過低」。
+            
+            *註：至少需要4筆歷史帳單，系統才能進行有效的統計分析。*
+            """)
+
         @st.cache_data
         def get_anomalies():
             return analytics_model.find_expense_anomalies()
@@ -26,14 +37,20 @@ def render():
             st.success("恭喜！目前系統未偵測到任何費用異常的帳單紀錄。")
         else:
             st.warning(f"系統偵測到 {len(anomalies_df)} 筆費用可能存在異常的帳單，請您關注：")
-            st.dataframe(anomalies_df, use_container_width=True, hide_index=True)
+            st.dataframe(
+                anomalies_df, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "異常金額": st.column_config.NumberColumn(format="NT$ %d"),
+                }
+            )
 
     st.markdown("---")
 
-    # --- 【全新UI流程】歷史費用趨勢查詢 ---
+    # --- 歷史費用趨勢查詢 (維持不變) ---
     st.subheader("📈 歷史費用趨勢查詢")
     
-    # 1. 先選擇宿舍
     my_dorms = dormitory_model.get_my_company_dorms_for_selection()
     if not my_dorms:
         st.warning("目前沒有「我司管理」的宿舍可供分析。")
@@ -46,7 +63,6 @@ def render():
     )
 
     if selected_dorm_id:
-        # 2. 再根據宿舍，選擇電水錶
         meters = meter_model.get_meters_for_dorm_as_df(selected_dorm_id)
         if meters.empty:
             st.info("此宿舍尚未登錄任何獨立的電水錶。")
@@ -59,7 +75,6 @@ def render():
             )
 
             if selected_meter_id:
-                # 3. 顯示分析結果
                 st.markdown(f"#### 分析結果: {meter_options[selected_meter_id]}")
                 
                 @st.cache_data
