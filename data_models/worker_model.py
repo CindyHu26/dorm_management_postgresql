@@ -1,5 +1,6 @@
 import pandas as pd
 import sqlite3
+from datetime import datetime
 
 # 只依賴最基礎的 database 模組
 import database
@@ -7,6 +8,7 @@ import database
 def get_workers_for_view(filters: dict):
     """
     根據篩選條件，查詢移工的詳細住宿資訊。
+    在 SELECT 中增加 w.worker_notes AS '個人備註'。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -21,20 +23,20 @@ def get_workers_for_view(filters: dict):
                 w.nationality AS '國籍',
                 w.passport_number AS '護照號碼',
                 d.original_address as '宿舍地址',
-                d.normalized_address as '正規化地址',
                 r.room_number as '房號',
+                (SELECT status FROM WorkerStatusHistory 
+                 WHERE worker_unique_id = w.unique_id AND end_date IS NULL 
+                 ORDER BY start_date DESC LIMIT 1) as '特殊狀況',
                 CASE 
                     WHEN w.accommodation_end_date IS NOT NULL 
                          AND w.accommodation_end_date != '' 
-                         AND w.accommodation_end_date <= date('now', 'localtime') 
+                         AND date(w.accommodation_end_date) <= date('now', 'localtime') 
                     THEN '已離住'
                     ELSE '在住'
                 END as '在住狀態',
                 w.monthly_fee as '月費',
-                w.data_source as '資料來源',
-                w.special_status AS '特殊狀況',
-                w.worker_notes AS '個人備註',
-                w.fee_notes AS '費用備註'
+                w.worker_notes AS '個人備註', -- 【核心修改】
+                w.data_source as '資料來源'
             FROM Workers w
             LEFT JOIN Rooms r ON w.room_id = r.id
             LEFT JOIN Dormitories d ON r.dorm_id = d.id
@@ -45,9 +47,8 @@ def get_workers_for_view(filters: dict):
         
         if filters.get('name_search'):
             term = f"%{filters['name_search']}%"
-            # 【本次修改】在搜尋條件中，增加對 d.normalized_address 的比對
-            where_clauses.append("(w.worker_name LIKE ? OR w.employer_name LIKE ? OR d.original_address LIKE ? OR d.normalized_address LIKE ?)")
-            params.extend([term, term, term, term]) # 參數數量也要對應增加
+            where_clauses.append("(w.worker_name LIKE ? OR w.employer_name LIKE ? OR d.original_address LIKE ?)")
+            params.extend([term, term, term])
             
         if filters.get('dorm_id'):
             where_clauses.append("d.id = ?")
@@ -55,9 +56,9 @@ def get_workers_for_view(filters: dict):
 
         status_filter = filters.get('status')
         if status_filter == '在住':
-            where_clauses.append("(w.accommodation_end_date IS NULL OR w.accommodation_end_date = '' OR w.accommodation_end_date > date('now', 'localtime'))")
+            where_clauses.append("(w.accommodation_end_date IS NULL OR w.accommodation_end_date = '' OR date(w.accommodation_end_date) > date('now', 'localtime'))")
         elif status_filter == '已離住':
-            where_clauses.append("(w.accommodation_end_date IS NOT NULL AND w.accommodation_end_date != '' AND w.accommodation_end_date <= date('now', 'localtime'))")
+            where_clauses.append("(w.accommodation_end_date IS NOT NULL AND w.accommodation_end_date != '' AND date(w.accommodation_end_date) <= date('now', 'localtime'))")
 
         if where_clauses:
             base_query += " WHERE " + " AND ".join(where_clauses)
@@ -82,26 +83,28 @@ def get_single_worker_details(unique_id: str):
         if conn: conn.close()
 
 def update_worker_details(unique_id: str, details: dict):
-    """更新移工的詳細資料。"""
+    """更新移工的核心資料 (不包含狀態)。"""
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed."
     try:
         cursor = conn.cursor()
+        # 【核心修正】確保 special_status 不會被傳入
+        details.pop('special_status', None)
         fields = ', '.join([f'"{key}" = ?' for key in details.keys()])
         values = list(details.values())
         values.append(unique_id)
         sql = f"UPDATE Workers SET {fields} WHERE unique_id = ?"
         cursor.execute(sql, tuple(values))
         conn.commit()
-        return True, "員工資料更新成功！"
+        return True, "員工核心資料更新成功！"
     except Exception as e:
         if conn: conn.rollback()
         return False, f"更新員工資料時發生錯誤: {e}"
     finally:
         if conn: conn.close()
 
-def add_manual_worker(details: dict):
-    """新增一筆手動管理的移工資料。"""
+def add_manual_worker(details: dict, initial_status: dict):
+    """新增一筆手動管理的移工資料，並為其建立初始狀態。"""
     details['data_source'] = '手動管理(他仲)'
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed.", None
@@ -111,13 +114,22 @@ def add_manual_worker(details: dict):
         if cursor.fetchone():
             return False, f"新增失敗：員工ID '{details['unique_id']}' 已存在。", None
         
+        # 新增 Worker
         columns = ', '.join(f'"{k}"' for k in details.keys())
         placeholders = ', '.join(['?'] * len(details))
         sql = f"INSERT INTO Workers ({columns}) VALUES ({placeholders})"
         cursor.execute(sql, tuple(details.values()))
-        new_id = details['unique_id']
+        
+        # 新增初始狀態
+        if initial_status and initial_status.get('status'):
+            initial_status['worker_unique_id'] = details['unique_id']
+            status_cols = ', '.join(f'"{k}"' for k in initial_status.keys())
+            status_placeholders = ', '.join(['?'] * len(initial_status))
+            status_sql = f"INSERT INTO WorkerStatusHistory ({status_cols}) VALUES ({status_placeholders})"
+            cursor.execute(status_sql, tuple(initial_status.values()))
+
         conn.commit()
-        return True, f"成功新增手動管理員工 (ID: {new_id})", new_id
+        return True, f"成功新增手動管理員工 (ID: {details['unique_id']})", details['unique_id']
     except Exception as e:
         if conn: conn.rollback()
         return False, f"新增員工時發生錯誤: {e}", None
@@ -161,45 +173,30 @@ def get_my_company_workers_for_selection():
     finally:
         if conn: conn.close()
 
-def add_manual_worker(details: dict):
-    """
-    新增一筆手動管理的移工資料。
-    【v1.6 修改】採用更嚴格的唯一性檢查。
-    """
+def get_worker_status_history(unique_id: str):
+    """查詢單一移工的所有歷史狀態紀錄。"""
     conn = database.get_db_connection()
-    if not conn: return False, "DB connection failed.", None
+    if not conn: return pd.DataFrame()
+    try:
+        query = "SELECT status AS '狀態', start_date AS '起始日', end_date AS '結束日', notes AS '備註' FROM WorkerStatusHistory WHERE worker_unique_id = ? ORDER BY start_date DESC"
+        return pd.read_sql_query(query, conn, params=(unique_id,))
+    finally:
+        if conn: conn.close()
+
+def add_new_worker_status(details: dict):
+    """為移工新增一筆新的狀態紀錄 (資料庫觸發器會自動處理舊紀錄)。"""
+    conn = database.get_db_connection()
+    if not conn: return False, "DB connection failed."
     try:
         cursor = conn.cursor()
-        
-        # 關鍵：現在 unique_id 只是主鍵，不再是業務邏輯上的唯一識別
-        # 我們需要檢查業務上的唯一性
-        # 如果有護照號，則以 (雇主, 姓名, 護照號) 為唯一
-        # 如果沒有，則以 (雇主, 姓名) 為唯一 (並假設不存在同名無護照者)
-        
-        employer = details.get('employer_name')
-        name = details.get('worker_name')
-        passport = details.get('passport_number')
-
-        if passport:
-            cursor.execute("SELECT unique_id FROM Workers WHERE employer_name = ? AND worker_name = ? AND passport_number = ?", (employer, name, passport))
-        else:
-            cursor.execute("SELECT unique_id FROM Workers WHERE employer_name = ? AND worker_name = ? AND (passport_number IS NULL OR passport_number = '')", (employer, name))
-        
-        if cursor.fetchone():
-            return False, f"新增失敗：雇主 '{employer}' 底下已存在名為 '{name}' 的相同員工。", None
-
-        details['data_source'] = '手動管理(他仲)'
-        
         columns = ', '.join(f'"{k}"' for k in details.keys())
         placeholders = ', '.join(['?'] * len(details))
-        sql = f"INSERT INTO Workers ({columns}) VALUES ({placeholders})"
+        sql = f"INSERT INTO WorkerStatusHistory ({columns}) VALUES ({placeholders})"
         cursor.execute(sql, tuple(details.values()))
-        new_id = details['unique_id'] # unique_id 仍需提供
         conn.commit()
-        return True, f"成功新增手動管理員工 (ID: {new_id})", new_id
-
+        return True, "成功新增狀態紀錄。"
     except Exception as e:
         if conn: conn.rollback()
-        return False, f"新增員工時發生錯誤: {e}", None
+        return False, f"新增狀態時發生錯誤: {e}"
     finally:
         if conn: conn.close()

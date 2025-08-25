@@ -1,21 +1,20 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 from data_models import worker_model, dormitory_model
 
 def render():
     """渲染「人員管理」頁面"""
     st.header("移工住宿人員管理")
-
-# --- 1. 手動新增人員 ---
-    with st.expander("➕ 手動新增人員 (他仲等)"):
+    
+    # --- 1. 新增手動管理人員 ---
+    with st.expander("➕ 新增手動管理人員 (他仲等)"):
         with st.form("new_manual_worker_form", clear_on_submit=True):
             st.subheader("新人員基本資料")
             c1, c2, c3 = st.columns(3)
             employer_name = c1.text_input("雇主名稱 (必填)")
             worker_name = c2.text_input("移工姓名 (必填)")
-            # 增加護照號碼欄位，對於同名員工至關重要
-            passport_number = c3.text_input("護照號碼 (若有，強烈建議填寫)")
+            passport_number = c3.text_input("護照號碼 (同名時必填)")
             
             gender = c1.selectbox("性別", ["", "男", "女"])
             nationality = c2.text_input("國籍")
@@ -34,59 +33,59 @@ def render():
             f1, f2, f3 = st.columns(3)
             monthly_fee = f1.number_input("月費", min_value=0, step=100)
             payment_method = f2.selectbox("付款方", ["", "員工自付", "雇主支付"])
-            accommodation_start_date = f3.date_input("起住日期", value=None)
+            accommodation_start_date = f3.date_input("起住日期", value=date.today())
 
             worker_notes = st.text_area("個人備註")
             
-            st.markdown("##### 特殊狀況")
-            status_options_new = ["", "掛宿外住(不收費)", "掛宿外住(收費)", "費用不同", "其他 (請手動輸入)"]
-            selected_status_new = st.selectbox("選擇或輸入特殊狀況 ", status_options_new) # 增加空格以區別 key
-            custom_status_new = st.text_input("自訂狀況 ", help="若上方選擇「其他 (請手動輸入)」，請務必在此填寫")
+            st.subheader("初始狀態")
+            s1, s2 = st.columns(2)
+            initial_status_options = ["在住", "掛宿外住(不收費)", "掛宿外住(收費)", "費用不同", "其他"]
+            initial_status = s1.selectbox("初始狀態", initial_status_options)
+            status_notes = s2.text_area("狀態備註")
+
 
             submitted = st.form_submit_button("儲存新人員")
             if submitted:
                 if not employer_name or not worker_name:
                     st.error("雇主和移工姓名為必填欄位！")
                 else:
-                    # --- 【核心修改】採用全新的 unique_id 生成規則 ---
                     emp_clean = employer_name.strip()
                     name_clean = worker_name.strip()
                     pass_clean = str(passport_number or '').strip()
 
+                    unique_id = f"{emp_clean}_{name_clean}"
                     if pass_clean:
-                        unique_id = f"{emp_clean}_{name_clean}_{pass_clean}"
-                    else:
-                        unique_id = f"{emp_clean}_{name_clean}"
-                    # --- 修改結束 ---
+                        unique_id += f"_{pass_clean}"
 
-                    final_special_status = custom_status_new if selected_status_new == "其他 (請手動輸入)" else selected_status_new
-                
                     details = {
                         'unique_id': unique_id,
-                        'employer_name': emp_clean,
-                        'worker_name': name_clean,
+                        'employer_name': emp_clean, 'worker_name': name_clean,
                         'passport_number': pass_clean if pass_clean else None,
-                        'gender': gender, 
-                        'nationality': nationality, 
-                        'arc_number': arc_number,
-                        'room_id': selected_room_id_new, 
-                        'monthly_fee': monthly_fee, 
+                        'gender': gender, 'nationality': nationality, 'arc_number': arc_number,
+                        'room_id': selected_room_id_new, 'monthly_fee': monthly_fee, 
                         'payment_method': payment_method,
                         'accommodation_start_date': str(accommodation_start_date) if accommodation_start_date else None,
-                        'worker_notes': worker_notes, 
-                        'special_status': final_special_status
+                        'worker_notes': worker_notes
                     }
-                    success, message, _ = worker_model.add_manual_worker(details)
+                    
+                    status_details = {
+                        'status': initial_status,
+                        'start_date': str(accommodation_start_date) if accommodation_start_date else str(date.today()),
+                        'notes': status_notes
+                    }
+
+                    success, message, _ = worker_model.add_manual_worker(details, status_details)
                     if success:
                         st.success(message)
                         st.cache_data.clear()
                         st.rerun()
                     else:
                         st.error(message)
+
     st.markdown("---")
 
     # --- 2. 編輯與檢視區塊 ---
-    st.subheader("編輯/檢視單一移工資料 (僅限我司管理宿舍)")
+    st.subheader("編輯/檢視單一移工資料")
     
     @st.cache_data
     def get_editable_workers_list():
@@ -110,82 +109,83 @@ def render():
             if not worker_details:
                 st.error("找不到選定的移工資料，可能已被刪除。")
             else:
-                with st.form("edit_worker_form"):
-                    st.info(f"資料來源: **{worker_details.get('data_source')}**")
+                st.markdown(f"#### 管理移工: {worker_details.get('worker_name')} ({worker_details.get('employer_name')})")
+                
+                tab1, tab2 = st.tabs(["✏️ 編輯核心資料", "🕒 狀態歷史管理"])
+            
+                with tab1:
+                    with st.form("edit_worker_form"):
+                        st.info(f"資料來源: **{worker_details.get('data_source')}**")
 
-                    st.markdown("##### 基本資料 (多由系統同步)")
-                    ec1, ec2, ec3 = st.columns(3)
-                    ec1.text_input("性別", value=worker_details.get('gender'), disabled=True)
-                    ec2.text_input("國籍", value=worker_details.get('nationality'), disabled=True)
-                    ec3.text_input("護照號碼", value=worker_details.get('passport_number'), disabled=True)
-                    
-                    st.markdown("##### 住宿分配 (可手動修改)")
-                    all_dorms = dormitory_model.get_dorms_for_selection() or []
-                    all_dorm_options = {d['id']: d['original_address'] for d in all_dorms}
-                    
-                    current_room_id = worker_details.get('room_id')
-                    current_dorm_id = dormitory_model.get_dorm_id_from_room_id(current_room_id)
-                    dorm_ids = list(all_dorm_options.keys())
-                    
-                    try:
-                        current_dorm_index = dorm_ids.index(current_dorm_id) + 1 if current_dorm_id in dorm_ids else 0
-                    except (ValueError, TypeError):
-                        current_dorm_index = 0
-                    
-                    selected_dorm_id_edit = st.selectbox("宿舍地址", options=[None] + dorm_ids, 
-                                                        format_func=lambda x: "未分配" if x is None else all_dorm_options.get(x), 
-                                                        index=current_dorm_index)
-                    
-                    rooms = dormitory_model.get_rooms_for_selection(selected_dorm_id_edit) or []
-                    room_options = {r['id']: r['room_number'] for r in rooms}
-                    room_ids = list(room_options.keys())
+                        st.markdown("##### 基本資料 (多由系統同步)")
+                        ec1, ec2, ec3 = st.columns(3)
+                        ec1.text_input("性別", value=worker_details.get('gender'), disabled=True)
+                        ec2.text_input("國籍", value=worker_details.get('nationality'), disabled=True)
+                        ec3.text_input("護照號碼", value=worker_details.get('passport_number'), disabled=True)
+                        
+                        st.markdown("##### 住宿分配 (可手動修改)")
+                        all_dorms = dormitory_model.get_dorms_for_selection() or []
+                        all_dorm_options = {d['id']: d['original_address'] for d in all_dorms}
+                        
+                        current_room_id = worker_details.get('room_id')
+                        current_dorm_id = dormitory_model.get_dorm_id_from_room_id(current_room_id)
+                        dorm_ids = list(all_dorm_options.keys())
+                        
+                        try:
+                            current_dorm_index = dorm_ids.index(current_dorm_id) + 1 if current_dorm_id in dorm_ids else 0
+                        except (ValueError, TypeError):
+                            current_dorm_index = 0
+                        
+                        selected_dorm_id_edit = st.selectbox("宿舍地址", options=[None] + dorm_ids, 
+                                                            format_func=lambda x: "未分配" if x is None else all_dorm_options.get(x), 
+                                                            index=current_dorm_index)
+                        
+                        rooms = dormitory_model.get_rooms_for_selection(selected_dorm_id_edit) or []
+                        room_options = {r['id']: r['room_number'] for r in rooms}
+                        room_ids = list(room_options.keys())
 
-                    try:
-                        current_room_index = room_ids.index(current_room_id) + 1 if current_room_id in room_ids else 0
-                    except (ValueError, TypeError):
-                        current_room_index = 0
-                    
-                    selected_room_id = st.selectbox("房間號碼", options=[None] + room_ids, 
-                                                    format_func=lambda x: "未分配" if x is None else room_options.get(x), 
-                                                    index=current_room_index)
+                        try:
+                            current_room_index = room_ids.index(current_room_id) + 1 if current_room_id in room_ids else 0
+                        except (ValueError, TypeError):
+                            current_room_index = 0
+                        
+                        selected_room_id = st.selectbox("房間號碼", options=[None] + room_ids, 
+                                                        format_func=lambda x: "未分配" if x is None else room_options.get(x), 
+                                                        index=current_room_index)
 
-                    st.markdown("##### 費用與狀態 (可手動修改)")
-                    fc1, fc2, fc3 = st.columns(3)
-                    monthly_fee = fc1.number_input("月費", value=int(worker_details.get('monthly_fee') or 0))
-                    payment_method_options = ["", "員工自付", "雇主支付"]
-                    payment_method = fc2.selectbox("付款方", payment_method_options, index=payment_method_options.index(worker_details.get('payment_method')) if worker_details.get('payment_method') in payment_method_options else 0)
-                    
-                    end_date_str = worker_details.get('accommodation_end_date')
-                    end_date_value = datetime.strptime(end_date_str, '%Y-%m-%d').date() if isinstance(end_date_str, str) and end_date_str else None
-                    accommodation_end_date = fc3.date_input("離住日期 (若留空表示在住)", value=end_date_value)
-                    
-                    worker_notes = st.text_area("個人備註", value=worker_details.get('worker_notes') or "")
-                    
-                    st.markdown("##### 特殊狀況")
-                    status_options_edit = ["", "掛宿外住(不收費)", "掛宿外住(收費)", "費用不同", "其他 (請手動輸入)"]
-                    current_status = worker_details.get('special_status', '')
-                    
-                    if current_status in status_options_edit:
-                        default_index = status_options_edit.index(current_status)
-                        pre_fill_custom = ""
-                    else:
-                        default_index = status_options_edit.index("其他 (請手動輸入)") if current_status else 0
-                        pre_fill_custom = current_status
+                        st.markdown("##### 費用與狀態 (可手動修改)")
+                        fc1, fc2, fc3 = st.columns(3)
+                        monthly_fee = fc1.number_input("月費", value=int(worker_details.get('monthly_fee') or 0))
+                        payment_method_options = ["", "員工自付", "雇主支付"]
+                        payment_method = fc2.selectbox("付款方", payment_method_options, index=payment_method_options.index(worker_details.get('payment_method')) if worker_details.get('payment_method') in payment_method_options else 0)
+                        
+                        end_date_str = worker_details.get('accommodation_end_date')
+                        end_date_value = datetime.strptime(end_date_str, '%Y-%m-%d').date() if isinstance(end_date_str, str) and end_date_str else None
+                        accommodation_end_date = fc3.date_input("離住日期 (若留空表示在住)", value=end_date_value)
+                        
+                        worker_notes = st.text_area("個人備註", value=worker_details.get('worker_notes') or "")
+                        
+                        submitted = st.form_submit_button("儲存核心資料變更")
+                        if submitted:
+                            update_data = {
+                                'room_id': selected_room_id, 'monthly_fee': monthly_fee,
+                                'payment_method': payment_method,
+                                'accommodation_end_date': str(accommodation_end_date) if accommodation_end_date else None,
+                                'worker_notes': worker_notes
+                            }
+                            success, message = worker_model.update_worker_details(selected_worker_id, update_data)
+                            if success:
+                                st.success(message)
+                                st.cache_data.clear()
+                                st.rerun()
+                            else:
+                                st.error(message)
 
-                    selected_status = st.selectbox("選擇或輸入特殊狀況", options=status_options_edit, index=default_index)
-                    custom_status_input = st.text_input("自訂狀況", value=pre_fill_custom, help="若上方選擇「其他 (請手動輸入)」，請務必在此填寫")
-
-                    submitted = st.form_submit_button("儲存變更")
-                    if submitted:
-                        final_special_status = custom_status_input if selected_status == "其他 (請手動輸入)" else selected_status
-
-                        update_data = {
-                            'room_id': selected_room_id, 'monthly_fee': monthly_fee,
-                            'payment_method': payment_method,
-                            'accommodation_end_date': str(accommodation_end_date) if accommodation_end_date else None,
-                            'worker_notes': worker_notes, 'special_status': final_special_status
-                        }
-                        success, message = worker_model.update_worker_details(selected_worker_id, update_data)
+                    st.markdown("---")
+                    st.markdown("##### 危險操作區")
+                    confirm_delete = st.checkbox("我了解並確認要刪除此移工的資料")
+                    if st.button("🗑️ 刪除此移工", type="primary", disabled=not confirm_delete):
+                        success, message = worker_model.delete_worker_by_id(selected_worker_id)
                         if success:
                             st.success(message)
                             st.cache_data.clear()
@@ -193,17 +193,35 @@ def render():
                         else:
                             st.error(message)
 
-                st.markdown("---")
-                st.markdown("##### 危險操作區")
-                confirm_delete = st.checkbox("我了解並確認要刪除此移工的資料")
-                if st.button("🗑️ 刪除此移工", type="primary", disabled=not confirm_delete):
-                    success, message = worker_model.delete_worker_by_id(selected_worker_id)
-                    if success:
-                        st.success(message)
-                        st.cache_data.clear()
-                        st.rerun()
-                    else:
-                        st.error(message)
+                with tab2:
+                    st.markdown("##### 新增一筆狀態紀錄")
+                    with st.form("new_status_form", clear_on_submit=True):
+                        s_c1, s_c2 = st.columns(2)
+                        status_options = ["在住", "掛宿外住(不收費)", "掛宿外住(收費)", "費用不同", "其他"]
+                        new_status = s_c1.selectbox("選擇新狀態", status_options)
+                        start_date = s_c2.date_input("此狀態起始日", value=date.today())
+                        status_notes = st.text_area("狀態備註 (選填)")
+
+                        status_submitted = st.form_submit_button("新增狀態")
+                        if status_submitted:
+                            status_details = {
+                                "worker_unique_id": selected_worker_id,
+                                "status": new_status,
+                                "start_date": str(start_date),
+                                "notes": status_notes
+                            }
+                            success, message = worker_model.add_new_worker_status(status_details)
+                            if success:
+                                st.success(message)
+                                st.cache_data.clear()
+                                st.rerun()
+                            else:
+                                st.error(message)
+                    
+                    st.markdown("---")
+                    st.markdown("##### 狀態歷史紀錄")
+                    history_df = worker_model.get_worker_status_history(selected_worker_id)
+                    st.dataframe(history_df, use_container_width=True, hide_index=True)
                         
     st.markdown("---")
     

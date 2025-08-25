@@ -165,20 +165,31 @@ def get_expense_forecast_data(lookback_days: int = 365):
         if conn: conn.close()
 
 def get_special_status_summary():
-    """統計所有「在住」人員中，各種不同「特殊狀況」的人數。"""
+    """
+    統計所有「在住」人員中，各種不同「特殊狀況」的人數。
+    (v1.7 - 已更新為從 WorkerStatusHistory 查詢)
+    """
     conn = database.get_db_connection()
     if not conn:
         return pd.DataFrame()
     try:
+        # 使用子查詢來找出每位在住員工的「當前」最新狀態
         query = """
+            WITH CurrentStatuses AS (
+                SELECT
+                    h.status,
+                    ROW_NUMBER() OVER(PARTITION BY h.worker_unique_id ORDER BY h.start_date DESC) as rn
+                FROM WorkerStatusHistory h
+                JOIN Workers w ON h.worker_unique_id = w.unique_id
+                WHERE (w.accommodation_end_date IS NULL OR w.accommodation_end_date = '' OR date(w.accommodation_end_date) > date('now', 'localtime'))
+                  AND h.end_date IS NULL
+            )
             SELECT
-                special_status AS "特殊狀況",
-                COUNT(unique_id) AS "人數"
-            FROM Workers
-            WHERE
-                (accommodation_end_date IS NULL OR accommodation_end_date = '' OR date(accommodation_end_date) > date('now', 'localtime'))
-                AND special_status IS NOT NULL AND special_status != ''
-            GROUP BY special_status
+                status AS "特殊狀況",
+                COUNT(*) AS "人數"
+            FROM CurrentStatuses
+            WHERE rn = 1 AND "特殊狀況" IS NOT NULL AND "特殊狀況" != ''
+            GROUP BY status
             ORDER BY "人數" DESC
         """
         return pd.read_sql_query(query, conn)
