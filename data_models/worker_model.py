@@ -160,3 +160,46 @@ def get_my_company_workers_for_selection():
         return [dict(row) for row in records]
     finally:
         if conn: conn.close()
+
+def add_manual_worker(details: dict):
+    """
+    新增一筆手動管理的移工資料。
+    【v1.6 修改】採用更嚴格的唯一性檢查。
+    """
+    conn = database.get_db_connection()
+    if not conn: return False, "DB connection failed.", None
+    try:
+        cursor = conn.cursor()
+        
+        # 關鍵：現在 unique_id 只是主鍵，不再是業務邏輯上的唯一識別
+        # 我們需要檢查業務上的唯一性
+        # 如果有護照號，則以 (雇主, 姓名, 護照號) 為唯一
+        # 如果沒有，則以 (雇主, 姓名) 為唯一 (並假設不存在同名無護照者)
+        
+        employer = details.get('employer_name')
+        name = details.get('worker_name')
+        passport = details.get('passport_number')
+
+        if passport:
+            cursor.execute("SELECT unique_id FROM Workers WHERE employer_name = ? AND worker_name = ? AND passport_number = ?", (employer, name, passport))
+        else:
+            cursor.execute("SELECT unique_id FROM Workers WHERE employer_name = ? AND worker_name = ? AND (passport_number IS NULL OR passport_number = '')", (employer, name))
+        
+        if cursor.fetchone():
+            return False, f"新增失敗：雇主 '{employer}' 底下已存在名為 '{name}' 的相同員工。", None
+
+        details['data_source'] = '手動管理(他仲)'
+        
+        columns = ', '.join(f'"{k}"' for k in details.keys())
+        placeholders = ', '.join(['?'] * len(details))
+        sql = f"INSERT INTO Workers ({columns}) VALUES ({placeholders})"
+        cursor.execute(sql, tuple(details.values()))
+        new_id = details['unique_id'] # unique_id 仍需提供
+        conn.commit()
+        return True, f"成功新增手動管理員工 (ID: {new_id})", new_id
+
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"新增員工時發生錯誤: {e}", None
+    finally:
+        if conn: conn.close()

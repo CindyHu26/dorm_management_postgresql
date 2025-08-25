@@ -5,6 +5,7 @@ from typing import Callable, List, Dict
 
 # 只依賴最基礎的 database 模組
 import database
+from data_processor import normalize_taiwan_address
 
 def sync_dormitories(conn, fresh_df: pd.DataFrame, log_callback: Callable[[str], None]):
     """
@@ -77,7 +78,7 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
 
         address_room_map = build_address_to_room_map(conn, log_callback)
         
-        log_callback("INFO: 步驟 3/4 - 為新抓取的人員資料配對房間ID...")
+        log_callback("INFO: 步驟 3/4 - 為新抓取的人員資料配對【預設】房間ID...")
         fresh_df['room_id'] = fresh_df['normalized_address'].map(address_room_map)
         
         log_callback("INFO: 步驟 4/4 - 比對與更新移工資料庫...")
@@ -105,7 +106,7 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
         # 處理在職員工
         scraped_cols = ['employer_name', 'worker_name', 'gender', 'nationality', 
                         'passport_number', 'arc_number', 'arrival_date', 
-                        'departure_date', 'work_permit_expiry_date', 'room_id']
+                        'departure_date', 'work_permit_expiry_date']
         for uid in existing_ids:
             for col in scraped_cols:
                 if col in fresh_df.columns:
