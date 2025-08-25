@@ -14,7 +14,6 @@ def render():
 
     my_dorms = get_my_dorms()
     
-    # --- 【核心修改】增加宿舍地址下拉選單 ---
     c1, c2 = st.columns(2)
     
     gender_filter = c1.selectbox(
@@ -23,10 +22,12 @@ def render():
     )
     
     dorm_options = {d['id']: d['original_address'] for d in my_dorms} if my_dorms else {}
-    dorm_id_filter = c2.selectbox(
-        "指定宿舍地址 (可選)：",
-        options=[None] + list(dorm_options.keys()),
-        format_func=lambda x: "全部宿舍" if x is None else dorm_options.get(x)
+    
+    # --- 【核心修改】將 selectbox 更換為 multiselect ---
+    selected_dorm_ids = c2.multiselect(
+        "指定宿舍地址 (可選，預設為全部)：",
+        options=list(dorm_options.keys()),
+        format_func=lambda x: dorm_options.get(x)
     )
     # --- 修改結束 ---
     
@@ -37,7 +38,7 @@ def render():
         with st.spinner("正在為您進行智能配對，請稍候..."):
             filters = {
                 "gender": gender_filter,
-                "dorm_id": dorm_id_filter # 將選擇的宿舍ID傳入
+                "dorm_ids": selected_dorm_ids # 將選擇的宿舍ID列表傳入
             }
             results_df = placement_model.find_available_rooms(filters)
 

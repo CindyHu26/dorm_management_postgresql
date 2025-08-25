@@ -3,10 +3,11 @@ import database
 
 def find_available_rooms(filters: dict):
     """
-    根據篩選條件（例如性別、宿舍），查找所有符合條件且有空床位的房間。
+    根據篩選條件（例如性別、多個宿舍），查找所有符合條件且有空床位的房間。
     """
     gender_to_place = filters.get("gender")
-    dorm_id_filter = filters.get("dorm_id") # 【本次新增】
+    # 【本次修改】將接收單一ID改為接收ID列表
+    dorm_ids_filter = filters.get("dorm_ids")
 
     if not gender_to_place:
         return pd.DataFrame()
@@ -14,7 +15,6 @@ def find_available_rooms(filters: dict):
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
-        # 1. 查詢所有符合條件的房間
         base_query = """
             SELECT
                 r.id as room_id, d.original_address, r.room_number,
@@ -25,16 +25,16 @@ def find_available_rooms(filters: dict):
         """
         params = []
         
-        # 【本次新增】如果使用者指定了宿舍，則加入到查詢條件中
-        if dorm_id_filter:
-            base_query += " AND d.id = ?"
-            params.append(dorm_id_filter)
+        # 如果使用者提供了宿舍列表，則使用 IN 子句進行篩選
+        if dorm_ids_filter:
+            placeholders = ', '.join('?' for _ in dorm_ids_filter)
+            base_query += f" AND d.id IN ({placeholders})"
+            params.extend(dorm_ids_filter)
 
         rooms_df = pd.read_sql_query(base_query, conn, params=params)
         if rooms_df.empty:
             return pd.DataFrame()
 
-        # ... (後續的在住人數計算、空床位匹配邏輯維持不變) ...
         workers_query = "SELECT room_id, employer_name, nationality, gender FROM Workers WHERE (accommodation_end_date IS NULL OR accommodation_end_date = '')"
         workers_df = pd.read_sql_query(workers_query, conn)
         
@@ -55,11 +55,11 @@ def find_available_rooms(filters: dict):
 
             if gender_to_place == '女':
                 if room['gender_policy'] in ['僅限女性', '可混住']: is_suitable = True
-                elif not current_genders: is_suitable = True # 空房皆可
+                elif not current_genders: is_suitable = True
             
             elif gender_to_place == '男':
                 if room['gender_policy'] in ['僅限男性', '可混住']: is_suitable = True
-                elif not current_genders: is_suitable = True # 空房皆可
+                elif not current_genders: is_suitable = True
 
             if is_suitable:
                 current_occupants_list = workers_df[workers_df['room_id'] == room['room_id']]
