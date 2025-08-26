@@ -144,41 +144,40 @@ def get_expense_summary(dorm_id: int, year_month: str):
 def get_resident_details_as_df(dorm_id: int, year_month: str):
     """
     為指定的單一宿舍和月份，查詢所有在住人員的詳細資料。
-    【v1.5 修改】在查詢中增加更多日期相關欄位。
     """
     if not dorm_id:
         return pd.DataFrame()
 
-    first_day_of_month = f"{year_month}-01"
-    first_day_of_next_month = (datetime.strptime(first_day_of_month, "%Y-%m-%d") + relativedelta(months=1)).strftime('%Y-%m-%d')
-    
-    query = """
-        SELECT 
-            r.room_number AS "房號",
-            w.worker_name AS "姓名",
-            w.employer_name AS "雇主",
-            w.gender AS "性別",
-            w.nationality AS "國籍",
-            w.accommodation_start_date AS "起住日",
-            w.accommodation_end_date AS "離住日",
-            w.work_permit_expiry_date AS "工作期限",
-            w.monthly_fee AS "房租",
-            w.special_status AS "特殊狀況",
-            w.worker_notes AS "備註"
-        FROM Workers w
-        JOIN Rooms r ON w.room_id = r.id
-        WHERE r.dorm_id = ?
-          -- 採用與 get_resident_summary 完全相同的日期判斷邏輯
-          AND (w.accommodation_start_date IS NULL OR date(w.accommodation_start_date) < date(?))
-          AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date = '' OR date(w.accommodation_end_date) >= date(?))
-        ORDER BY r.room_number, w.worker_name
-    """
-    
     conn = database.get_db_connection()
     if not conn:
         return pd.DataFrame()
 
     try:
+        first_day_of_month = f"{year_month}-01"
+        first_day_of_next_month = (datetime.strptime(first_day_of_month, "%Y-%m-%d") + relativedelta(months=1)).strftime('%Y-%m-%d')
+        
+        query = """
+            SELECT 
+                r.room_number AS "房號",
+                w.worker_name AS "姓名",
+                w.employer_name AS "雇主",
+                w.gender AS "性別",
+                w.nationality AS "國籍",
+                w.accommodation_start_date AS "起住日",
+                w.accommodation_end_date AS "離住日",
+                w.work_permit_expiry_date AS "工作期限",
+                w.monthly_fee AS "房租",
+                (SELECT status FROM WorkerStatusHistory 
+                 WHERE worker_unique_id = w.unique_id AND end_date IS NULL 
+                 ORDER BY start_date DESC LIMIT 1) as "特殊狀況",
+                w.worker_notes AS "備註"
+            FROM Workers w
+            JOIN Rooms r ON w.room_id = r.id
+            WHERE r.dorm_id = ?
+              AND (w.accommodation_start_date IS NULL OR date(w.accommodation_start_date) < date(?))
+              AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date = '' OR date(w.accommodation_end_date) >= date(?))
+            ORDER BY r.room_number, w.worker_name
+        """
         df = pd.read_sql_query(query, conn, params=(dorm_id, first_day_of_next_month, first_day_of_month))
         return df
     finally:
@@ -212,13 +211,15 @@ def get_dorm_analysis_data(dorm_id: int, year_month: str):
             JOIN Rooms r ON w.room_id = r.id
             LEFT JOIN (
                 SELECT worker_unique_id, status FROM WorkerStatusHistory
-                WHERE end_date IS NULL
+                WHERE end_date IS NULL OR date(end_date) >= date(?)
+                ORDER BY start_date DESC
             ) h ON w.unique_id = h.worker_unique_id
             WHERE r.dorm_id = ?
               AND (w.accommodation_start_date IS NULL OR date(w.accommodation_start_date) < ?)
               AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date = '' OR date(w.accommodation_end_date) >= ?)
+            GROUP BY w.unique_id
         """
-        workers_df = pd.read_sql_query(workers_query, conn, params=(dorm_id, first_day_of_next_month, first_day_of_month))
+        workers_df = pd.read_sql_query(workers_query, conn, params=(first_day_of_month, dorm_id, first_day_of_next_month, first_day_of_month))
 
         # --- 2. 執行計算 ---
         total_capacity = int(rooms_df['capacity'].sum())

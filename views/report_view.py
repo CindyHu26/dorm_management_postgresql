@@ -72,21 +72,18 @@ def render():
 
     st.markdown("---")
 
-    # --- 月份異動人員報表 ---
+    # --- 2. 月份異動人員報表 ---
     with st.container(border=True):
         st.subheader("月份異動人員報表")
         st.info("選擇一個月份，系統將匯出該月份所有「離住」以及「有特殊狀況」的人員清單。")
         
         today = datetime.now()
         c1, c2, c3 = st.columns([1, 1, 2])
-        
         selected_year = c1.selectbox("選擇年份", options=range(today.year - 2, today.year + 2), index=2, key="exception_report_year")
         selected_month = c2.selectbox("選擇月份", options=range(1, 13), index=today.month - 1, key="exception_report_month")
         year_month_str = f"{selected_year}-{selected_month:02d}"
 
-        # 使用 st.empty() 來創建一個容器，以便在生成報表後顯示下載按鈕
         download_placeholder = st.empty()
-
         if c3.button("🚀 產生異動報表", key="generate_exception_report"):
             with st.spinner(f"正在查詢 {year_month_str} 的異動人員資料..."):
                 report_df = report_model.get_monthly_exception_report(year_month_str)
@@ -95,14 +92,12 @@ def render():
                 st.warning("在您選擇的月份中，找不到任何離住或有特殊狀況的人員。")
             else:
                 st.success(f"報表已產生！共找到 {len(report_df)} 筆紀錄。請點擊下方按鈕下載。")
-                
-                excel_file = to_excel({"異動人員清單": {"dataframe": report_df}})
-                
+                # 【核心修正】將 DataFrame 包裹在列表中
+                excel_file = to_excel({"異動人員清單": [{"dataframe": report_df}]})
                 download_placeholder.download_button(
                     label="📥 點此下載 Excel 報表",
                     data=excel_file,
-                    file_name=f"住宿例外_{year_month_str}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    file_name=f"住宿特例_{year_month_str}.xlsx"
                 )
 
     # --- 3. 單一宿舍深度分析報表 ---
