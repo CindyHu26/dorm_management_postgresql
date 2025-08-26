@@ -79,22 +79,38 @@ def render():
             s_col1.metric("該雇主總在住員工數", f"{total_workers} 人")
             s_col2.metric("住在我司管理宿舍人數", f"{my_company_managed_count} 人")
 
-            # --- 為聚合函式增加特殊狀況的計算 ---
-            def aggregate_dorm_data(group):
-                # 篩選出有內容的特殊狀況
-                special_status = group['特殊狀況'].dropna()
-                status_counts = special_status[special_status != ''].value_counts()
-                
-                agg_data = {
-                    '總人數': group['姓名'].count(),
-                    '男性人數': (group['性別'] == '男').sum(),
-                    '女性人數': (group['性別'] == '女').sum(),
-                    '國籍分佈': ", ".join([f"{nat}:{count}" for nat, count in group['國籍'].value_counts().items()]),
-                    '特殊狀況總計': ", ".join([f"{status}:{count}人" for status, count in status_counts.items()])
-                }
-                return pd.Series(agg_data)
+            # 舊的寫法已移除，改用以下更穩定的方式來產生 dorm_summary_df
 
-            dorm_summary_df = report_df.groupby(['宿舍地址', '主要管理人']).apply(aggregate_dorm_data).reset_index()
+            # 1. 將資料按所需欄位分組
+            grouped = report_df.groupby(['宿舍地址', '主要管理人'])
+
+            # 2. 使用 .agg() 進行高效率的數值統計
+            summary_df = grouped.agg(
+                總人數=('姓名', 'count'),
+                男性人數=('性別', lambda s: (s == '男').sum()),
+                女性人數=('性別', lambda s: (s == '女').sum())
+            )
+
+            # 3. 針對需要複雜處理的文字欄位，獨立使用 .apply()
+            def create_distribution_string(series):
+                """一個通用的輔助函式，用來產生像 "越南:5, 印尼:2" 這樣的字串"""
+                series = series.dropna()
+                if series.empty:
+                    return ""
+                return ", ".join([f"{item}:{count}" for item, count in series.value_counts().items()])
+
+            def create_status_string(series):
+                """處理特殊狀況，並加上 "人" 的後綴"""
+                series = series.dropna()[series.str.strip() != '']
+                if series.empty:
+                    return ""
+                return ", ".join([f"{item}:{count}人" for item, count in series.value_counts().items()])
+
+            nationality_df = grouped['國籍'].apply(create_distribution_string).rename('國籍分佈')
+            status_df = grouped['特殊狀況'].apply(create_status_string).rename('特殊狀況總計')
+            
+            # 4. 將所有結果合併成最終的 DataFrame
+            dorm_summary_df = pd.concat([summary_df, nationality_df, status_df], axis=1).reset_index()
 
             st.dataframe(dorm_summary_df, use_container_width=True, hide_index=True)
             
