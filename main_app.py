@@ -21,8 +21,7 @@ from views import (
     equipment_view, 
     meter_view, 
     batch_import_view, 
-    report_view,
-    maintenance_view
+    report_view
 )
 
 def load_config():
@@ -57,8 +56,7 @@ PAGES = {
     },
     "資料與系統維護": {
         "批次匯入": batch_import_view,
-        "系統爬取": scraper_view,
-        "系統維護": maintenance_view
+        "系統爬取": scraper_view
     }
 }
 

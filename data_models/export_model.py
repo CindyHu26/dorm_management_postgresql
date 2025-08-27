@@ -5,11 +5,6 @@ from oauth2client.service_account import ServiceAccountCredentials
 import database
 import utils
 
-# --- 設定 ---
-GSHEET_NAME = "宿舍外部儀表板數據"
-CREDENTIALS_FILE = "credentials.json"
-# --- 設定結束 ---
-
 def _execute_query_to_dataframe(conn, query, params=None):
     """一個輔助函式，用來手動執行查詢並回傳 DataFrame。"""
     with conn.cursor() as cursor:
@@ -24,10 +19,8 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_data_for_export():
     """
-    從本地資料庫中，獲取【經過篩選】的人員清冊數據 (已為 PostgreSQL 優化)。
+    從本地資料庫中，獲取【經過篩選】的人員清冊數據。
     """
-    print("INFO: 正在從本地資料庫查詢最新人員清冊...")
-    
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
@@ -58,9 +51,8 @@ def get_data_for_export():
 
 def get_equipment_for_export():
     """
-    從本地資料庫中，獲取所有「我司管理」宿舍的設備清單 (已為 PostgreSQL 優化)。
+    從本地資料庫中，獲取所有「我司管理」宿舍的設備清單。
     """
-    print("INFO: 正在從本地資料庫查詢最新設備清單...")
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
@@ -69,7 +61,7 @@ def get_equipment_for_export():
                 d.normalized_address AS "宿舍地址",
                 e.equipment_name AS "設備名稱",
                 e.location AS "位置",
-                e.next_check_date AS "下次更換/檢查日",
+                TO_CHAR(e.next_check_date, 'YYYY-MM-DD') AS "下次更換/檢查日",
                 e.status AS "狀態",
                 e.report_path AS "文件路徑"
             FROM "DormitoryEquipment" e
@@ -84,11 +76,14 @@ def get_equipment_for_export():
     finally:
         if conn: conn.close()
 
-def update_google_sheet(data_to_upload: dict):
+def update_google_sheet(gsheet_name: str, data_to_upload: dict):
     """
     將一個包含多個 DataFrame 的字典，上傳並覆蓋到指定的 Google Sheet 的不同工作表中。
     """
-    print(f"INFO: 準備將數據上傳至 Google Sheet: '{GSHEET_NAME}'...")
+    # 【核心修改】將 CREDENTIALS_FILE 移至函式內部，並移除對 GSHEET_NAME 的依賴
+    CREDENTIALS_FILE = "credentials.json"
+
+    print(f"INFO: 準備將數據上傳至 Google Sheet: '{gsheet_name}'...")
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         
@@ -98,9 +93,10 @@ def update_google_sheet(data_to_upload: dict):
         client = gspread.authorize(creds)
 
         try:
-            spreadsheet = client.open(GSHEET_NAME)
+            spreadsheet = client.open(gsheet_name)
         except gspread.exceptions.SpreadsheetNotFound:
-            spreadsheet = client.create(GSHEET_NAME)
+            spreadsheet = client.create(gsheet_name)
+            # 請確保您的 service account 有權限分享給這個 email
             spreadsheet.share('your_email@gmail.com', perm_type='user', role='writer')
 
         for sheet_name, df in data_to_upload.items():
@@ -113,7 +109,8 @@ def update_google_sheet(data_to_upload: dict):
             df_to_upload = df.fillna('')
             
             data_list = [df_to_upload.columns.values.tolist()] + df_to_upload.values.tolist()
-            worksheet.update(data_list, value_input_option='RAW')
+            # 使用 USER_ENTERED 可以讓 Google Sheet 自動解析日期等格式
+            worksheet.update(data_list, value_input_option='USER_ENTERED')
             
             print(f"  > 工作表 '{sheet_name}' 已成功更新。")
         

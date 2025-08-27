@@ -2,39 +2,25 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 from datetime import datetime
-from data_models import report_model, dormitory_model, worker_model, export_model
+from data_models import report_model, dormitory_model, export_model
 
 def to_excel(sheet_data: dict):
     """
     將一個包含多個 DataFrame 的字典寫入一個 Excel 檔案。
-    支援在同一個工作表 (sheet) 中，從不同起始行 (start_row) 寫入多個表格。
     """
     output = BytesIO()
-    
-    # 步驟一：檢查是否有任何實際的資料需要寫入
-    has_data_to_write = False
-    for sheet_name, tables in sheet_data.items():
-        for table_info in tables:
-            df = table_info.get('dataframe')
-            if df is not None and not df.empty:
-                has_data_to_write = True
-                break
-        if has_data_to_write:
-            break
-
-    # 步驟二：只有在確定有資料時，才建立 ExcelWriter 並寫入
+    has_data_to_write = any(
+        table_info.get('dataframe') is not None and not table_info.get('dataframe').empty
+        for tables in sheet_data.values() for table_info in tables
+    )
     if has_data_to_write:
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             for sheet_name, tables in sheet_data.items():
                 for table_info in tables:
                     df = table_info.get('dataframe')
                     if df is not None and not df.empty:
-                        start_row = table_info.get('start_row', 0)
-                        df.to_excel(writer, index=False, sheet_name=sheet_name, startrow=start_row)
-    
-    # 步驟三：回傳處理後的數據
-    processed_data = output.getvalue()
-    return processed_data
+                        df.to_excel(writer, index=False, sheet_name=sheet_name, startrow=table_info.get('start_row', 0))
+    return output.getvalue()
 
 def render():
     """渲染「匯出報表」頁面的所有 Streamlit UI 元件。"""
@@ -43,33 +29,31 @@ def render():
     # --- 1. 上傳至雲端儀表板 ---
     with st.container(border=True):
         st.subheader("更新至雲端儀表板 (Google Sheet)")
-        st.info("點擊下方按鈕，系統將會查詢最新的「人員清冊」與「設備清單」，並將其上傳至 Google Sheet。")
+        
+        # 【核心修改】將 Google Sheet 名稱定義在前端
+        gsheet_name_to_update = "宿舍外部儀表板數據"
+        st.info(f"點擊下方按鈕，系統將會查詢最新的「人員清冊」與「設備清單」，並將其上傳至 Google Sheet: **{gsheet_name_to_update}**。")
         
         if st.button("🚀 開始上傳", type="primary"):
             with st.spinner("正在查詢並上傳最新數據至雲端..."):
-                # 1. 獲取人員數據
                 worker_data = export_model.get_data_for_export()
-                # 2. 獲取設備數據
                 equipment_data = export_model.get_equipment_for_export()
                 
-                # 3. 準備要上傳的資料包
                 data_package = {}
-                if worker_data is not None and not worker_data.empty:
+                if not worker_data.empty:
                     data_package["人員清冊"] = worker_data
-                if equipment_data is not None and not equipment_data.empty:
+                if not equipment_data.empty:
                     data_package["設備清冊"] = equipment_data
 
                 if not data_package:
                     st.warning("目前沒有任何人員或設備資料可供上傳。")
                 else:
-                    # 4. 執行上傳
-                    success, message = export_model.update_google_sheet(data_package)
+                    # 【核心修改】將 gsheet_name_to_update 作為參數傳遞
+                    success, message = export_model.update_google_sheet(gsheet_name_to_update, data_package)
                     if success:
                         st.success(message)
                     else:
                         st.error(message)
-    st.markdown("---")
-
     st.markdown("---")
 
     # --- 2. 月份異動人員報表 ---
@@ -92,7 +76,6 @@ def render():
                 st.warning("在您選擇的月份中，找不到任何離住或有特殊狀況的人員。")
             else:
                 st.success(f"報表已產生！共找到 {len(report_df)} 筆紀錄。請點擊下方按鈕下載。")
-                # 【核心修正】將 DataFrame 包裹在列表中
                 excel_file = to_excel({"異動人員清單": [{"dataframe": report_df}]})
                 download_placeholder.download_button(
                     label="📥 點此下載 Excel 報表",
@@ -128,21 +111,13 @@ def render():
                             summary_df = pd.DataFrame({"統計項目": summary_items, "數值": summary_values})
                             details_df = report_df.rename(columns={'room_number': '房號', 'worker_name': '姓名', 'employer_name': '雇主', 'gender': '性別', 'nationality': '國籍', 'monthly_fee': '房租', 'special_status': '特殊狀況', 'worker_notes': '備註'})
 
-                            # --- 【核心修改】將兩個表格放在同一個工作表的列表中 ---
                             excel_file_data = {
                                 "宿舍報表": [
-                                    {
-                                        "dataframe": summary_df,
-                                        "start_row": 0
-                                    },
-                                    {
-                                        "dataframe": details_df,
-                                        "start_row": len(summary_df) + 2
-                                    }
+                                    {"dataframe": summary_df, "start_row": 0},
+                                    {"dataframe": details_df, "start_row": len(summary_df) + 2}
                                 ]
                             }
                             excel_file = to_excel(excel_file_data)
-                            # --- 修改結束 ---
                             
                             dorm_name_for_file = dorm_options.get(selected_dorm_id, "export").replace(" ", "_").replace("/", "_")
                             st.download_button(
@@ -150,23 +125,3 @@ def render():
                                 data=excel_file,
                                 file_name=f"宿舍報表_{dorm_name_for_file}.xlsx"
                             )
-    st.markdown("---")
-
-    # # --- 4. 通用總覽報表 ---
-    # with st.container(border=True):
-    #     st.subheader("通用總覽報表")
-        
-    #     st.markdown("##### 宿舍總覽報表")
-    #     dorms_df = dormitory_model.get_all_dorms_for_view()
-    #     if not dorms_df.empty:
-    #         excel_data_dorms = to_excel({"宿舍總覽": [{"dataframe": dorms_df}]})
-    #         st.download_button("📥 下載完整宿舍總覽 (Excel)", data=excel_data_dorms, file_name="dormitory_summary_full.xlsx")
-        
-    #     st.markdown("---")
-
-    #     st.markdown("##### 移工住宿總覽報表")
-    #     report_status_filter = st.selectbox("選擇在住狀態", ["全部", "在住", "已離住"], key="report_status_filter")
-    #     workers_df_report = worker_model.get_workers_for_view({'status': report_status_filter})
-    #     if not workers_df_report.empty:
-    #         excel_data_workers = to_excel({"移工住宿總覽": [{"dataframe": workers_df_report}]})
-    #         st.download_button("📥 下載移工住宿總覽 (Excel)", data=excel_data_workers, file_name=f"worker_accommodation_summary_{report_status_filter}.xlsx")

@@ -41,12 +41,6 @@ def add_building_permit_record(permit_details: dict, expense_details: dict):
             cursor.execute(expense_sql, tuple(expense_details.values()))
             new_expense_id = cursor.fetchone()['id']
 
-            # 步驟 3 (可選): 將 annual_expense_id 回寫到 ComplianceRecords 中
-            cursor.execute(
-                'UPDATE "ComplianceRecords" SET annual_expense_id = %s WHERE id = %s',
-                (new_expense_id, new_compliance_id)
-            )
-
         conn.commit()
         return True, f"成功新增建物申報紀錄 (ID: {new_compliance_id})", new_compliance_id
     except Exception as e:
