@@ -135,12 +135,32 @@ def create_all_tables_and_indexes():
             );
             """
 
+            # 1. 建立全新的、可共用的 ComplianceRecords 表格
+            TABLES['ComplianceRecords'] = """
+            CREATE TABLE IF NOT EXISTS "ComplianceRecords" (
+                "id" SERIAL PRIMARY KEY,
+                "dorm_id" INTEGER NOT NULL,
+                "record_type" VARCHAR(50) NOT NULL, -- 用來區分是 '建物申報', '保險', '消防安檢' 等
+                "details" JSONB,                     -- 用來儲存所有彈性細節的 JSON 袋子
+                "created_at" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE
+            );
+            """
+
+            # 2. 修改 AnnualExpenses 表格，讓它可以關聯到 ComplianceRecords
             TABLES['AnnualExpenses'] = """
             CREATE TABLE IF NOT EXISTS "AnnualExpenses" (
-                "id" SERIAL PRIMARY KEY, "dorm_id" INTEGER NOT NULL, "expense_item" VARCHAR(100) NOT NULL,
-                "payment_date" DATE, "total_amount" INTEGER NOT NULL,
-                "amortization_start_month" VARCHAR(7), "amortization_end_month" VARCHAR(7), "notes" TEXT,
-                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE
+                "id" SERIAL PRIMARY KEY,
+                "dorm_id" INTEGER NOT NULL,
+                "compliance_record_id" INTEGER UNIQUE, -- 可選的關聯欄位，UNIQUE 確保一筆紀錄只對應一筆財務
+                "expense_item" VARCHAR(100) NOT NULL,
+                "payment_date" DATE,
+                "total_amount" INTEGER NOT NULL,
+                "amortization_start_month" VARCHAR(7),
+                "amortization_end_month" VARCHAR(7),
+                "notes" TEXT,
+                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE,
+                FOREIGN KEY ("compliance_record_id") REFERENCES "ComplianceRecords" ("id") ON DELETE SET NULL
             );
             """
             

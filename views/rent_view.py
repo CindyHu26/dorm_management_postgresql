@@ -6,6 +6,15 @@ def render():
     """渲染「房租管理」頁面"""
     st.header("我司管理宿舍 - 房租總覽與批次更新")
 
+    # 【核心修改】將函式定義移到 render 函式的頂部
+    @st.cache_data
+    def get_my_dorms():
+        return dormitory_model.get_my_company_dorms_for_selection()
+
+    @st.cache_data
+    def get_all_employers():
+        return employer_dashboard_model.get_all_employers()
+
     # --- 1. 篩選條件選擇 ---
     st.subheader("步驟一：選擇篩選方式與目標")
     
@@ -15,17 +24,12 @@ def render():
         horizontal=True
     )
 
-    # 準備篩選器和要傳遞到後端的資料
     filters = {
         "filter_by": "",
         "values": []
     }
     
     if filter_type == "依宿舍地址":
-        @st.cache_data
-        def get_my_dorms():
-            return dormitory_model.get_my_company_dorms_for_selection()
-
         my_dorms = get_my_dorms()
         if not my_dorms:
             st.warning("目前資料庫中沒有主要管理人為「我司」的宿舍。")
@@ -43,11 +47,6 @@ def render():
             filters["values"] = selected_dorm_ids
 
     elif filter_type == "依雇主":
-        @st.cache_data
-        def get_all_employers():
-            # 我們可以複用 employer_dashboard_model 中的函式
-            return employer_dashboard_model.get_all_employers()
-
         my_employers = get_all_employers()
         if not my_employers:
             st.warning("目前資料庫中沒有任何雇主資料可供篩選。")
@@ -61,13 +60,13 @@ def render():
             filters["filter_by"] = "employer"
             filters["values"] = selected_employers
 
-    # 如果沒有選擇任何篩選目標，則不繼續執行
     if not filters["values"]:
         st.info("請從上方選擇至少一個篩選目標以載入人員資料。")
         return
 
     # --- 2. 人員房租總覽 ---
     st.subheader("步驟二：檢視人員房租")
+    # 傳遞 filters 字典給後端
     workers_df = finance_model.get_workers_for_rent_management(filters)
 
     if workers_df.empty:
@@ -96,7 +95,6 @@ def render():
                 st.error("新舊房租金額相同，無需更新。")
             else:
                 with st.spinner("正在更新中..."):
-                    # 將新的 filters 物件傳遞給後端
                     success, message = finance_model.batch_update_rent(
                         filters, 
                         effective_old_rent, 
@@ -105,7 +103,7 @@ def render():
                     )
                     if success:
                         st.success(message)
-                        # 清除快取以確保下次能讀到最新資料
+                        # 因為函式已經被移到外部，所以現在可以安全地呼叫 .clear()
                         get_my_dorms.clear()
                         get_all_employers.clear()
                         st.cache_data.clear()

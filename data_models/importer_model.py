@@ -1,5 +1,19 @@
 import pandas as pd
 import database
+# 匯入地址正規化函式
+from data_processor import normalize_taiwan_address
+
+def _execute_query_to_dataframe(conn, query, params=None):
+    """一個輔助函式，用來手動執行查詢並回傳 DataFrame。"""
+    with conn.cursor() as cursor:
+        cursor.execute(query, params)
+        records = cursor.fetchall()
+        if not records:
+            columns = [desc[0] for desc in cursor.description] if cursor.description else []
+            return pd.DataFrame([], columns=columns)
+        
+        columns = [desc[0] for desc in cursor.description]
+        return pd.DataFrame(records, columns=columns)
 
 def batch_import_expenses(df: pd.DataFrame):
     """
@@ -9,33 +23,42 @@ def batch_import_expenses(df: pd.DataFrame):
     failed_records = []
     conn = database.get_db_connection()
     if not conn:
-        # 建立一個包含錯誤原因的 DataFrame 回傳
         error_df = df.copy()
         error_df['錯誤原因'] = "無法連接到資料庫"
         return 0, error_df
         
     try:
         with conn.cursor() as cursor:
-            # 一次性讀取所有需要的宿舍和電錶資料，提高效率
-            dorms_df = pd.read_sql_query('SELECT id, original_address FROM "Dormitories"', conn)
-            dorms_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
+            # 【核心修改】讀取更多地址欄位，並建立多個 mapping
+            dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, original_address, normalized_address FROM "Dormitories"')
+            original_addr_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
+            normalized_addr_map = {d['normalized_address']: d['id'] for _, d in dorms_df.iterrows()}
             
-            meters_df = pd.read_sql_query('SELECT id, dorm_id, meter_number FROM "Meters"', conn)
+            meters_df = _execute_query_to_dataframe(conn, 'SELECT id, dorm_id, meter_number FROM "Meters"')
             meters_map = {(row['dorm_id'], row['meter_number']): row['id'] for _, row in meters_df.iterrows()}
 
             for index, row in df.iterrows():
                 try:
                     original_address = row.get('宿舍地址')
                     if not original_address or pd.isna(original_address):
-                        row['錯誤原因'] = "宿舍地址為空"
-                        failed_records.append(row)
-                        continue
+                        raise ValueError("宿舍地址為空")
 
-                    dorm_id = dorms_map.get(str(original_address).strip())
+                    # 【核心修改】智慧型地址比對邏輯
+                    dorm_id = None
+                    addr_stripped = str(original_address).strip()
+                    # 階段一：精確比對
+                    if addr_stripped in original_addr_map:
+                        dorm_id = original_addr_map[addr_stripped]
+                    elif addr_stripped in normalized_addr_map:
+                        dorm_id = normalized_addr_map[addr_stripped]
+                    else:
+                        # 階段二：模糊比對 (正規化後比對)
+                        normalized_input = normalize_taiwan_address(addr_stripped)['full']
+                        if normalized_input in normalized_addr_map:
+                            dorm_id = normalized_addr_map[normalized_input]
+
                     if not dorm_id:
-                        row['錯誤原因'] = f"在資料庫中找不到對應的宿舍地址: {original_address}"
-                        failed_records.append(row)
-                        continue
+                        raise ValueError(f"在資料庫中找不到對應的宿舍地址: {original_address}")
 
                     meter_id = None
                     meter_number = row.get('對應錶號')
@@ -45,9 +68,7 @@ def batch_import_expenses(df: pd.DataFrame):
                         if meter_key in meters_map:
                             meter_id = meters_map[meter_key]
                         else:
-                            row['錯誤原因'] = f"在宿舍 '{original_address}' 中找不到錶號為 '{meter_number}' 的紀錄"
-                            failed_records.append(row)
-                            continue
+                            raise ValueError(f"在宿舍 '{original_address}' 中找不到錶號為 '{meter_number}' 的紀錄")
                     
                     details = {
                         "dorm_id": dorm_id, "meter_id": meter_id,
@@ -59,7 +80,6 @@ def batch_import_expenses(df: pd.DataFrame):
                         "notes": str(row.get('備註', ''))
                     }
                     
-                    # Upsert 邏輯 (Update or Insert)
                     query = 'SELECT id FROM "UtilityBills" WHERE dorm_id = %s AND bill_type = %s AND bill_start_date = %s AND amount = %s'
                     params = [details['dorm_id'], details['bill_type'], details['bill_start_date'], details['amount']]
                     
@@ -73,13 +93,11 @@ def batch_import_expenses(df: pd.DataFrame):
                     existing = cursor.fetchone()
 
                     if existing:
-                        # 更新
                         fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
                         values = list(details.values()) + [existing['id']]
                         update_sql = f'UPDATE "UtilityBills" SET {fields} WHERE id = %s'
                         cursor.execute(update_sql, tuple(values))
                     else:
-                        # 新增
                         columns = ', '.join(f'"{k}"' for k in details.keys())
                         placeholders = ', '.join(['%s'] * len(details))
                         insert_sql = f'INSERT INTO "UtilityBills" ({columns}) VALUES ({placeholders})'
@@ -114,21 +132,37 @@ def batch_import_annual_expenses(df: pd.DataFrame):
 
     try:
         with conn.cursor() as cursor:
-            dorms_df = pd.read_sql_query('SELECT id, original_address FROM "Dormitories"', conn)
-            dorms_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
+            # 【核心修改】讀取更多地址欄位，並建立多個 mapping
+            dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, original_address, normalized_address FROM "Dormitories"')
+            original_addr_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
+            normalized_addr_map = {d['normalized_address']: d['id'] for _, d in dorms_df.iterrows()}
             
             for index, row in df.iterrows():
                 try:
                     original_address = row.get('宿舍地址')
+                    if not original_address or pd.isna(original_address):
+                        raise ValueError("宿舍地址為空")
+                        
+                    # 【核心修改】智慧型地址比對邏輯
+                    dorm_id = None
+                    addr_stripped = str(original_address).strip()
+                    if addr_stripped in original_addr_map:
+                        dorm_id = original_addr_map[addr_stripped]
+                    elif addr_stripped in normalized_addr_map:
+                        dorm_id = normalized_addr_map[addr_stripped]
+                    else:
+                        normalized_input = normalize_taiwan_address(addr_stripped)['full']
+                        if normalized_input in normalized_addr_map:
+                            dorm_id = normalized_addr_map[normalized_input]
+
+                    if not dorm_id:
+                        raise ValueError(f"在資料庫中找不到對應的宿舍地址: {original_address}")
+                        
                     expense_item = row.get('費用項目')
                     total_amount = pd.to_numeric(row.get('總金額'), errors='coerce')
 
-                    if not all([original_address, expense_item, pd.notna(total_amount)]):
-                        raise ValueError("必填欄位(地址,項目,總金額)有缺漏或格式錯誤")
-
-                    dorm_id = dorms_map.get(str(original_address).strip())
-                    if not dorm_id:
-                        raise ValueError(f"在資料庫中找不到對應的宿舍地址: {original_address}")
+                    if not all([expense_item, pd.notna(total_amount)]):
+                        raise ValueError("必填欄位(費用項目,總金額)有缺漏或格式錯誤")
                         
                     details = {
                         "dorm_id": dorm_id, "expense_item": str(expense_item).strip(),

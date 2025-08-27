@@ -14,21 +14,18 @@ def to_excel(df):
 def render():
     """渲染「批次匯入」頁面"""
     st.header("批次資料匯入中心")
+    st.markdown("---")
 
-    # --- 1. 變動費用匯入區塊 ---
+    # --- 區塊一：變動費用匯入 ---
     with st.container(border=True):
-        st.subheader("變動費用批次匯入 (水電、網路等)")
-        st.info("請下載新版範本，依照帳單上的【起訖日】和【總金額】填寫。若為多錶宿舍，請務必填寫【對應錶號】。")
+        st.subheader("💧 變動費用匯入 (水電、網路等)")
+        st.info("用於匯入水電、網路等每月變動的費用帳單。")
         
-        # 【本次修改】提供全新的範本，增加「對應錶號」
         expense_template_df = pd.DataFrame({
             "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號"],
-            "費用類型": ["電費"],
-            "帳單金額": [6500],
-            "帳單起始日": ["2025-06-15"],
-            "帳單結束日": ["2025-08-14"],
-            "對應錶號": ["07-12-3333-44-5"],
-            "是否已請款": ["N"],
+            "費用類型": ["電費"], "帳單金額": [6500],
+            "帳單起始日": ["2025-06-15"], "帳單結束日": ["2025-08-14"],
+            "對應錶號": ["07-12-3333-44-5"], "是否已請款": ["N"],
             "備註": ["1F公共電費"]
         })
         st.download_button(
@@ -54,45 +51,92 @@ def render():
                         st.download_button(
                             label="📥 下載失敗紀錄報告",
                             data=to_excel(failed_df),
-                            file_name="import_failed_report.xlsx"
+                            file_name="import_failed_report.xlsx",
+                            key="failed_monthly_download"
                         )
             except Exception as e:
                 st.error(f"處理檔案時發生錯誤：{e}")
 
     st.markdown("---")
 
-    # --- 2. 年度費用匯入區塊 ---
+    # --- 區塊二：一般年度費用匯入 ---
     with st.container(border=True):
-        st.subheader("年度/長期費用批次匯入 (保險、年費等)")
+        st.subheader("📋 一般年度費用匯入")
+        st.info("用於匯入維修、消防安檢、傢俱等一次性支付，但效益橫跨多個月份的費用。")
         
         annual_template_df = pd.DataFrame({
             "宿舍地址": ["範例：彰化縣鹿港鎮成功路123號"],
-            "費用項目": ["114年度建築火險"],
-            "支付日期": ["2025-08-15"],
-            "總金額": [12000],
-            "攤提起始月": ["2025-09"],
-            "攤提結束月": ["2026-08"],
-            "備註": ["富邦產險 A-123"]
+            "費用項目": ["114年度消防安檢"],
+            "支付日期": ["2025-08-15"], "總金額": [12000],
+            "攤提起始月": ["2025-09"], "攤提結束月": ["2026-08"],
+            "備註": ["ABC消防公司"]
         })
         st.download_button(
-            label="📥 下載年度費用匯入範本",
+            label="📥 下載一般年度費用匯入範本",
             data=to_excel(annual_template_df),
             file_name="annual_expense_import_template.xlsx"
         )
         
-        uploaded_annual_file = st.file_uploader("上傳【年度費用】Excel 檔案", type=["xlsx"], key="annual_uploader")
+        uploaded_annual_file = st.file_uploader("上傳【一般年度費用】Excel 檔案", type=["xlsx"], key="annual_uploader")
 
         if uploaded_annual_file:
             try:
                 df_annual = pd.read_excel(uploaded_annual_file)
                 st.markdown("##### 檔案內容預覽：")
                 st.dataframe(df_annual.head())
-                if st.button("🚀 開始匯入年度費用", type="primary", key="annual_import_btn"):
+                if st.button("🚀 開始匯入一般年度費用", type="primary", key="annual_import_btn"):
                     with st.spinner("正在處理與匯入資料..."):
                         success, failed_df = importer_model.batch_import_annual_expenses(df_annual)
                     st.success(f"匯入完成！成功 {success} 筆。")
                     if not failed_df.empty:
                         st.error(f"有 {len(failed_df)} 筆資料匯入失敗：")
                         st.dataframe(failed_df)
+            except Exception as e:
+                st.error(f"處理檔案時發生錯誤：{e}")
+
+    st.markdown("---")
+
+    # --- 區塊三：建物申報匯入 ---
+    with st.container(border=True):
+        st.subheader("🏗️ 建物申報匯入")
+        st.info("請下載建物申報專用範本，依照欄位填寫後上傳。")
+        
+        permit_template_df = pd.DataFrame({
+            "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號"],
+            "支付日期": ["2025-08-15"], "金額（未稅）": [10000], "總金額（含稅）": [10500], "請款日": ["2025-08-20"],
+            "攤提起始月": ["2025-09-01"], "攤提結束月": ["2026-08-31"],
+            "建築師": ["王大明建築師事務所"], "政府是否發文": [True],
+            "下次申報起日期": ["2026-07-01"], "下次申報迄日期": ["2026-08-31"],
+            "申報項目": ["公安申報"], "申報面積（合法）": ["150坪"], "申報面積（合法加違規）": ["165坪"],
+            "使用執照有無": [True], "權狀有無": [True], "房東證件有無": [False],
+            "現場是否改善": [True], "保險有無": [True],
+            "申報文件送出日期": ["2025-08-01"], "掛號憑證日期": ["2025-08-02"], "收到憑證日期": ["2025-08-18"],
+            "此次申報核准起日期": ["2025-09-01"], "此次申報核准迄日期": ["2026-08-31"],
+        })
+        st.download_button(
+            label="📥 下載建物申報匯入範本",
+            data=to_excel(permit_template_df),
+            file_name="building_permit_import_template.xlsx"
+        )
+
+        uploaded_permit_file = st.file_uploader("上傳【建物申報】Excel 檔案", type=["xlsx"], key="permit_uploader")
+
+        if uploaded_permit_file:
+            try:
+                df_permit = pd.read_excel(uploaded_permit_file)
+                st.markdown("##### 檔案內容預覽：")
+                st.dataframe(df_permit.head())
+                if st.button("🚀 開始匯入建物申報", type="primary", key="permit_import_btn"):
+                    with st.spinner("正在處理與匯入建物申報資料..."):
+                        success, failed_df = importer_model.batch_import_building_permits(df_permit)
+                    st.success(f"匯入完成！成功 {success} 筆。")
+                    if not failed_df.empty:
+                        st.error(f"有 {len(failed_df)} 筆資料匯入失敗：")
+                        st.dataframe(failed_df)
+                        st.download_button(
+                            label="📥 下載失敗紀錄報告",
+                            data=to_excel(failed_df),
+                            file_name="permit_import_failed_report.xlsx"
+                        )
             except Exception as e:
                 st.error(f"處理檔案時發生錯誤：{e}")

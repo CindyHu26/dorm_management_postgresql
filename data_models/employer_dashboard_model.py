@@ -21,7 +21,6 @@ def get_all_employers():
     if not conn: return []
     try:
         query = 'SELECT DISTINCT employer_name FROM "Workers" ORDER BY employer_name'
-        # 對於簡單的列表回傳，手動處理更穩定
         with conn.cursor() as cursor:
             cursor.execute(query)
             records = cursor.fetchall()
@@ -105,11 +104,19 @@ def get_employer_financial_summary(employer_name: str, year_month: str):
                     COALESCE(pu.total_utilities, 0) AS utilities_expense,
                     COALESCE(ae.total_amortized, 0) AS amortized_expense
                 FROM "Dormitories" d
+                -- 【核心修改】使用 ROW_NUMBER() 視窗函式來確保抓到每個宿舍最新的合約
                 LEFT JOIN (
-                    SELECT dorm_id, monthly_rent FROM "Leases"
-                    WHERE lease_start_date < (SELECT first_day_of_next_month FROM DateParams)
-                      AND (lease_end_date IS NULL OR lease_end_date >= (SELECT first_day_of_month FROM DateParams))
-                    ORDER BY lease_start_date DESC LIMIT 1
+                    SELECT dorm_id, monthly_rent
+                    FROM (
+                        SELECT
+                            dorm_id,
+                            monthly_rent,
+                            ROW_NUMBER() OVER(PARTITION BY dorm_id ORDER BY lease_start_date DESC) as rn
+                        FROM "Leases"
+                        WHERE lease_start_date < (SELECT first_day_of_next_month FROM DateParams)
+                          AND (lease_end_date IS NULL OR lease_end_date >= (SELECT first_day_of_month FROM DateParams))
+                    ) as sub
+                    WHERE rn = 1
                 ) l ON d.id = l.dorm_id
                 LEFT JOIN (
                     SELECT b.dorm_id, SUM(b.amount::decimal * EXTRACT(DAY FROM (LEAST(b.bill_end_date, (SELECT first_day_of_next_month FROM DateParams) - '1 day'::interval) - GREATEST(b.bill_start_date, (SELECT first_day_of_month FROM DateParams)) + '1 day'::interval)) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)) as total_utilities

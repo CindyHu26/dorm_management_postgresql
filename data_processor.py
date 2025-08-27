@@ -66,7 +66,7 @@ def normalize_taiwan_address(address: str) -> Dict[str, str]:
 
     addr = re.sub(r'([一二三四五六七八九十百]+)(?=段|巷|弄|號|樓|街)', lambda m: chinese_to_arabic(m.group(1)), addr)
 
-    county_map = {"鹿港鎮": "彰化縣鹿港鎮", "彰化市": "彰化縣彰化市", "嘉義市": "嘉義縣嘉義市", "新竹市": "新竹縣新竹市"} # 簡化
+    county_map = {"鹿港鎮": "彰化縣鹿港鎮", "彰化市": "彰化縣彰化市", "伸港鄉": "彰化縣伸港鄉", "嘉義市": "嘉義縣嘉義市", "新竹市": "新竹縣新竹市"} # 簡化
     for city_short, city_full in county_map.items():
         if addr.startswith(city_short):
             addr = addr.replace(city_short, city_full, 1)

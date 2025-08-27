@@ -1,4 +1,5 @@
 import pandas as pd
+from datetime import datetime
 import database
 
 def _execute_query_to_dataframe(conn, query, params=None):
@@ -11,6 +12,107 @@ def _execute_query_to_dataframe(conn, query, params=None):
             return pd.DataFrame([], columns=columns)
         columns = [desc[0] for desc in cursor.description]
         return pd.DataFrame(records, columns=columns)
+
+def add_building_permit_record(permit_details: dict, expense_details: dict):
+    """
+    新增一筆完整的建物申報紀錄。
+    這是一個交易：同時寫入 ComplianceRecords 和 AnnualExpenses。
+    """
+    conn = database.get_db_connection()
+    if not conn: return False, "DB connection failed.", None
+    
+    try:
+        with conn.cursor() as cursor:
+            # 步驟 1: 新增合規紀錄 (Compliance Record)
+            compliance_sql = """
+                INSERT INTO "ComplianceRecords" (dorm_id, record_type, details)
+                VALUES (%s, %s, %s) RETURNING id;
+            """
+            # 將詳細資料轉為 JSON 字串
+            details_json = json.dumps(permit_details['details'], ensure_ascii=False)
+            cursor.execute(compliance_sql, (permit_details['dorm_id'], '建物申報', details_json))
+            new_compliance_id = cursor.fetchone()['id']
+
+            # 步驟 2: 新增關聯的財務攤銷紀錄 (Annual Expense)
+            expense_details['compliance_record_id'] = new_compliance_id
+            expense_columns = ', '.join(f'"{k}"' for k in expense_details.keys())
+            expense_placeholders = ', '.join(['%s'] * len(expense_details))
+            expense_sql = f'INSERT INTO "AnnualExpenses" ({expense_columns}) VALUES ({expense_placeholders}) RETURNING id'
+            cursor.execute(expense_sql, tuple(expense_details.values()))
+            new_expense_id = cursor.fetchone()['id']
+
+            # 步驟 3 (可選): 將 annual_expense_id 回寫到 ComplianceRecords 中
+            cursor.execute(
+                'UPDATE "ComplianceRecords" SET annual_expense_id = %s WHERE id = %s',
+                (new_expense_id, new_compliance_id)
+            )
+
+        conn.commit()
+        return True, f"成功新增建物申報紀錄 (ID: {new_compliance_id})", new_compliance_id
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"新增建物申報時發生錯誤: {e}", None
+    finally:
+        if conn: conn.close()
+
+def get_all_annual_expenses_for_dorm(dorm_id: int):
+    """查詢指定宿舍的所有年度/長期攤銷費用，包含一般費用和與合規紀錄關聯的費用。"""
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        query = """
+            SELECT 
+                ae.id, 
+                ae.expense_item AS "費用項目", 
+                ae.payment_date AS "支付日期",
+                ae.total_amount AS "總金額", 
+                ae.amortization_start_month AS "攤提起始月",
+                ae.amortization_end_month AS "攤提結束月", 
+                -- 使用 CASE WHEN 來決定備註內容
+                CASE 
+                    WHEN cr.record_type IS NOT NULL THEN '詳見 ' || cr.record_type || ' 紀錄 (ID:' || cr.id || ')'
+                    ELSE ae.notes 
+                END AS "備註",
+                -- 新增一個欄位來標示類型，方便前端操作
+                CASE
+                    WHEN cr.record_type IS NOT NULL THEN cr.record_type
+                    ELSE '一般費用'
+                END AS "費用類型"
+            FROM "AnnualExpenses" ae
+            LEFT JOIN "ComplianceRecords" cr ON ae.compliance_record_id = cr.id
+            WHERE ae.dorm_id = %s
+            ORDER BY ae.payment_date DESC
+        """
+        return _execute_query_to_dataframe(conn, query, (dorm_id,))
+    finally:
+        if conn: conn.close()
+
+def get_compliance_records_for_dorm(dorm_id: int, record_type: str):
+    """查詢指定宿舍下特定類型的所有合規紀錄。"""
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        query = """
+            SELECT
+                cr.id,
+                ae.payment_date AS "支付日期",
+                ae.total_amount AS "總金額",
+                ae.amortization_start_month AS "攤提起始月",
+                cr.details  -- 直接回傳 JSONB 欄位
+            FROM "ComplianceRecords" cr
+            LEFT JOIN "AnnualExpenses" ae ON cr.id = ae.compliance_record_id
+            WHERE cr.dorm_id = %s AND cr.record_type = %s
+            ORDER BY ae.payment_date DESC
+        """
+        df = _execute_query_to_dataframe(conn, query, (dorm_id, record_type))
+        
+        # 將 JSONB 欄位解析並展開為多個欄位
+        if not df.empty and 'details' in df.columns:
+            details_df = pd.json_normalize(df['details']).fillna('')
+            df = pd.concat([df.drop(columns=['details']), details_df], axis=1)
+        return df
+    finally:
+        if conn: conn.close()
 
 # --- 房租管理 ---
 def get_workers_for_rent_management(filters: dict):
