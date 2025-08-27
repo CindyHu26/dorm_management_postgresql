@@ -1,16 +1,12 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 from data_models import finance_model, dormitory_model, meter_model
 
 def render():
     """渲染「費用管理」頁面 (帳單式)"""
     st.header("我司管理宿舍 - 費用帳單管理")
     st.info("用於登錄每一筆獨立的水電、網路等費用帳單，系統將根據帳單起訖日自動計算每月攤分費用。")
-
-    # --- Session State 初始化 ---
-    if 'selected_bill_id' not in st.session_state:
-        st.session_state.selected_bill_id = None
 
     # --- 1. 宿舍選擇 ---
     my_dorms = dormitory_model.get_my_company_dorms_for_selection()
@@ -41,8 +37,8 @@ def render():
 
             amount = c2.number_input("帳單總金額", min_value=0, step=100)
             
-            meters = meter_model.get_meters_for_dorm_as_df(selected_dorm_id)
-            meter_options = {m['id']: f"{m['類型']} ({m['錶號']})" for _, m in meters.iterrows()}
+            meters_for_selection = meter_model.get_meters_for_selection(selected_dorm_id)
+            meter_options = {m['id']: m['display_name'] for m in meters_for_selection}
             meter_id = c3.selectbox("對應電水錶 (可選)", options=[None] + list(meter_options.keys()), format_func=lambda x: "無(整棟總計)" if x is None else meter_options.get(x))
 
             dc1, dc2 = st.columns(2)
@@ -72,6 +68,7 @@ def render():
                     if success:
                         st.success(message)
                         st.cache_data.clear()
+                        st.rerun()
                     else:
                         st.error(message)
 
@@ -128,33 +125,38 @@ def render():
                         default_index = bill_type_options.index("其他 (請手動輸入)")
                         pre_fill_custom = current_bill_type
                     
-                    selected_edit_type = c1.selectbox("費用類型", bill_type_options, index=default_index)
-                    custom_edit_type = c1.text_input("自訂費用類型", value=pre_fill_custom, help="若上方選擇「其他 (請手動輸入)」，請務必在此填寫")
+                    selected_edit_type = c1.selectbox("費用類型", bill_type_options, index=default_index, key=f"edit_bill_type_{selected_bill_id}")
+                    custom_edit_type = c1.text_input("自訂費用類型", value=pre_fill_custom, help="若上方選擇「其他 (請手動輸入)」，請務必在此填寫", key=f"edit_custom_bill_type_{selected_bill_id}")
 
-                    amount = c2.number_input("帳單總金額", min_value=0, step=100, value=bill_details['amount'])
+                    amount = c2.number_input("帳單總金額", min_value=0, step=100, value=bill_details['amount'], key=f"edit_amount_{selected_bill_id}")
                     
-                    meters = meter_model.get_meters_for_dorm_as_df(selected_dorm_id)
-                    meter_options = {m['id']: f"{m['類型']} ({m['錶號']})" for _, m in meters.iterrows()}
-                    meter_ids = [None] + list(meter_options.keys())
-                    current_meter_index = meter_ids.index(bill_details.get('meter_id')) if bill_details.get('meter_id') in meter_ids else 0
-                    meter_id = c3.selectbox("對應電水錶 (可選)", options=meter_ids, format_func=lambda x: "無" if x is None else meter_options.get(x), index=current_meter_index)
+                    meters_for_edit = meter_model.get_meters_for_selection(selected_dorm_id)
+                    meter_options_edit = {m['id']: m['display_name'] for m in meters_for_edit}
+                    meter_ids_edit = [None] + list(meter_options_edit.keys())
+                    
+                    current_meter_id = bill_details.get('meter_id')
+                    current_meter_index = meter_ids_edit.index(current_meter_id) if current_meter_id in meter_ids_edit else 0
+                    meter_id = c3.selectbox("對應電水錶 (可選)", options=meter_ids_edit, format_func=lambda x: "無" if x is None else meter_options_edit.get(x), index=current_meter_index, key=f"edit_meter_id_{selected_bill_id}")
 
                     dc1, dc2 = st.columns(2)
-                    start_date = datetime.strptime(bill_details['bill_start_date'], '%Y-%m-%d').date()
-                    end_date = datetime.strptime(bill_details['bill_end_date'], '%Y-%m-%d').date()
-                    bill_start_date = dc1.date_input("帳單起始日", value=start_date)
-                    bill_end_date = dc2.date_input("帳單結束日", value=end_date)
+                    # 【核心修改】直接使用 date 物件，不再需要 strptime
+                    start_date = bill_details.get('bill_start_date')
+                    end_date = bill_details.get('bill_end_date')
+                    bill_start_date = dc1.date_input("帳單起始日", value=start_date, key=f"edit_start_date_{selected_bill_id}")
+                    bill_end_date = dc2.date_input("帳單結束日", value=end_date, key=f"edit_end_date_{selected_bill_id}")
                     
-                    is_invoiced = st.checkbox("已向雇主/員工請款?", value=bool(bill_details.get('is_invoiced')))
-                    notes = st.text_area("備註", value=bill_details.get('notes', ''))
+                    is_invoiced = st.checkbox("已向雇主/員工請款?", value=bool(bill_details.get('is_invoiced')), key=f"edit_is_invoiced_{selected_bill_id}")
+                    notes = st.text_area("備註", value=bill_details.get('notes', ''), key=f"edit_notes_{selected_bill_id}")
                     
+                    # 【核心修改】將提交按鈕明確放在表單內
                     submitted = st.form_submit_button("儲存變更")
                     if submitted:
                         final_edit_bill_type = custom_edit_type if selected_edit_type == "其他 (請手動輸入)" else selected_edit_type
                             
                         update_data = {
                             "meter_id": meter_id, "bill_type": final_edit_bill_type, "amount": amount,
-                            "bill_start_date": str(bill_start_date), "bill_end_date": str(bill_end_date),
+                            "bill_start_date": str(bill_start_date) if bill_start_date else None, 
+                            "bill_end_date": str(bill_end_date) if bill_end_date else None,
                             "is_invoiced": is_invoiced, "notes": notes
                         }
                         success, message = finance_model.update_bill_record(selected_bill_id, update_data)
@@ -165,10 +167,11 @@ def render():
                         else:
                             st.error(message)
                 
+                # 將刪除功能放在表單之外
                 st.markdown("---")
                 st.markdown("##### 危險操作區")
-                confirm_delete = st.checkbox("我了解並確認要刪除此筆費用紀錄")
-                if st.button("🗑️ 刪除此筆紀錄", type="primary", disabled=not confirm_delete):
+                confirm_delete = st.checkbox("我了解並確認要刪除此筆費用紀錄", key=f"delete_confirm_{selected_bill_id}")
+                if st.button("🗑️ 刪除此筆紀錄", type="primary", disabled=not confirm_delete, key=f"delete_button_{selected_bill_id}"):
                     success, message = finance_model.delete_bill_record(selected_bill_id)
                     if success:
                         st.success(message)

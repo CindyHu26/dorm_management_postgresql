@@ -30,10 +30,15 @@ def render():
             room_options = {r['id']: r['room_number'] for r in rooms}
             selected_room_id_new = st.selectbox("房間號碼", [None] + list(room_options.keys()), format_func=lambda x: "未分配" if x is None else room_options.get(x))
             
+            # 【核心修改】增加水電費和清潔費欄位
             f1, f2, f3 = st.columns(3)
-            monthly_fee = f1.number_input("月費", min_value=0, step=100)
-            payment_method = f2.selectbox("付款方", ["", "員工自付", "雇主支付"])
-            accommodation_start_date = f3.date_input("起住日期", value=date.today())
+            monthly_fee = f1.number_input("月費(房租)", min_value=0, step=100)
+            utilities_fee = f2.number_input("水電費", min_value=0, step=100)
+            cleaning_fee = f3.number_input("清潔費", min_value=0, step=100)
+
+            ff1, ff2 = st.columns(2)
+            payment_method = ff1.selectbox("付款方", ["", "員工自付", "雇主支付"])
+            accommodation_start_date = ff2.date_input("起住日期", value=date.today())
 
             worker_notes = st.text_area("個人備註")
             
@@ -62,7 +67,10 @@ def render():
                         'employer_name': emp_clean, 'worker_name': name_clean,
                         'passport_number': pass_clean if pass_clean else None,
                         'gender': gender, 'nationality': nationality, 'arc_number': arc_number,
-                        'room_id': selected_room_id_new, 'monthly_fee': monthly_fee, 
+                        'room_id': selected_room_id_new, 
+                        'monthly_fee': monthly_fee, 
+                        'utilities_fee': utilities_fee, # 新增
+                        'cleaning_fee': cleaning_fee,   # 新增
                         'payment_method': payment_method,
                         'accommodation_start_date': str(accommodation_start_date) if accommodation_start_date else None,
                         'worker_notes': worker_notes
@@ -111,7 +119,8 @@ def render():
             else:
                 st.markdown(f"#### 管理移工: {worker_details.get('worker_name')} ({worker_details.get('employer_name')})")
                 
-                tab1, tab2 = st.tabs(["✏️ 編輯核心資料", "🕒 狀態歷史管理"])
+                # 【核心修改】新增「費用歷史」分頁
+                tab1, tab2, tab3 = st.tabs(["✏️ 編輯核心資料", "🕒 狀態歷史管理", "💰 費用歷史"])
             
                 with tab1:
                     with st.form("edit_worker_form"):
@@ -154,21 +163,28 @@ def render():
                                                         index=current_room_index)
 
                         st.markdown("##### 費用與狀態 (可手動修改)")
+                        # 【核心修改】增加水電費和清潔費的輸入框
                         fc1, fc2, fc3 = st.columns(3)
-                        monthly_fee = fc1.number_input("月費", value=int(worker_details.get('monthly_fee') or 0))
+                        monthly_fee = fc1.number_input("月費(房租)", value=int(worker_details.get('monthly_fee') or 0))
+                        utilities_fee = fc2.number_input("水電費", value=int(worker_details.get('utilities_fee') or 0))
+                        cleaning_fee = fc3.number_input("清潔費", value=int(worker_details.get('cleaning_fee') or 0))
+
+                        fcc1, fcc2 = st.columns(2)
                         payment_method_options = ["", "員工自付", "雇主支付"]
-                        payment_method = fc2.selectbox("付款方", payment_method_options, index=payment_method_options.index(worker_details.get('payment_method')) if worker_details.get('payment_method') in payment_method_options else 0)
+                        payment_method = fcc1.selectbox("付款方", payment_method_options, index=payment_method_options.index(worker_details.get('payment_method')) if worker_details.get('payment_method') in payment_method_options else 0)
                         
-                        end_date_str = worker_details.get('accommodation_end_date')
-                        end_date_value = datetime.strptime(end_date_str, '%Y-%m-%d').date() if isinstance(end_date_str, str) and end_date_str else None
-                        accommodation_end_date = fc3.date_input("離住日期 (若留空表示在住)", value=end_date_value)
+                        end_date_value = worker_details.get('accommodation_end_date')
+                        accommodation_end_date = fcc2.date_input("離住日期 (若留空表示在住)", value=end_date_value)
                         
                         worker_notes = st.text_area("個人備註", value=worker_details.get('worker_notes') or "")
                         
                         submitted = st.form_submit_button("儲存核心資料變更")
                         if submitted:
                             update_data = {
-                                'room_id': selected_room_id, 'monthly_fee': monthly_fee,
+                                'room_id': selected_room_id, 
+                                'monthly_fee': monthly_fee,
+                                'utilities_fee': utilities_fee, # 新增
+                                'cleaning_fee': cleaning_fee,   # 新增
                                 'payment_method': payment_method,
                                 'accommodation_end_date': str(accommodation_end_date) if accommodation_end_date else None,
                                 'worker_notes': worker_notes
@@ -249,12 +265,12 @@ def render():
                                 current_status = status_details.get('status')
                                 edit_status = es_c1.selectbox("狀態", status_options_edit, index=status_options_edit.index(current_status) if current_status in status_options_edit else 0)
                                 
-                                start_val = datetime.strptime(status_details['start_date'], '%Y-%m-%d').date() if status_details.get('start_date') else None
-                                end_val = datetime.strptime(status_details['end_date'], '%Y-%m-%d').date() if status_details.get('end_date') else None
-                                
+                                start_val = status_details.get('start_date')
+                                end_val = status_details.get('end_date')
+                                    
                                 edit_start_date = es_c2.date_input("起始日", value=start_val)
                                 edit_end_date = es_c3.date_input("結束日 (若留空代表此為當前狀態)", value=end_val)
-                                
+                                  
                                 edit_notes = st.text_area("狀態備註", value=status_details.get('notes', ''))
 
                                 edit_submitted = st.form_submit_button("儲存狀態變更")
@@ -283,8 +299,7 @@ def render():
                                 else:
                                     st.error(message)
 
-    
-                        
+                       
     st.markdown("---")
     
     # --- 3. 移工總覽 (僅供檢視) ---

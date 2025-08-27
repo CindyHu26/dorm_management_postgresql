@@ -1,193 +1,203 @@
-import sqlite3
 import os
-import sys # 【本次新增】匯入 sys 模組
-import pandas as pd
+import sys
+import configparser
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 def get_base_path():
-    """
-    獲取資源的基礎路徑，無論是在開發環境還是打包後的 .exe 環境。
-    """
+    """獲取資源的基礎路徑。"""
     if getattr(sys, 'frozen', False):
-        # 如果是打包後的 .exe，基礎路徑是 .exe 檔案所在的目錄
-        # sys.executable 指向 .exe 檔案本身
         return os.path.dirname(sys.executable)
     else:
-        # 如果是在開發環境，基礎路徑是目前 .py 檔案所在的目錄
-        return os.path.dirname(os.path.abspath(__file__))
+        return os.path.abspath(".")
 
-# 將 DB_NAME 定義為一個動態的絕對路徑
-DB_NAME = os.path.join(get_base_path(), "dorm_management.db")
+BASE_PATH = get_base_path()
+CONFIG_FILE = os.path.join(BASE_PATH, "config.ini")
 
-def get_db_connection(db_name=None):
-    """建立並回傳資料庫連線。"""
-    target_db = db_name if db_name else DB_NAME
+def get_db_config():
+    """從 config.ini 讀取資料庫設定。"""
+    if not os.path.exists(CONFIG_FILE):
+        raise FileNotFoundError(f"設定檔 config.ini 不存在於 {BASE_PATH}，請建立它。")
+    config = configparser.ConfigParser()
+    config.read(CONFIG_FILE, encoding='utf-8')
+    if 'Database' not in config:
+        raise ValueError("config.ini 中缺少 [Database] 區塊")
+    return config['Database']
+
+def get_db_connection():
+    """根據設定檔建立並回傳 PostgreSQL 資料庫連線。"""
     try:
-        base_path = os.path.dirname(os.path.abspath(__file__))
-        full_path = os.path.join(base_path, target_db)
-        conn = sqlite3.connect(full_path)
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.row_factory = sqlite3.Row
+        config = get_db_config()
+        db_type = config.get('type', '').lower()
+
+        if db_type != 'postgresql':
+            raise ValueError(f"設定檔中的資料庫類型不是 'postgresql'，請檢查 config.ini。")
+
+        conn = psycopg2.connect(
+            host=config.get('host'),
+            port=config.getint('port', 5432),
+            user=config.get('user'),
+            password=config.get('password'),
+            dbname=config.get('dbname'),
+            # 【關鍵步驟 2】: 這行是解決問題的核心，它告訴 psycopg2 將查詢結果打包成字典
+            cursor_factory=RealDictCursor 
+        )
+        # print("INFO: 已成功連線至 PostgreSQL 資料庫 (使用 RealDictCursor)。")
         return conn
-    except sqlite3.Error as e:
+            
+    except Exception as e:
         print(f"資料庫連線失敗: {e}")
         return None
 
-def create_indexes(cursor):
-    """建立所有必要的索引以提升查詢效能。"""
-    print("INFO: 開始建立資料庫索引...")
-    
-    # --- 為所有外鍵建立索引 ---
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_rooms_dorm_id ON Rooms(dorm_id);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_workers_room_id ON Workers(room_id);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_equipment_dorm_id ON DormitoryEquipment(dorm_id);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_meters_dorm_id ON Meters(dorm_id);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_leases_dorm_id ON Leases(dorm_id);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_bills_dorm_id ON UtilityBills(dorm_id);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_bills_meter_id ON UtilityBills(meter_id);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_annual_expenses_dorm_id ON AnnualExpenses(dorm_id);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_other_income_dorm_id ON OtherIncome(dorm_id);")
-
-    # --- 為常用查詢欄位建立索引 ---
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_dorms_legacy_code ON Dormitories(legacy_dorm_code);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_workers_employer_name ON Workers(employer_name);")
-    
-    # --- 為日期/攤提相關欄位建立索引 ---
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_leases_end_date ON Leases(lease_end_date);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_bills_dates ON UtilityBills(bill_start_date, bill_end_date);")
-    
-    print("SUCCESS: 所有索引已建立。")
-
-
 def create_all_tables_and_indexes():
-    """執行所有 CREATE TABLE 和 CREATE INDEX 指令。"""
+    """為 PostgreSQL 執行所有 CREATE TABLE 和 CREATE INDEX 指令。"""
     conn = get_db_connection()
-    if not conn: return
+    if not conn: 
+        print("錯誤：無法建立資料庫連線，建表程序終止。")
+        return
 
     try:
-        cursor = conn.cursor()
-        print("INFO: 開始建立資料庫表格...")
+        with conn.cursor() as cursor:
+            TABLES = {}
 
-        # --- 所有 CREATE TABLE 語句 ---
-        # 1. Dormitories
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS Dormitories (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, legacy_dorm_code TEXT, original_address TEXT,
-            normalized_address TEXT NOT NULL UNIQUE, dorm_name TEXT, primary_manager TEXT DEFAULT '雇主',
-            rent_payer TEXT DEFAULT '雇主', utilities_payer TEXT DEFAULT '雇主',
-            insurance_fee INTEGER, insurance_start_date DATE, insurance_end_date DATE,
-            fire_safety_fee INTEGER, fire_safety_start_date DATE, fire_safety_end_date DATE,
-            management_notes TEXT, dorm_notes TEXT
-        );
-        """)
-        # 2. Rooms
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS Rooms (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, dorm_id INTEGER NOT NULL, room_number TEXT NOT NULL,
-            capacity INTEGER, gender_policy TEXT DEFAULT '可混住', nationality_policy TEXT DEFAULT '不限', room_notes TEXT,
-            FOREIGN KEY (dorm_id) REFERENCES Dormitories (id) ON DELETE CASCADE
-        );
-        """)
-        # 3. Workers
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS Workers (
-            unique_id TEXT PRIMARY KEY, room_id INTEGER, employer_name TEXT NOT NULL,
-            worker_name TEXT NOT NULL, gender TEXT, nationality TEXT, passport_number TEXT,
-            arc_number TEXT, arrival_date DATE, departure_date DATE, work_permit_expiry_date DATE,
-            accommodation_start_date DATE, accommodation_end_date DATE, monthly_fee INTEGER,
-            fee_notes TEXT, payment_method TEXT, data_source TEXT NOT NULL,
-            worker_notes TEXT, special_status TEXT,
-            FOREIGN KEY (room_id) REFERENCES Rooms (id) ON DELETE SET NULL
-        );
-        """)
-        # 4. DormitoryEquipment
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS DormitoryEquipment (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            dorm_id INTEGER NOT NULL,
-            equipment_name TEXT NOT NULL,
-            location TEXT,
-            last_replaced_date DATE,
-            next_check_date DATE,
-            status TEXT,
-            report_path TEXT,
-            FOREIGN KEY (dorm_id) REFERENCES Dormitories (id) ON DELETE CASCADE
-        );
-        """)
-        print("SUCCESS: 表格 'DormitoryEquipment' 結構已更新。")
-        # 5. Meters
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS Meters (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, dorm_id INTEGER NOT NULL, meter_type TEXT NOT NULL,
-            meter_number TEXT NOT NULL, area_covered TEXT,
-            FOREIGN KEY (dorm_id) REFERENCES Dormitories (id) ON DELETE CASCADE
-        );
-        """)
-        # 6. Leases
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS Leases (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, dorm_id INTEGER NOT NULL, lease_start_date DATE,
-            lease_end_date DATE, monthly_rent INTEGER, deposit INTEGER, utilities_included BOOLEAN,
-            contract_scan_path TEXT,
-            FOREIGN KEY (dorm_id) REFERENCES Dormitories (id) ON DELETE CASCADE
-        );
-        """)
-        # 7. UtilityBills
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS UtilityBills (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, dorm_id INTEGER NOT NULL, meter_id INTEGER,
-            bill_type TEXT NOT NULL, amount INTEGER NOT NULL, bill_start_date DATE NOT NULL,
-            bill_end_date DATE NOT NULL, is_invoiced BOOLEAN, notes TEXT,
-            FOREIGN KEY (dorm_id) REFERENCES Dormitories (id) ON DELETE CASCADE,
-            FOREIGN KEY (meter_id) REFERENCES Meters (id) ON DELETE SET NULL
-        );
-        """)
-        # 8. AnnualExpenses
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS AnnualExpenses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, dorm_id INTEGER NOT NULL, expense_item TEXT NOT NULL,
-            payment_date DATE, total_amount INTEGER NOT NULL, amortization_start_month TEXT,
-            amortization_end_month TEXT, notes TEXT,
-            FOREIGN KEY (dorm_id) REFERENCES Dormitories (id) ON DELETE CASCADE
-        );
-        """)
-        # 9. OtherIncome
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS OtherIncome (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            dorm_id INTEGER NOT NULL,
-            income_item TEXT NOT NULL,
-            transaction_date DATE NOT NULL,
-            amount INTEGER NOT NULL,
-            notes TEXT,
-            FOREIGN KEY (dorm_id) REFERENCES Dormitories (id) ON DELETE CASCADE
-        );
-        """)
-        print("SUCCESS: 所有表格已成功建立。")
+            TABLES['Dormitories'] = """
+            CREATE TABLE IF NOT EXISTS "Dormitories" (
+                "id" SERIAL PRIMARY KEY, "legacy_dorm_code" VARCHAR(50), "original_address" VARCHAR(255),
+                "normalized_address" VARCHAR(255) NOT NULL UNIQUE, "dorm_name" VARCHAR(100),
+                "primary_manager" VARCHAR(50) DEFAULT '雇主', "rent_payer" VARCHAR(50) DEFAULT '雇主',
+                "utilities_payer" VARCHAR(50) DEFAULT '雇主', "insurance_fee" INTEGER,
+                "insurance_start_date" DATE, "insurance_end_date" DATE, "fire_safety_fee" INTEGER,
+                "fire_safety_start_date" DATE, "fire_safety_end_date" DATE,
+                "management_notes" TEXT, "dorm_notes" TEXT
+            );
+            """
+            
+            TABLES['Rooms'] = """
+            CREATE TABLE IF NOT EXISTS "Rooms" (
+                "id" SERIAL PRIMARY KEY, "dorm_id" INTEGER NOT NULL, "room_number" VARCHAR(50) NOT NULL,
+                "capacity" INTEGER, "gender_policy" VARCHAR(50) DEFAULT '可混住',
+                "nationality_policy" VARCHAR(50) DEFAULT '不限', "room_notes" TEXT,
+                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE
+            );
+            """
 
-        # --- 【核心修正】將 create_indexes 移至所有 CREATE TABLE 之後 ---
-        create_indexes(cursor)
+            TABLES['Workers'] = """
+            CREATE TABLE IF NOT EXISTS "Workers" (
+                "unique_id" VARCHAR(255) PRIMARY KEY, "room_id" INTEGER, "employer_name" VARCHAR(255) NOT NULL,
+                "worker_name" VARCHAR(255) NOT NULL, "gender" VARCHAR(10), "nationality" VARCHAR(50),
+                "passport_number" VARCHAR(50), "arc_number" VARCHAR(50), "arrival_date" DATE,
+                "departure_date" DATE, "work_permit_expiry_date" DATE, "accommodation_start_date" DATE,
+                "accommodation_end_date" DATE, 
+                "monthly_fee" INTEGER, 
+                "utilities_fee" INTEGER,
+                "cleaning_fee" INTEGER,
+                "fee_notes" TEXT, "payment_method" VARCHAR(50), "data_source" VARCHAR(50) NOT NULL,
+                "worker_notes" TEXT, 
+                "special_status" VARCHAR(100), -- <<<<<<<<<<< 這就是關鍵的「當前狀態」欄位
+                FOREIGN KEY ("room_id") REFERENCES "Rooms" ("id") ON DELETE SET NULL
+            );
+            """
+
+            TABLES['DormitoryEquipment'] = """
+            CREATE TABLE IF NOT EXISTS "DormitoryEquipment" (
+                "id" SERIAL PRIMARY KEY, "dorm_id" INTEGER NOT NULL, "equipment_name" VARCHAR(100) NOT NULL,
+                "location" VARCHAR(100), "last_replaced_date" DATE, "next_check_date" DATE,
+                "status" VARCHAR(50), "report_path" VARCHAR(255),
+                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE
+            );
+            """
+
+            TABLES['Meters'] = """
+            CREATE TABLE IF NOT EXISTS "Meters" (
+                "id" SERIAL PRIMARY KEY, "dorm_id" INTEGER NOT NULL, "meter_type" VARCHAR(50) NOT NULL,
+                "meter_number" VARCHAR(100) NOT NULL, "area_covered" VARCHAR(100),
+                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE
+            );
+            """
+
+            TABLES['Leases'] = """
+            CREATE TABLE IF NOT EXISTS "Leases" (
+                "id" SERIAL PRIMARY KEY, "dorm_id" INTEGER NOT NULL, "lease_start_date" DATE,
+                "lease_end_date" DATE, "monthly_rent" INTEGER, "deposit" INTEGER,
+                "utilities_included" BOOLEAN, "contract_scan_path" VARCHAR(255),
+                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE
+            );
+            """
+
+            TABLES['UtilityBills'] = """
+            CREATE TABLE IF NOT EXISTS "UtilityBills" (
+                "id" SERIAL PRIMARY KEY, "dorm_id" INTEGER NOT NULL, "meter_id" INTEGER,
+                "bill_type" VARCHAR(50) NOT NULL, "amount" INTEGER NOT NULL,
+                "bill_start_date" DATE NOT NULL, "bill_end_date" DATE NOT NULL,
+                "is_invoiced" BOOLEAN, "notes" TEXT,
+                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE,
+                FOREIGN KEY ("meter_id") REFERENCES "Meters" ("id") ON DELETE SET NULL
+            );
+            """
+
+            TABLES['AnnualExpenses'] = """
+            CREATE TABLE IF NOT EXISTS "AnnualExpenses" (
+                "id" SERIAL PRIMARY KEY, "dorm_id" INTEGER NOT NULL, "expense_item" VARCHAR(100) NOT NULL,
+                "payment_date" DATE, "total_amount" INTEGER NOT NULL,
+                "amortization_start_month" VARCHAR(7), "amortization_end_month" VARCHAR(7), "notes" TEXT,
+                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE
+            );
+            """
+            
+            TABLES['OtherIncome'] = """
+            CREATE TABLE IF NOT EXISTS "OtherIncome" (
+                "id" SERIAL PRIMARY KEY, "dorm_id" INTEGER NOT NULL, "income_item" VARCHAR(100) NOT NULL,
+                "transaction_date" DATE NOT NULL, "amount" INTEGER NOT NULL, "notes" TEXT,
+                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE
+            );
+            """
+
+            TABLES['FeeHistory'] = """
+            CREATE TABLE IF NOT EXISTS "FeeHistory" (
+                "id" SERIAL PRIMARY KEY,
+                "worker_unique_id" VARCHAR(255) NOT NULL,
+                "fee_type" VARCHAR(50) NOT NULL,
+                "amount" INTEGER NOT NULL,
+                "effective_date" DATE NOT NULL,
+                "created_at" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY ("worker_unique_id") REFERENCES "Workers" ("unique_id") ON DELETE CASCADE
+            );
+            """
+
+            TABLES['WorkerStatusHistory'] = """
+            CREATE TABLE IF NOT EXISTS "WorkerStatusHistory" (
+                "id" SERIAL PRIMARY KEY,
+                "worker_unique_id" VARCHAR(255) NOT NULL,
+                "status" VARCHAR(100), "start_date" DATE, "end_date" DATE, "notes" TEXT,
+                FOREIGN KEY ("worker_unique_id") REFERENCES "Workers" ("unique_id") ON DELETE CASCADE
+            );
+            """
+            
+            print("INFO: (PostgreSQL) 正在建立所有表格...")
+            for table_name, table_sql in TABLES.items():
+                cursor.execute(table_sql)
+
+            INDEXES = [
+                'CREATE INDEX IF NOT EXISTS idx_dorms_normalized_address ON "Dormitories" ("normalized_address");',
+                'CREATE INDEX IF NOT EXISTS idx_workers_employer_name ON "Workers" ("employer_name");',
+                'CREATE INDEX IF NOT EXISTS idx_rooms_dorm_id ON "Rooms" ("dorm_id");',
+                'CREATE INDEX IF NOT EXISTS idx_workers_room_id ON "Workers" ("room_id");',
+                'CREATE INDEX IF NOT EXISTS idx_feehistory_worker_id ON "FeeHistory" ("worker_unique_id");',
+                'CREATE INDEX IF NOT EXISTS idx_statushistory_worker_id ON "WorkerStatusHistory" ("worker_unique_id");'
+            ]
+            print("INFO: (PostgreSQL) 正在建立所有索引...")
+            for index_sql in INDEXES:
+                cursor.execute(index_sql)
         
         conn.commit()
-        print("\nINFO: 所有表格與索引均已成功建立！")
-
-    except sqlite3.Error as e:
-        print(f"建立資料庫時發生錯誤: {e}")
+        print("SUCCESS: (PostgreSQL) 所有表格與索引已成功建立！")
+    except psycopg2.Error as err:
+        print(f"資料庫操作失敗: {err}")
         conn.rollback()
     finally:
         if conn:
             conn.close()
 
 if __name__ == '__main__':
-    DB_FILE = DB_NAME
-    if os.path.exists(DB_FILE):
-        print(f"警告：資料庫檔案 '{DB_FILE}' 已存在，將被刪除以建立新的結構。")
-        try:
-            os.remove(DB_FILE)
-            print(f"INFO: 舊的資料庫檔案 '{DB_FILE}' 已刪除。")
-        except OSError as e:
-            print(f"錯誤：無法刪除舊的資料庫檔案。錯誤訊息: {e}")
-            exit()
-    
-    print(f"正在建立全新的資料庫 '{DB_FILE}'...")
+    print("正在根據 config.ini 設定初始化資料庫...")
     create_all_tables_and_indexes()
-    print(f"\n全新的資料庫 '{DB_FILE}' 已成功建立，並包含所有表格與索引。")

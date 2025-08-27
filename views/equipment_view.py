@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 from data_models import equipment_model, dormitory_model
 
 def render():
@@ -8,7 +8,6 @@ def render():
     st.header("我司管理宿舍 - 設備管理")
     st.info("用於登錄與追蹤宿舍內的消防安全設備，例如滅火器、偵煙器等。")
 
-    # --- 1. 宿舍選擇 ---
     my_dorms = dormitory_model.get_my_company_dorms_for_selection()
     if not my_dorms:
         st.warning("目前資料庫中沒有主要管理人為「我司」的宿舍，無法進行設備管理。")
@@ -26,17 +25,12 @@ def render():
 
     st.markdown("---")
 
-    # --- 2. 新增設備紀錄 ---
     with st.expander("➕ 新增一筆設備紀錄"):
         with st.form("new_equipment_form", clear_on_submit=True):
-            
             c1, c2, c3 = st.columns(3)
-            
-            # --- 費用項目的彈性選項 ---
             equipment_options = ["滅火器", "緊急照明燈", "偵煙器", "建物申報單", "其他 (請手動輸入)"]
             selected_equipment_name = c1.selectbox("設備名稱", equipment_options)
             custom_equipment_name = c1.text_input("自訂設備名稱", help="若上方選擇「其他」，請在此處填寫")
-            
             location = c2.text_input("放置位置", placeholder="例如: 2F走廊, 廚房")
             status = c3.selectbox("目前狀態", ["正常", "需更換", "已過期", "維修中"])
 
@@ -48,16 +42,14 @@ def render():
             
             submitted = st.form_submit_button("儲存設備紀錄")
             if submitted:
-                final_equipment_name = custom_equipment_name if selected_equipment_name == "其他 (請手動輸入)" else selected_equipment_name
-
-                if not final_equipment_name:
+                final_equipment_name = custom_equipment_name if selected_equipment_name == "其他 (請手動輸入)" and custom_equipment_name else selected_equipment_name
+                if not final_equipment_name or final_equipment_name == "其他 (請手動輸入)":
                     st.error("「設備名稱」為必填欄位！")
                 else:
                     details = {
                         "dorm_id": selected_dorm_id,
                         "equipment_name": final_equipment_name,
-                        "location": location,
-                        "status": status,
+                        "location": location, "status": status,
                         "last_replaced_date": str(last_replaced_date) if last_replaced_date else None,
                         "next_check_date": str(next_check_date) if next_check_date else None,
                         "report_path": report_path
@@ -66,12 +58,12 @@ def render():
                     if success:
                         st.success(message)
                         st.cache_data.clear()
+                        st.rerun()
                     else:
                         st.error(message)
 
     st.markdown("---")
     
-    # --- 3. 設備總覽與管理 ---
     st.subheader(f"現有設備總覽: {dorm_options.get(selected_dorm_id)}")
     
     if st.button("🔄 重新整理設備列表"):
@@ -97,32 +89,26 @@ def render():
         if selected_id:
             details = equipment_model.get_single_equipment_details(selected_id)
             if details:
-                with st.form("edit_equipment_form"):
+                with st.form(f"edit_equipment_form_{selected_id}"):
                     st.markdown(f"##### 正在編輯 ID: {details['id']} 的設備")
-                    
                     ec1, ec2, ec3 = st.columns(3)
-
-                    # --- 編輯區塊的彈性選項 ---
                     equipment_options_edit = ["滅火器", "緊急照明燈", "偵煙器", "建物申報單", "其他 (請手動輸入)"]
                     current_name = details.get('equipment_name', '')
                     
-                    if current_name in equipment_options_edit:
-                        default_index = equipment_options_edit.index(current_name)
-                        pre_fill_custom = ""
-                    else:
-                        default_index = equipment_options_edit.index("其他 (請手動輸入)") if current_name else 0
-                        pre_fill_custom = current_name
+                    default_index = equipment_options_edit.index(current_name) if current_name in equipment_options_edit else equipment_options_edit.index("其他 (請手動輸入)")
+                    pre_fill_custom = "" if current_name in equipment_options_edit else current_name
 
                     selected_name = ec1.selectbox("設備名稱", equipment_options_edit, index=default_index)
                     custom_name = ec1.text_input("自訂設備名稱", value=pre_fill_custom, help="若上方選擇「其他」，請在此處填寫")
                     
                     e_location = ec2.text_input("放置位置", value=details.get('location', ''))
-                    e_status = ec3.selectbox("目前狀態", ["正常", "需更換", "已過期", "維修中"], index=["正常", "需更換", "已過期", "維修中"].index(details.get('status')) if details.get('status') in ["正常", "需更換", "已過期", "維修中"] else 0)
+                    status_options = ["正常", "需更換", "已過期", "維修中"]
+                    e_status = ec3.selectbox("目前狀態", status_options, index=status_options.index(details.get('status')) if details.get('status') in status_options else 0)
 
                     ec4, ec5 = st.columns(2)
-
-                    last_date = datetime.strptime(details['last_replaced_date'], '%Y-%m-%d').date() if details.get('last_replaced_date') else None
-                    next_date = datetime.strptime(details['next_check_date'], '%Y-%m-%d').date() if details.get('next_check_date') else None
+                    # 【核心修改】直接使用 date 物件，不再需要 strptime
+                    last_date = details.get('last_replaced_date')
+                    next_date = details.get('next_check_date')
 
                     e_last_replaced_date = ec4.date_input("上次更換/檢查日期", value=last_date)
                     e_next_check_date = ec5.date_input("下次更換/檢查日期", value=next_date)
@@ -131,11 +117,12 @@ def render():
 
                     edit_submitted = st.form_submit_button("儲存變更")
                     if edit_submitted:
-                        final_name_edit = custom_name if selected_name == "其他 (請手動輸入)" else selected_name
+                        final_name_edit = custom_name if selected_name == "其他 (請手動輸入)" and custom_name else selected_name
                         
                         update_data = {
                             "equipment_name": final_name_edit, "location": e_location,
-                            "status": e_status, "last_replaced_date": str(e_last_replaced_date) if e_last_replaced_date else None,
+                            "status": e_status,
+                            "last_replaced_date": str(e_last_replaced_date) if e_last_replaced_date else None,
                             "next_check_date": str(e_next_check_date) if e_next_check_date else None,
                             "report_path": e_report_path
                         }
@@ -149,8 +136,8 @@ def render():
 
                 st.markdown("---")
                 st.markdown("##### 危險操作區")
-                confirm_delete = st.checkbox("我了解並確認要刪除此筆設備紀錄")
-                if st.button("🗑️ 刪除此紀錄", type="primary", disabled=not confirm_delete):
+                confirm_delete = st.checkbox("我了解並確認要刪除此筆設備紀錄", key=f"delete_confirm_{selected_id}")
+                if st.button("🗑️ 刪除此紀錄", type="primary", disabled=not confirm_delete, key=f"delete_button_{selected_id}"):
                     success, message = equipment_model.delete_equipment_record(selected_id)
                     if success:
                         st.success(message)

@@ -1,80 +1,121 @@
 import pandas as pd
-import sqlite3
-
-# 只依賴最基礎的 database 模組
 import database
 
-# --- 房租管理 ---
+def _execute_query_to_dataframe(conn, query, params=None):
+    """輔助函式，用來手動執行查詢並回傳 DataFrame。"""
+    with conn.cursor() as cursor:
+        cursor.execute(query, params)
+        records = cursor.fetchall()
+        if not records:
+            columns = [desc[0] for desc in cursor.description] if cursor.description else []
+            return pd.DataFrame([], columns=columns)
+        columns = [desc[0] for desc in cursor.description]
+        return pd.DataFrame(records, columns=columns)
 
-def get_workers_for_rent_management(dorm_ids: list):
+# --- 房租管理 ---
+def get_workers_for_rent_management(filters: dict):
     """
-    根據提供的宿舍ID列表，查詢所有在住移工的房租相關資訊。
+    根據提供的篩選條件(宿舍或雇主)，查詢所有在住移工的房租相關資訊。
     """
-    if not dorm_ids:
+    filter_by = filters.get("filter_by")
+    values = filters.get("values")
+
+    if not filter_by or not values:
         return pd.DataFrame()
     
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
-        placeholders = ', '.join('?' for _ in dorm_ids)
-        query = f"""
+        base_query = """
             SELECT
                 w.unique_id, d.original_address AS "宿舍地址", r.room_number AS "房號",
-                w.employer_name AS "雇主", w.worker_name AS "姓名", w.monthly_fee AS "目前月費"
-            FROM Workers w
-            JOIN Rooms r ON w.room_id = r.id
-            JOIN Dormitories d ON r.dorm_id = d.id
-            WHERE d.id IN ({placeholders})
-            AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date = '' OR date(w.accommodation_end_date) > date('now', 'localtime'))
-            ORDER BY d.original_address, r.room_number, w.worker_name
+                w.employer_name AS "雇主", w.worker_name AS "姓名", 
+                w.monthly_fee AS "目前月費", w.utilities_fee as "水電費", w.cleaning_fee as "清潔費"
+            FROM "Workers" w
+            JOIN "Rooms" r ON w.room_id = r.id
+            JOIN "Dormitories" d ON r.dorm_id = d.id
         """
-        return pd.read_sql_query(query, conn, params=tuple(dorm_ids))
+        
+        # 動態產生 WHERE 子句
+        placeholders = ', '.join(['%s'] * len(values))
+        if filter_by == "dorm":
+            base_query += f' WHERE d.id IN ({placeholders})'
+        elif filter_by == "employer":
+            base_query += f' WHERE w.employer_name IN ({placeholders})'
+        else:
+            return pd.DataFrame() # 不支援的篩選方式
+
+        base_query += " AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)"
+        base_query += " ORDER BY d.original_address, r.room_number, w.worker_name"
+        
+        return _execute_query_to_dataframe(conn, base_query, tuple(values))
     finally:
         if conn: conn.close()
 
-def batch_update_rent(dorm_ids: list, old_rent: int, new_rent: int, update_nulls: bool = False):
+def batch_update_rent(filters: dict, old_rent: int, new_rent: int, update_nulls: bool = False):
     """
-    批次更新指定宿舍內移工的月費。
+    批次更新指定篩選條件下(宿舍或雇主)移工的月費，並為每一筆變動建立歷史紀錄。
     """
-    if not dorm_ids:
-        return False, "未選擇任何宿舍。"
+    filter_by = filters.get("filter_by")
+    values = filters.get("values")
+
+    if not filter_by or not values:
+        return False, "未選擇任何篩選目標。"
     
     conn = database.get_db_connection()
     if not conn: return False, "無法連接到資料庫。"
+    
     try:
-        cursor = conn.cursor()
-        placeholders = ', '.join('?' for _ in dorm_ids)
-        
-        where_clause_parts = [
-            f"r.dorm_id IN ({placeholders})",
-            "(w.accommodation_end_date IS NULL OR w.accommodation_end_date = '')"
-        ]
-        params = list(dorm_ids)
+        with conn.cursor() as cursor:
+            # 步驟 1: 根據篩選條件，找出所有需要更新的員工 unique_id 和舊的 monthly_fee
+            id_query_base = 'SELECT w.unique_id, w.monthly_fee FROM "Workers" w '
+            placeholders = ', '.join(['%s'] * len(values))
 
-        if update_nulls:
-            where_clause_parts.append("w.monthly_fee IS NULL")
-            target_description = "目前房租為『未設定』"
-        else:
-            where_clause_parts.append("w.monthly_fee = ?")
-            params.append(old_rent)
-            target_description = f"目前月費為 {old_rent}"
-        
-        where_clause = " AND ".join(where_clause_parts)
-        
-        cursor.execute(f"SELECT w.unique_id FROM Workers w JOIN Rooms r ON w.room_id = r.id WHERE {where_clause}", tuple(params))
-        target_workers = cursor.fetchall()
+            if filter_by == "dorm":
+                id_query_base += f'JOIN "Rooms" r ON w.room_id = r.id WHERE r.dorm_id IN ({placeholders})'
+            elif filter_by == "employer":
+                id_query_base += f'WHERE w.employer_name IN ({placeholders})'
+            
+            id_query_base += " AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)"
+            
+            # 加上對舊租金的篩選
+            if update_nulls:
+                id_query_base += " AND w.monthly_fee IS NULL"
+                target_description = "目前房租為『未設定』"
+            else:
+                id_query_base += " AND w.monthly_fee = %s"
+                values.append(old_rent)
+                target_description = f"目前月費為 {old_rent}"
+            
+            cursor.execute(id_query_base, tuple(values))
+            target_workers = cursor.fetchall()
 
-        if not target_workers:
-            return False, f"在選定宿舍中，找不到{target_description}的在住人員。"
+            if not target_workers:
+                return False, f"在選定條件中，找不到{target_description}的在住人員。"
 
-        target_ids = [w['unique_id'] for w in target_workers]
-        id_placeholders = ', '.join('?' for _ in target_ids)
+            target_ids = [w['unique_id'] for w in target_workers]
+            today = datetime.now().date()
+            updated_count = 0
 
-        update_query = f"UPDATE Workers SET monthly_fee = ? WHERE unique_id IN ({id_placeholders})"
-        cursor.execute(update_query, tuple([new_rent] + target_ids))
+            # 步驟 2: 逐一更新，並寫入歷史紀錄
+            for worker in target_workers:
+                worker_id = worker['unique_id']
+                old_fee = worker['monthly_fee']
+
+                # 只有在新舊費用不同時才執行更新和記錄
+                if old_fee != new_rent:
+                    # 更新 Workers 表
+                    update_sql = 'UPDATE "Workers" SET monthly_fee = %s WHERE unique_id = %s'
+                    cursor.execute(update_sql, (new_rent, worker_id))
+                    
+                    # 在 FeeHistory 表中新增一筆紀錄
+                    history_sql = 'INSERT INTO "FeeHistory" (worker_unique_id, fee_type, amount, effective_date) VALUES (%s, %s, %s, %s)'
+                    cursor.execute(history_sql, (worker_id, '房租', new_rent, today))
+                    
+                    updated_count += 1
         
         conn.commit()
-        return True, f"成功更新了 {len(target_ids)} 位人員的房租。"
+        return True, f"成功更新了 {updated_count} 位人員的房租，並已寫入歷史紀錄。"
     except Exception as e:
         if conn: conn.rollback()
         return False, f"更新房租時發生錯誤: {e}"
@@ -93,12 +134,12 @@ def get_bill_records_for_dorm_as_df(dorm_id: int):
                 b.id, b.bill_type AS "費用類型", b.amount AS "帳單金額",
                 b.bill_start_date AS "帳單起始日", b.bill_end_date AS "帳單結束日",
                 m.meter_number AS "對應錶號", b.is_invoiced AS "是否已請款", b.notes AS "備註"
-            FROM UtilityBills b
-            LEFT JOIN Meters m ON b.meter_id = m.id
-            WHERE b.dorm_id = ?
+            FROM "UtilityBills" b
+            LEFT JOIN "Meters" m ON b.meter_id = m.id
+            WHERE b.dorm_id = %s
             ORDER BY b.bill_end_date DESC
         """
-        return pd.read_sql_query(query, conn, params=(dorm_id,))
+        return _execute_query_to_dataframe(conn, query, (dorm_id,))
     finally:
         if conn: conn.close()
 
@@ -107,10 +148,10 @@ def get_single_bill_details(record_id: int):
     conn = database.get_db_connection()
     if not conn: return None
     try:
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM UtilityBills WHERE id = ?", (record_id,))
-        record = cursor.fetchone()
-        return dict(record) if record else None
+        with conn.cursor() as cursor:
+            cursor.execute('SELECT * FROM "UtilityBills" WHERE id = %s', (record_id,))
+            record = cursor.fetchone()
+            return dict(record) if record else None
     finally:
         if conn: conn.close()
 
@@ -119,18 +160,18 @@ def add_bill_record(details: dict):
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed.", None
     try:
-        cursor = conn.cursor()
-        query = "SELECT id FROM UtilityBills WHERE dorm_id = ? AND bill_type = ? AND bill_start_date = ? AND amount = ?"
-        params = (details['dorm_id'], details['bill_type'], details['bill_start_date'], details['amount'])
-        cursor.execute(query, params)
-        if cursor.fetchone():
-            return False, f"新增失敗：已存在完全相同的費用紀錄。", None
+        with conn.cursor() as cursor:
+            query = 'SELECT id FROM "UtilityBills" WHERE dorm_id = %s AND bill_type = %s AND bill_start_date = %s AND amount = %s'
+            params = (details['dorm_id'], details['bill_type'], details['bill_start_date'], details['amount'])
+            cursor.execute(query, params)
+            if cursor.fetchone():
+                return False, f"新增失敗：已存在完全相同的費用紀錄。", None
 
-        columns = ', '.join(f'"{k}"' for k in details.keys())
-        placeholders = ', '.join(['?'] * len(details))
-        sql = f"INSERT INTO UtilityBills ({columns}) VALUES ({placeholders})"
-        cursor.execute(sql, tuple(details.values()))
-        new_id = cursor.lastrowid
+            columns = ', '.join(f'"{k}"' for k in details.keys())
+            placeholders = ', '.join(['%s'] * len(details))
+            sql = f'INSERT INTO "UtilityBills" ({columns}) VALUES ({placeholders}) RETURNING id'
+            cursor.execute(sql, tuple(details.values()))
+            new_id = cursor.fetchone()['id']
         conn.commit()
         return True, f"成功新增費用紀錄 (ID: {new_id})", new_id
     except Exception as e:
@@ -144,12 +185,11 @@ def update_bill_record(record_id: int, details: dict):
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed."
     try:
-        cursor = conn.cursor()
-        fields = ', '.join([f'"{key}" = ?' for key in details.keys()])
-        values = list(details.values())
-        values.append(record_id)
-        sql = f"UPDATE UtilityBills SET {fields} WHERE id = ?"
-        cursor.execute(sql, tuple(values))
+        with conn.cursor() as cursor:
+            fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
+            values = list(details.values()) + [record_id]
+            sql = f'UPDATE "UtilityBills" SET {fields} WHERE id = %s'
+            cursor.execute(sql, tuple(values))
         conn.commit()
         return True, "帳單紀錄更新成功！"
     except Exception as e:
@@ -163,8 +203,8 @@ def delete_bill_record(record_id: int):
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed."
     try:
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM UtilityBills WHERE id = ?", (record_id,))
+        with conn.cursor() as cursor:
+            cursor.execute('DELETE FROM "UtilityBills" WHERE id = %s', (record_id,))
         conn.commit()
         return True, "帳單紀錄已成功刪除。"
     except Exception as e:
@@ -184,11 +224,11 @@ def get_annual_expenses_for_dorm_as_df(dorm_id: int):
                 id, expense_item AS "費用項目", payment_date AS "支付日期",
                 total_amount AS "總金額", amortization_start_month AS "攤提起始月",
                 amortization_end_month AS "攤提結束月", notes AS "備註"
-            FROM AnnualExpenses
-            WHERE dorm_id = ?
+            FROM "AnnualExpenses"
+            WHERE dorm_id = %s
             ORDER BY payment_date DESC
         """
-        return pd.read_sql_query(query, conn, params=(dorm_id,))
+        return _execute_query_to_dataframe(conn, query, (dorm_id,))
     finally:
         if conn: conn.close()
 
@@ -197,12 +237,12 @@ def add_annual_expense_record(details: dict):
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed.", None
     try:
-        cursor = conn.cursor()
-        columns = ', '.join(f'"{k}"' for k in details.keys())
-        placeholders = ', '.join(['?'] * len(details))
-        sql = f"INSERT INTO AnnualExpenses ({columns}) VALUES ({placeholders})"
-        cursor.execute(sql, tuple(details.values()))
-        new_id = cursor.lastrowid
+        with conn.cursor() as cursor:
+            columns = ', '.join(f'"{k}"' for k in details.keys())
+            placeholders = ', '.join(['%s'] * len(details))
+            sql = f'INSERT INTO "AnnualExpenses" ({columns}) VALUES ({placeholders}) RETURNING id'
+            cursor.execute(sql, tuple(details.values()))
+            new_id = cursor.fetchone()['id']
         conn.commit()
         return True, f"成功新增年度費用 (ID: {new_id})", new_id
     except Exception as e:
@@ -216,8 +256,8 @@ def delete_annual_expense_record(record_id: int):
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed."
     try:
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM AnnualExpenses WHERE id = ?", (record_id,))
+        with conn.cursor() as cursor:
+            cursor.execute('DELETE FROM "AnnualExpenses" WHERE id = %s', (record_id,))
         conn.commit()
         return True, "年度費用紀錄已成功刪除。"
     except Exception as e:

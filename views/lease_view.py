@@ -1,13 +1,12 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 from data_models import lease_model, dormitory_model
 
 def render():
     """渲染「合約管理」頁面"""
     st.header("租賃合約管理")
 
-    # --- 1. 新增合約 ---
     with st.expander("➕ 新增租賃合約"):
         with st.form("new_lease_form", clear_on_submit=True):
             dorms = dormitory_model.get_dorms_for_selection() or []
@@ -44,7 +43,6 @@ def render():
 
     st.markdown("---")
 
-    # --- 2. 合約總覽與篩選 ---
     st.subheader("現有合約總覽")
     
     dorms_for_filter = dormitory_model.get_dorms_for_selection() or []
@@ -57,17 +55,20 @@ def render():
 
     leases_df = get_leases(dorm_id_filter)
     
-    # 【核心修改】移除 on_select 功能，讓表格回歸純粹的顯示
     st.dataframe(leases_df, use_container_width=True, hide_index=True)
     
     st.markdown("---")
 
-    # --- 3. 【全新】獨立的編輯與刪除區塊 ---
     st.subheader("編輯或刪除單筆合約")
 
     if leases_df.empty:
         st.info("目前沒有可供操作的合約紀錄。")
     else:
+        # 為了避免 st.rerun() 後 dorm_options 未定義的問題，重新獲取一次
+        if 'dorm_options' not in locals():
+            dorms = dormitory_model.get_dorms_for_selection() or []
+            dorm_options = {d['id']: d['original_address'] for d in dorms}
+            
         lease_options_dict = {
             row['id']: f"ID:{row['id']} - {row['宿舍地址']} ({row['合約起始日']})" 
             for _, row in leases_df.iterrows()
@@ -84,12 +85,13 @@ def render():
             if not lease_details:
                 st.error("找不到選定的合約資料。")
             else:
-                with st.form("edit_lease_form"):
+                with st.form(f"edit_lease_form_{selected_lease_id}"):
                     st.text_input("宿舍地址", value=dorm_options.get(lease_details['dorm_id'], "未知"), disabled=True)
                     
                     ec1, ec2 = st.columns(2)
-                    start_date_val = datetime.strptime(lease_details['lease_start_date'], '%Y-%m-%d').date() if lease_details.get('lease_start_date') else None
-                    end_date_val = datetime.strptime(lease_details['lease_end_date'], '%Y-%m-%d').date() if lease_details.get('lease_end_date') else None
+                    # 【核心修改】直接使用 date 物件，不再需要 strptime
+                    start_date_val = lease_details.get('lease_start_date')
+                    end_date_val = lease_details.get('lease_end_date')
                     
                     e_lease_start_date = ec1.date_input("合約起始日", value=start_date_val)
                     e_lease_end_date = ec2.date_input("合約截止日", value=end_date_val)
@@ -118,8 +120,8 @@ def render():
 
                 st.markdown("---")
                 st.markdown("##### 危險操作區")
-                confirm_delete = st.checkbox("我了解並確認要刪除此筆合約")
-                if st.button("🗑️ 刪除此合約", type="primary", disabled=not confirm_delete):
+                confirm_delete = st.checkbox("我了解並確認要刪除此筆合約", key=f"delete_confirm_{selected_lease_id}")
+                if st.button("🗑️ 刪除此合約", type="primary", disabled=not confirm_delete, key=f"delete_button_{selected_lease_id}"):
                     success, message = lease_model.delete_lease(selected_lease_id)
                     if success:
                         st.success(message)

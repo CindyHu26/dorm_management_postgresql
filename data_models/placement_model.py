@@ -1,12 +1,23 @@
 import pandas as pd
 import database
 
+def _execute_query_to_dataframe(conn, query, params=None):
+    """一個輔助函式，用來手動執行查詢並回傳 DataFrame。"""
+    with conn.cursor() as cursor:
+        cursor.execute(query, params)
+        records = cursor.fetchall()
+        if not records:
+            columns = [desc[0] for desc in cursor.description] if cursor.description else []
+            return pd.DataFrame([], columns=columns)
+        
+        columns = [desc[0] for desc in cursor.description]
+        return pd.DataFrame(records, columns=columns)
+
 def find_available_rooms(filters: dict):
     """
-    根據篩選條件（例如性別、多個宿舍），查找所有符合條件且有空床位的房間。
+    根據篩選條件（例如性別、多個宿舍），查找所有符合條件且有空床位的房間 (已為 PostgreSQL 優化)。
     """
     gender_to_place = filters.get("gender")
-    # 【本次修改】將接收單一ID改為接收ID列表
     dorm_ids_filter = filters.get("dorm_ids")
 
     if not gender_to_place:
@@ -19,47 +30,65 @@ def find_available_rooms(filters: dict):
             SELECT
                 r.id as room_id, d.original_address, r.room_number,
                 r.capacity, r.gender_policy, r.nationality_policy, r.room_notes
-            FROM Rooms r
-            JOIN Dormitories d ON r.dorm_id = d.id
+            FROM "Rooms" r
+            JOIN "Dormitories" d ON r.dorm_id = d.id
             WHERE d.primary_manager = '我司'
         """
         params = []
         
-        # 如果使用者提供了宿舍列表，則使用 IN 子句進行篩選
         if dorm_ids_filter:
-            placeholders = ', '.join('?' for _ in dorm_ids_filter)
-            base_query += f" AND d.id IN ({placeholders})"
-            params.extend(dorm_ids_filter)
+            base_query += ' AND d.id IN %s'
+            # psycopg2 需要將 list 轉為 tuple
+            params.append(tuple(dorm_ids_filter))
 
-        rooms_df = pd.read_sql_query(base_query, conn, params=params)
+        rooms_df = _execute_query_to_dataframe(conn, base_query, tuple(params) if params else None)
         if rooms_df.empty:
             return pd.DataFrame()
 
-        workers_query = "SELECT room_id, employer_name, nationality, gender FROM Workers WHERE (accommodation_end_date IS NULL OR accommodation_end_date = '')"
-        workers_df = pd.read_sql_query(workers_query, conn)
+        workers_query = """
+            SELECT room_id, employer_name, nationality, gender 
+            FROM "Workers" 
+            WHERE (accommodation_end_date IS NULL OR accommodation_end_date > CURRENT_DATE)
+        """
+        workers_df = _execute_query_to_dataframe(conn, workers_query)
         
-        occupancy = workers_df.groupby('room_id').size().rename('current_occupants')
-        rooms_df = rooms_df.merge(occupancy, left_on='room_id', right_index=True, how='left')
+        # 後續的 Pandas 邏輯完全不需要修改
+        if not workers_df.empty:
+            occupancy = workers_df.groupby('room_id').size().rename('current_occupants')
+            rooms_df = rooms_df.merge(occupancy, left_on='room_id', right_index=True, how='left')
+        else:
+            rooms_df['current_occupants'] = 0
+
         rooms_df['current_occupants'] = rooms_df['current_occupants'].fillna(0).astype(int)
         
         rooms_df['vacancies'] = rooms_df['capacity'] - rooms_df['current_occupants']
         available_rooms_df = rooms_df[rooms_df['vacancies'] > 0].copy()
         
-        room_gender_info = workers_df.groupby('room_id')['gender'].unique().apply(list).rename('current_genders')
-        available_rooms_df = available_rooms_df.merge(room_gender_info, on='room_id', how='left')
+        if not workers_df.empty:
+            room_gender_info = workers_df.groupby('room_id')['gender'].unique().apply(list).rename('current_genders')
+            available_rooms_df = available_rooms_df.merge(room_gender_info, on='room_id', how='left')
+        else:
+            # 如果沒有任何在住人員，則所有空房的 current_genders 都是空的
+            available_rooms_df['current_genders'] = [[] for _ in range(len(available_rooms_df))]
+        
+        # 確保 current_genders 欄位中的 NaN 被轉換為空列表
+        available_rooms_df['current_genders'] = available_rooms_df['current_genders'].apply(lambda d: d if isinstance(d, list) else [])
 
         suitable_rooms = []
         for _, room in available_rooms_df.iterrows():
             is_suitable = False
-            current_genders = room.get('current_genders') if isinstance(room.get('current_genders'), list) else []
+            current_genders = room.get('current_genders', [])
 
-            if gender_to_place == '女':
-                if room['gender_policy'] in ['僅限女性', '可混住']: is_suitable = True
-                elif not current_genders: is_suitable = True
-            
+            if not current_genders: # 房間是空的
+                 is_suitable = True
+            elif gender_to_place == '女':
+                # 房內沒有男性，且性別政策允許女性
+                if '男' not in current_genders and room['gender_policy'] in ['僅限女性', '可混住']:
+                    is_suitable = True
             elif gender_to_place == '男':
-                if room['gender_policy'] in ['僅限男性', '可混住']: is_suitable = True
-                elif not current_genders: is_suitable = True
+                # 房內沒有女性，且性別政策允許男性
+                if '女' not in current_genders and room['gender_policy'] in ['僅限男性', '可混住']:
+                    is_suitable = True
 
             if is_suitable:
                 current_occupants_list = workers_df[workers_df['room_id'] == room['room_id']]

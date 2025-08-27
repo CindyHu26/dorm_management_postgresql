@@ -8,4 +8,5 @@ pyinstaller
 gspread
 gspread-dataframe
 oauth2client
+psycopg2-binary
 

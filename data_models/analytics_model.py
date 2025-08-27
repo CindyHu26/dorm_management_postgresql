@@ -1,6 +1,18 @@
 import pandas as pd
 import database
 
+def _execute_query_to_dataframe(conn, query, params=None):
+    """一個輔助函式，用來手動執行查詢並回傳 DataFrame。"""
+    with conn.cursor() as cursor:
+        cursor.execute(query, params)
+        records = cursor.fetchall()
+        if not records:
+            columns = [desc[0] for desc in cursor.description] if cursor.description else []
+            return pd.DataFrame([], columns=columns)
+        
+        columns = [desc[0] for desc in cursor.description]
+        return pd.DataFrame(records, columns=columns)
+
 def get_all_meters_for_selection():
     """獲取所有「我司管理」宿舍的電水錶列表，用於下拉選單。"""
     conn = database.get_db_connection()
@@ -12,13 +24,16 @@ def get_all_meters_for_selection():
                 d.original_address,
                 m.meter_type,
                 m.meter_number
-            FROM Meters m
-            JOIN Dormitories d ON m.dorm_id = d.id
+            FROM "Meters" m
+            JOIN "Dormitories" d ON m.dorm_id = d.id
             WHERE d.primary_manager = '我司'
             ORDER BY d.original_address, m.meter_type, m.meter_number
         """
-        records = pd.read_sql_query(query, conn)
-        return records.to_dict('records')
+        # 對於需要回傳字典列表的，我們也手動處理
+        with conn.cursor() as cursor:
+            cursor.execute(query)
+            records = cursor.fetchall()
+            return [dict(row) for row in records]
     finally:
         if conn: conn.close()
 
@@ -34,11 +49,11 @@ def get_bill_history_for_meter(meter_id: int):
                 bill_start_date AS "帳單起始日",
                 bill_end_date AS "帳單結束日",
                 amount AS "帳單金額"
-            FROM UtilityBills
-            WHERE meter_id = ?
+            FROM "UtilityBills"
+            WHERE meter_id = %(meter_id)s
             ORDER BY bill_end_date ASC
         """
-        df = pd.read_sql_query(query, conn, params=(meter_id,))
+        df = _execute_query_to_dataframe(conn, query, {"meter_id": meter_id})
         if not df.empty:
             df['帳單結束日'] = pd.to_datetime(df['帳單結束日'])
         return df
@@ -48,7 +63,6 @@ def get_bill_history_for_meter(meter_id: int):
 def find_expense_anomalies():
     """
     使用統計學方法 (IQR)，找出所有我司管理宿舍中，費用異常升高或降低的帳單紀錄。
-    【v1.1 修改】在結果中增加「正常範圍」的欄位，提供判斷依據。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -61,15 +75,16 @@ def find_expense_anomalies():
                 b.bill_start_date,
                 b.bill_end_date,
                 b.amount
-            FROM UtilityBills b
-            JOIN Meters m ON b.meter_id = m.id
-            JOIN Dormitories d ON b.dorm_id = d.id
+            FROM "UtilityBills" b
+            JOIN "Meters" m ON b.meter_id = m.id
+            JOIN "Dormitories" d ON b.dorm_id = d.id
             WHERE d.primary_manager = '我司'
         """
-        df = pd.read_sql_query(query, conn)
+        df = _execute_query_to_dataframe(conn, query)
         if df.empty or len(df) < 4:
             return pd.DataFrame()
 
+        # Pandas 的 groupby 和統計計算邏輯維持不變
         anomalies = []
         for meter, group in df.groupby(['original_address', 'meter_type', 'meter_number']):
             if len(group) < 4: continue
