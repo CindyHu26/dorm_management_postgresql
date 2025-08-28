@@ -150,73 +150,47 @@ def get_workers_for_rent_management(filters: dict):
 
 def batch_update_rent(filters: dict, old_rent: int, new_rent: int, update_nulls: bool = False):
     """
-    批次更新指定篩選條件下(宿舍或雇主)移工的月費，並為每一筆變動建立歷史紀錄。
+    批次更新指定篩選條件下移工的月費，並為每一筆變動建立歷史紀錄。
     """
-    filter_by = filters.get("filter_by")
-    values = filters.get("values")
-
-    if not filter_by or not values:
-        return False, "未選擇任何篩選目標。"
+    # 【核心修改】不再直接操作資料庫，而是先找出目標，再呼叫 worker_model
     
-    conn = database.get_db_connection()
-    if not conn: return False, "無法連接到資料庫。"
+    # 步驟 1: 找出所有符合條件的員工
+    # 我們可以複用 get_workers_for_rent_management 來找出目標
+    all_workers_df = get_workers_for_rent_management(filters)
+    if all_workers_df.empty:
+        return False, "在選定條件中，找不到任何在住人員。"
+
+    # 步驟 2: 根據舊租金條件再次篩選
+    if update_nulls:
+        target_df = all_workers_df[all_workers_df['目前月費'].isnull()]
+        target_description = "目前房租為『未設定』"
+    else:
+        target_df = all_workers_df[all_workers_df['目前月費'] == old_rent]
+        target_description = f"目前月費為 {old_rent}"
     
-    try:
-        with conn.cursor() as cursor:
-            # 步驟 1: 根據篩選條件，找出所有需要更新的員工 unique_id 和舊的 monthly_fee
-            id_query_base = 'SELECT w.unique_id, w.monthly_fee FROM "Workers" w '
-            placeholders = ', '.join(['%s'] * len(values))
+    if target_df.empty:
+        return False, f"在選定條件中，找不到{target_description}的在住人員。"
 
-            if filter_by == "dorm":
-                id_query_base += f'JOIN "Rooms" r ON w.room_id = r.id WHERE r.dorm_id IN ({placeholders})'
-            elif filter_by == "employer":
-                id_query_base += f'WHERE w.employer_name IN ({placeholders})'
-            
-            id_query_base += " AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)"
-            
-            # 加上對舊租金的篩選
-            if update_nulls:
-                id_query_base += " AND w.monthly_fee IS NULL"
-                target_description = "目前房租為『未設定』"
-            else:
-                id_query_base += " AND w.monthly_fee = %s"
-                values.append(old_rent)
-                target_description = f"目前月費為 {old_rent}"
-            
-            cursor.execute(id_query_base, tuple(values))
-            target_workers = cursor.fetchall()
+    target_ids = target_df['unique_id'].tolist()
+    updated_count = 0
+    failed_ids = []
 
-            if not target_workers:
-                return False, f"在選定條件中，找不到{target_description}的在住人員。"
+    # 步驟 3: 逐一呼叫 worker_model 的更新函式
+    for worker_id in target_ids:
+        update_data = {'monthly_fee': new_rent}
+        success, message = worker_model.update_worker_details(worker_id, update_data)
+        if success:
+            updated_count += 1
+        else:
+            failed_ids.append(worker_id)
+            print(f"更新 worker_id: {worker_id} 失敗: {message}")
 
-            target_ids = [w['unique_id'] for w in target_workers]
-            today = datetime.now().date()
-            updated_count = 0
-
-            # 步驟 2: 逐一更新，並寫入歷史紀錄
-            for worker in target_workers:
-                worker_id = worker['unique_id']
-                old_fee = worker['monthly_fee']
-
-                # 只有在新舊費用不同時才執行更新和記錄
-                if old_fee != new_rent:
-                    # 更新 Workers 表
-                    update_sql = 'UPDATE "Workers" SET monthly_fee = %s WHERE unique_id = %s'
-                    cursor.execute(update_sql, (new_rent, worker_id))
-                    
-                    # 在 FeeHistory 表中新增一筆紀錄
-                    history_sql = 'INSERT INTO "FeeHistory" (worker_unique_id, fee_type, amount, effective_date) VALUES (%s, %s, %s, %s)'
-                    cursor.execute(history_sql, (worker_id, '房租', new_rent, today))
-                    
-                    updated_count += 1
-        
-        conn.commit()
+    if updated_count > 0 and not failed_ids:
         return True, f"成功更新了 {updated_count} 位人員的房租，並已寫入歷史紀錄。"
-    except Exception as e:
-        if conn: conn.rollback()
-        return False, f"更新房租時發生錯誤: {e}"
-    finally:
-        if conn: conn.close()
+    elif updated_count > 0 and failed_ids:
+        return True, f"成功更新 {updated_count} 位，但有 {len(failed_ids)} 位更新失敗。"
+    else:
+        return False, "沒有任何人員的房租被更新（可能所有符合條件人員的房租已是新金額，或更新失敗）。"
 
 # --- 費用管理 (帳單式) ---
 
