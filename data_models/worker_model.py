@@ -89,15 +89,21 @@ def _log_fee_change(cursor, worker_id, details, old_details):
     today = date.today()
 
     for key, fee_type_name in fee_map.items():
+        # 從 details (新資料) 中獲取值，如果不存在則跳過
+        if key not in details:
+            continue
+            
         new_value = details.get(key)
         old_value = old_details.get(key) if old_details else None
-        new_amount = int(new_value) if new_value is not None else None
-        old_amount = int(old_value) if old_value is not None else None
         
-        if new_amount is not None and new_amount != old_amount:
+        # 【核心修改】將兩者都轉換為整數再比較，避免型別問題
+        new_amount = int(new_value) if new_value is not None else 0
+        old_amount = int(old_value) if old_value is not None else 0
+        
+        if new_amount != old_amount:
             sql = 'INSERT INTO "FeeHistory" (worker_unique_id, fee_type, amount, effective_date) VALUES (%s, %s, %s, %s)'
             cursor.execute(sql, (worker_id, fee_type_name, new_amount, today))
-            print(f"記錄費用變更: {worker_id} - {fee_type_name} -> {new_amount}")
+            print(f"記錄費用變更: {worker_id} - {fee_type_name} 從 {old_amount} 改為 {new_amount}")
 
 def update_worker_details(unique_id: str, details: dict):
     """更新移工的核心資料，並自動記錄費用變更歷史。"""
@@ -108,7 +114,9 @@ def update_worker_details(unique_id: str, details: dict):
             cursor.execute('SELECT monthly_fee, utilities_fee, cleaning_fee FROM "Workers" WHERE unique_id = %s', (unique_id,))
             old_details = cursor.fetchone()
             if not old_details: return False, "找不到指定的員工。"
+            
             _log_fee_change(cursor, unique_id, details, old_details)
+            
             fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
             values = list(details.values()) + [unique_id]
             sql = f'UPDATE "Workers" SET {fields} WHERE "unique_id" = %s'
