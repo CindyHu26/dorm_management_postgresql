@@ -9,6 +9,7 @@ from views import (
     dorm_analyzer_view, 
     employer_dashboard_view,
     analytics_view,
+    loss_analyzer_view,
     scraper_view, 
     dormitory_view,
     placement_view,  
@@ -40,6 +41,7 @@ PAGES = {
         "宿舍深度分析": dorm_analyzer_view,
         "雇主儀表板": employer_dashboard_view,
         "費用分析": analytics_view,
+        "虧損宿舍分析": loss_analyzer_view,
         "匯出報表": report_view
     },
     "核心業務管理": {
