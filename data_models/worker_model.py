@@ -26,7 +26,7 @@ def get_workers_for_view(filters: dict):
     try:
         base_query = f"""
             SELECT
-                w.unique_id, d.primary_manager AS "主要管理人", w.gender AS "性別",
+                w.employer_name AS "雇主", w.worker_name AS "姓名", d.primary_manager AS "主要管理人", w.gender AS "性別",
                 w.nationality AS "國籍", d.original_address as "宿舍地址", r.room_number as "房號",
                 w.accommodation_start_date AS "入住日期", w.accommodation_end_date AS "離住日期",
                 w.arrival_date AS "抵台日期", w.work_permit_expiry_date AS "工作限期",
@@ -36,7 +36,7 @@ def get_workers_for_view(filters: dict):
                     THEN '已離住' ELSE '在住'
                 END as "在住狀態",
                 w.monthly_fee AS "月費(房租)", w.utilities_fee AS "水電費", w.cleaning_fee AS "清潔費",
-                w.worker_notes AS "個人備註", w.employer_name AS "雇主", w.worker_name AS "姓名",
+                w.worker_notes AS "個人備註", w.unique_id, 
                 w.passport_number AS "護照號碼", w.arc_number AS "居留證號碼", w.data_source as "資料來源"
             FROM "Workers" w
             LEFT JOIN "Rooms" r ON w.room_id = r.id
@@ -176,12 +176,28 @@ def delete_worker_by_id(unique_id: str):
         if conn: conn.close()
 
 def get_my_company_workers_for_selection():
-    """所有移工的列表，用於編輯下拉選單。"""
+    """
+    獲取所有「在住」的員工列表，用於編輯下拉選單 (已修正)。
+    """
     conn = database.get_db_connection()
     if not conn: return []
     try:
         with conn.cursor() as cursor:
-            query = 'SELECT w.unique_id, w.employer_name, w.worker_name, d.original_address FROM "Workers" w JOIN "Rooms" r ON w.room_id = r.id JOIN "Dormitories" d ON r.dorm_id = d.id ORDER BY d.original_address, w.worker_name'
+            # 1. 使用 LEFT JOIN 確保沒有分配房間的員工也能被選中
+            # 2. 使用 COALESCE 讓未分配宿舍的員工也能正常顯示
+            # 3. 篩選所有在住的員工
+            query = """
+                SELECT 
+                    w.unique_id, 
+                    w.employer_name, 
+                    w.worker_name, 
+                    COALESCE(d.original_address, '--- 未分配宿舍 ---') as original_address
+                FROM "Workers" w
+                LEFT JOIN "Rooms" r ON w.room_id = r.id
+                LEFT JOIN "Dormitories" d ON r.dorm_id = d.id
+                WHERE (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)
+                ORDER BY d.original_address, w.worker_name
+            """
             cursor.execute(query)
             records = cursor.fetchall()
             return [dict(row) for row in records]
