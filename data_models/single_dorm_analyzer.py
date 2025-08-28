@@ -103,18 +103,20 @@ def get_resident_summary(dorm_id: int, year_month: str):
     }
 
 def get_expense_summary(dorm_id: int, year_month: str):
-    """計算指定月份，宿舍的總支出細項。"""
+    """計算指定月份，宿舍的總支出細項 (已為 PostgreSQL 優化)。"""
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     
     try:
         params = {"dorm_id": dorm_id, "year_month": year_month}
+        # 【核心修改】採用與 dashboard_model.py 相同的精準計算邏輯
         query = """
             WITH DateParams AS (
                 SELECT 
                     TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
                     (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval) as first_day_of_next_month
             )
+            -- 1. 月租金
             SELECT '月租金' AS "費用項目", monthly_rent AS "金額"
             FROM "Leases"
             WHERE dorm_id = %(dorm_id)s 
@@ -123,20 +125,22 @@ def get_expense_summary(dorm_id: int, year_month: str):
             
             UNION ALL
             
+            -- 2. 變動雜費 (按支付方分類)
             SELECT 
-                b.bill_type,
+                '雜費 (' || COALESCE(payer, '未指定') || '支付)' AS "費用項目",
                 SUM(b.amount::decimal * EXTRACT(DAY FROM (LEAST(b.bill_end_date, (SELECT first_day_of_next_month FROM DateParams) - '1 day'::interval) - GREATEST(b.bill_start_date, (SELECT first_day_of_month FROM DateParams)) + '1 day'::interval))
                     / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0))
             FROM "UtilityBills" b
             WHERE b.dorm_id = %(dorm_id)s
               AND b.bill_start_date < (SELECT first_day_of_next_month FROM DateParams) 
               AND b.bill_end_date >= (SELECT first_day_of_month FROM DateParams)
-            GROUP BY b.bill_type
+            GROUP BY b.payer
 
             UNION ALL
 
+            -- 3. 長期攤銷費用
             SELECT 
-                expense_item,
+                expense_item || ' (攤銷)' AS "費用項目",
                 SUM(ROUND(total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0)))
             FROM "AnnualExpenses"
             WHERE dorm_id = %(dorm_id)s

@@ -193,17 +193,21 @@ def batch_update_rent(filters: dict, old_rent: int, new_rent: int, update_nulls:
         return False, "沒有任何人員的房租被更新（可能所有符合條件人員的房租已是新金額，或更新失敗）。"
 
 # --- 費用管理 (帳單式) ---
-
 def get_bill_records_for_dorm_as_df(dorm_id: int):
     """查詢指定宿舍的所有獨立帳單紀錄。"""
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
+        # 【核心修改】在 SELECT 中加入 payer 和 is_pass_through 欄位
         query = """
             SELECT 
                 b.id, b.bill_type AS "費用類型", b.amount AS "帳單金額",
                 b.bill_start_date AS "帳單起始日", b.bill_end_date AS "帳單結束日",
-                m.meter_number AS "對應錶號", b.is_invoiced AS "是否已請款", b.notes AS "備註"
+                m.meter_number AS "對應錶號",
+                b.payer AS "支付方", 
+                b.is_pass_through AS "是否為代收代付",
+                b.is_invoiced AS "是否已請款", 
+                b.notes AS "備註"
             FROM "UtilityBills" b
             LEFT JOIN "Meters" m ON b.meter_id = m.id
             WHERE b.dorm_id = %s

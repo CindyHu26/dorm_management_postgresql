@@ -42,65 +42,77 @@ def get_dormitory_dashboard_data():
         if conn: conn.close()
         
 def get_financial_dashboard_data(year_month: str):
-    """執行一個複雜的聚合查詢，為指定的月份計算收支與損益。"""
+    """執行一個複雜的聚合查詢，為指定的月份計算收支與損益 (已為 PostgreSQL 全面重寫)。"""
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
         params = {"year_month": year_month}
+        
         query = """
             WITH DateParams AS (
                 SELECT 
                     TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
                     (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval) as first_day_of_next_month
             ),
-            MonthlyIncome AS (
-                SELECT 
-                    r.dorm_id, 
-                    SUM(COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0)) as total_income
+            WorkerIncome AS ( -- 員工費用收入
+                SELECT r.dorm_id, 
+                       SUM(COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0)) as total_income
                 FROM "Workers" w JOIN "Rooms" r ON w.room_id = r.id JOIN "Dormitories" d ON r.dorm_id = d.id
                 WHERE d.primary_manager = '我司'
                   AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date >= (SELECT first_day_of_month FROM DateParams))
                   AND (w.accommodation_start_date IS NULL OR w.accommodation_start_date < (SELECT first_day_of_next_month FROM DateParams))
                 GROUP BY r.dorm_id
             ),
-            MonthlyRent AS (
+            PassThroughIncome AS ( -- 【新增】代收代付類型的收入
+                SELECT b.dorm_id, SUM(b.amount) as total_pass_through_income
+                FROM "UtilityBills" b
+                WHERE b.is_pass_through = TRUE
+                  AND b.bill_start_date < (SELECT first_day_of_next_month FROM DateParams) 
+                  AND b.bill_end_date >= (SELECT first_day_of_month FROM DateParams)
+                GROUP BY b.dorm_id
+            ),
+            MonthlyRent AS ( -- 租金支出
                 SELECT dorm_id, monthly_rent FROM "Leases"
                 WHERE lease_start_date < (SELECT first_day_of_next_month FROM DateParams)
                   AND (lease_end_date IS NULL OR lease_end_date >= (SELECT first_day_of_month FROM DateParams))
             ),
-            ProratedUtilities AS (
-                SELECT 
-                    b.dorm_id,
-                    SUM(b.amount::decimal * EXTRACT(DAY FROM (LEAST(b.bill_end_date, (SELECT first_day_of_next_month FROM DateParams) - '1 day'::interval) - GREATEST(b.bill_start_date, (SELECT first_day_of_month FROM DateParams)) + '1 day'::interval))
-                        / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)
-                    ) as total_utilities
+            ProratedUtilities AS ( -- 【修改】雜項支出，只計算我司支付的部分
+                SELECT b.dorm_id,
+                       SUM(b.amount::decimal * EXTRACT(DAY FROM (LEAST(b.bill_end_date, (SELECT first_day_of_next_month FROM DateParams) - '1 day'::interval) - GREATEST(b.bill_start_date, (SELECT first_day_of_month FROM DateParams)) + '1 day'::interval))
+                           / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)
+                       ) as total_utilities
                 FROM "UtilityBills" b
-                WHERE b.bill_start_date < (SELECT first_day_of_next_month FROM DateParams) 
+                WHERE b.payer = '我司' -- 只計算我司支付
+                  AND b.bill_start_date < (SELECT first_day_of_next_month FROM DateParams) 
                   AND b.bill_end_date >= (SELECT first_day_of_month FROM DateParams)
                 GROUP BY b.dorm_id
             ),
-            AmortizedExpenses AS (
-                SELECT 
-                    dorm_id, 
-                    SUM(
-                        ROUND(total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0))
-                    ) as total_amortized
+            AmortizedExpenses AS ( -- 長期攤銷支出
+                SELECT dorm_id, 
+                       SUM(ROUND(total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0))) as total_amortized
                 FROM "AnnualExpenses"
                 WHERE TO_DATE(amortization_start_month, 'YYYY-MM') <= (SELECT first_day_of_month FROM DateParams)
                   AND TO_DATE(amortization_end_month, 'YYYY-MM') >= (SELECT first_day_of_month FROM DateParams)
                 GROUP BY dorm_id
             )
             SELECT
-                d.original_address AS "宿舍地址", COALESCE(mi.total_income, 0)::int AS "預計總收入",
-                COALESCE(mr.monthly_rent, 0)::int AS "宿舍月租", ROUND(COALESCE(pu.total_utilities, 0))::int AS "變動雜費",
+                d.original_address AS "宿舍地址",
+                -- 【修改】總收入 = 員工費用收入 + 代收代付收入
+                (COALESCE(wi.total_income, 0) + COALESCE(pti.total_pass_through_income, 0))::int AS "預計總收入",
+                COALESCE(mr.monthly_rent, 0)::int AS "宿舍月租",
+                ROUND(COALESCE(pu.total_utilities, 0))::int AS "變動雜費(我司支付)",
                 COALESCE(ae.total_amortized, 0)::int AS "長期攤銷",
-                (COALESCE(mr.monthly_rent, 0) + ROUND(COALESCE(pu.total_utilities, 0)) + COALESCE(ae.total_amortized, 0))::int AS "預計總支出",
-                (COALESCE(mi.total_income, 0) - (COALESCE(mr.monthly_rent, 0) + ROUND(COALESCE(pu.total_utilities, 0)) + COALESCE(ae.total_amortized, 0)))::int AS "預估損益"
+                -- 【修改】總支出 = 租金 + 我司支付雜費 + 長期攤銷 + 代收代付的支出部分
+                (COALESCE(mr.monthly_rent, 0) + ROUND(COALESCE(pu.total_utilities, 0)) + COALESCE(ae.total_amortized, 0) + COALESCE(pti.total_pass_through_income, 0))::int AS "預計總支出",
+                -- 損益計算中，代收代付的收入和支出會互相抵銷
+                (COALESCE(wi.total_income, 0) - (COALESCE(mr.monthly_rent, 0) + ROUND(COALESCE(pu.total_utilities, 0)) + COALESCE(ae.total_amortized, 0)))::int AS "預估損益"
             FROM "Dormitories" d
-            LEFT JOIN MonthlyIncome mi ON d.id = mi.dorm_id LEFT JOIN MonthlyRent mr ON d.id = mr.dorm_id
-            LEFT JOIN ProratedUtilities pu ON d.id = pu.dorm_id LEFT JOIN AmortizedExpenses ae ON d.id = ae.dorm_id
+            LEFT JOIN WorkerIncome wi ON d.id = wi.dorm_id
+            LEFT JOIN PassThroughIncome pti ON d.id = pti.dorm_id
+            LEFT JOIN MonthlyRent mr ON d.id = mr.dorm_id
+            LEFT JOIN ProratedUtilities pu ON d.id = pu.dorm_id
+            LEFT JOIN AmortizedExpenses ae ON d.id = ae.dorm_id
             WHERE d.primary_manager = '我司'
-              AND (mi.total_income IS NOT NULL OR mr.monthly_rent IS NOT NULL OR pu.total_utilities IS NOT NULL OR ae.total_amortized IS NOT NULL)
             ORDER BY "預估損益" ASC;
         """
         return _execute_query_to_dataframe(conn, query, params)
