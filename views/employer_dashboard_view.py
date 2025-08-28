@@ -39,7 +39,6 @@ def render():
     # --- 2. 顯示結果 ---
     if selected_employer:
         
-        # --- 獲取數據 ---
         @st.cache_data
         def get_details(employer):
             return employer_dashboard_model.get_employer_resident_details(employer)
@@ -62,28 +61,35 @@ def render():
             else:
                 # 計算總計
                 total_income = finance_df['收入(員工月費)'].sum()
-                total_expense = finance_df['分攤月租'].sum() + finance_df['分攤雜費'].sum() + finance_df['分攤長期費用'].sum()
-                profit_loss = total_income - total_expense
+                # 「我司」的總支出是我們需要負擔的月租和雜費的總和
+                total_expense_by_us = finance_df['我司分攤月租'].sum() + finance_df['我司分攤雜費'].sum()
+                profit_loss = total_income - total_expense_by_us
 
                 f_col1, f_col2, f_col3 = st.columns(3)
-                f_col1.metric("預估總收入 (員工月費)", f"NT$ {total_income:,}")
-                f_col2.metric("預估分攤總支出", f"NT$ {total_expense:,}")
-                f_col3.metric("預估淨貢獻", f"NT$ {profit_loss:,}", delta=f"{profit_loss:,}")
+                f_col1.metric("預估總收入 (員工月費)", f"NT$ {total_income:,.0f}")
+                f_col2.metric("預估我司分攤總支出", f"NT$ {total_expense_by_us:,.0f}")
+                f_col3.metric("預估淨貢獻", f"NT$ {profit_loss:,.0f}", delta=f"{profit_loss:,.0f}")
 
                 # 顯示詳細收支表
-                st.markdown("##### 各宿舍收支詳情")
-                # 增加「總支出」和「損益」欄位
-                finance_df_display = finance_df.copy()
-                finance_df_display['總支出'] = finance_df_display['分攤月租'] + finance_df_display['分攤雜費'] + finance_df_display['分攤長期費用']
-                finance_df_display['損益'] = finance_df_display['收入(員工月費)'] - finance_df_display['總支出']
+                st.markdown("##### 各宿舍收支詳情 (此雇主)")
+                # 重新組合要顯示的 DataFrame
+                display_df = finance_df.copy()
+                display_df['我司總支出'] = display_df['我司分攤月租'] + display_df['我司分攤雜費']
+                display_df['雇主總支出'] = display_df['雇主分攤月租'] + display_df['雇主分攤雜費']
+                display_df['工人總支出'] = display_df['工人分攤月租'] + display_df['工人分攤雜費']
+                display_df['淨損益'] = display_df['收入(員工月費)'] - display_df['我司總支出']
                 
-                st.dataframe(finance_df_display, use_container_width=True, hide_index=True)
+                # 選擇要顯示的欄位和順序
+                cols_to_display = [
+                    "宿舍地址", "收入(員工月費)", "我司總支出",
+                    "雇主總支出", "工人總支出", "淨損益"
+                ]
+                st.dataframe(display_df[cols_to_display], use_container_width=True, hide_index=True)
 
             st.markdown("---")
 
             # --- 各宿舍住宿分佈總覽 (維持不變) ---
             st.subheader("各宿舍住宿分佈總覽")
-            # ... (此區塊程式碼不變)
             total_workers = len(report_df)
             my_company_managed_count = len(report_df[report_df['主要管理人'] == '我司'])
             
@@ -112,6 +118,6 @@ def render():
             
             st.markdown("---")
 
-            # --- 人員詳情列表 (維持不變) ---
+            # --- 人員詳情列表  ---
             st.subheader(f"「{selected_employer}」員工住宿詳情")
             st.dataframe(report_df, use_container_width=True, hide_index=True)

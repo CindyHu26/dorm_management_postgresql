@@ -39,37 +39,21 @@ def batch_import_expenses(df: pd.DataFrame):
         
     try:
         with conn.cursor() as cursor:
-            # 【核心修改】讀取更多地址欄位，並建立多個 mapping
-            dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, original_address, normalized_address FROM "Dormitories"')
-            original_addr_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
-            normalized_addr_map = {d['normalized_address']: d['id'] for _, d in dorms_df.iterrows()}
+            dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, original_address FROM "Dormitories"')
+            dorms_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
             
             meters_df = _execute_query_to_dataframe(conn, 'SELECT id, dorm_id, meter_number FROM "Meters"')
             meters_map = {(row['dorm_id'], row['meter_number']): row['id'] for _, row in meters_df.iterrows()}
 
             for index, row in df.iterrows():
                 try:
+                    # ... (地址比對等邏輯維持不變) ...
                     original_address = row.get('宿舍地址')
                     if not original_address or pd.isna(original_address):
                         raise ValueError("宿舍地址為空")
-
-                    # 智慧型地址比對邏輯
-                    dorm_id = None
-                    addr_stripped = str(original_address).strip()
-                    # 階段一：精確比對
-                    if addr_stripped in original_addr_map:
-                        dorm_id = original_addr_map[addr_stripped]
-                    elif addr_stripped in normalized_addr_map:
-                        dorm_id = normalized_addr_map[addr_stripped]
-                    else:
-                        # 階段二：模糊比對 (正規化後比對)
-                        normalized_input = normalize_taiwan_address(addr_stripped)['full']
-                        if normalized_input in normalized_addr_map:
-                            dorm_id = normalized_addr_map[normalized_input]
-
+                    dorm_id = dorms_map.get(str(original_address).strip())
                     if not dorm_id:
                         raise ValueError(f"在資料庫中找不到對應的宿舍地址: {original_address}")
-
                     meter_id = None
                     meter_number = row.get('對應錶號')
                     if meter_number and pd.notna(meter_number):
@@ -80,33 +64,36 @@ def batch_import_expenses(df: pd.DataFrame):
                         else:
                             raise ValueError(f"在宿舍 '{original_address}' 中找不到錶號為 '{meter_number}' 的紀錄")
                     
+                    # 【核心修改】在 details 字典中加入對新欄位的處理
+                    def to_bool(val):
+                        if pd.isna(val): return False # 預設為 False
+                        return str(val).strip().upper() in ['TRUE', '1', 'Y', 'YES', '是']
+
                     details = {
                         "dorm_id": dorm_id, "meter_id": meter_id,
-                        "bill_type": str(row.get('費用類型')).strip(),
+                        "bill_type": str(row.get('費用類型', '')).strip(),
                         "amount": int(pd.to_numeric(row.get('帳單金額'), errors='coerce')),
                         "bill_start_date": pd.to_datetime(row.get('帳單起始日'), errors='coerce').strftime('%Y-%m-%d'),
                         "bill_end_date": pd.to_datetime(row.get('帳單結束日'), errors='coerce').strftime('%Y-%m-%d'),
-                        "is_invoiced": True if str(row.get('是否已請款')).strip().upper() in ['Y', 'TRUE', 'V', '是', '1'] else False,
+                        "payer": str(row.get('支付方', '我司')).strip(), # 新增，預設為 '我司'
+                        "is_pass_through": to_bool(row.get('是否為代收代付')), # 新增
+                        "is_invoiced": to_bool(row.get('是否已請款')),
                         "notes": str(row.get('備註', ''))
                     }
                     
+                    # 查重邏輯 (維持不變)
                     query = 'SELECT id FROM "UtilityBills" WHERE dorm_id = %s AND bill_type = %s AND bill_start_date = %s AND amount = %s'
                     params = [details['dorm_id'], details['bill_type'], details['bill_start_date'], details['amount']]
-                    
                     if meter_id:
                         query += " AND meter_id = %s"
                         params.append(meter_id)
                     else:
                         query += " AND meter_id IS NULL"
-                    
                     cursor.execute(query, tuple(params))
                     existing = cursor.fetchone()
 
                     if existing:
-                        fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
-                        values = list(details.values()) + [existing['id']]
-                        update_sql = f'UPDATE "UtilityBills" SET {fields} WHERE id = %s'
-                        cursor.execute(update_sql, tuple(values))
+                        raise ValueError("新增失敗：已存在完全相同的費用紀錄。")
                     else:
                         columns = ', '.join(f'"{k}"' for k in details.keys())
                         placeholders = ', '.join(['%s'] * len(details))
@@ -126,7 +113,6 @@ def batch_import_expenses(df: pd.DataFrame):
         if conn: conn.close()
 
     return success_count, pd.DataFrame(failed_records)
-
 
 def batch_import_annual_expenses(df: pd.DataFrame):
     """

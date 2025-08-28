@@ -130,6 +130,8 @@ def create_all_tables_and_indexes():
                 "bill_type" VARCHAR(50) NOT NULL, "amount" INTEGER NOT NULL,
                 "bill_start_date" DATE NOT NULL, "bill_end_date" DATE NOT NULL,
                 "is_invoiced" BOOLEAN, "notes" TEXT,
+                "payer" VARCHAR(50), -- 【新增】支付方 (我司, 雇主, 工人)
+                "is_pass_through" BOOLEAN DEFAULT FALSE, -- 【新增】是否為代收代付
                 FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE,
                 FOREIGN KEY ("meter_id") REFERENCES "Meters" ("id") ON DELETE SET NULL
             );

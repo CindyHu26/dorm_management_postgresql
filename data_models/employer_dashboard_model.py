@@ -4,7 +4,7 @@ from dateutil.relativedelta import relativedelta
 import database
 
 def _execute_query_to_dataframe(conn, query, params=None):
-    """一個輔助函式，用來手動執行查詢並回傳 DataFrame。"""
+    """一個輔-    助函式，用來手動執行查詢並回傳 DataFrame。"""
     with conn.cursor() as cursor:
         cursor.execute(query, params)
         records = cursor.fetchall()
@@ -60,7 +60,7 @@ def get_employer_resident_details(employer_name: str):
 
 def get_employer_financial_summary(employer_name: str, year_month: str):
     """
-    為指定雇主和月份，計算【按宿舍地址細分】的收支與損益。
+    為指定雇主和月份，計算【按宿舍地址和支付方細分】的收支與損益。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -68,6 +68,7 @@ def get_employer_financial_summary(employer_name: str, year_month: str):
     params = {"employer_name": employer_name, "year_month": year_month}
     
     try:
+        # 【核心修改】採用與 dashboard_model.py 相同的精準計算邏輯
         query = """
             WITH DateParams AS (
                 SELECT 
@@ -81,13 +82,11 @@ def get_employer_financial_summary(employer_name: str, year_month: str):
                 JOIN "Rooms" r ON w.room_id = r.id
                 WHERE (w.accommodation_end_date IS NULL OR w.accommodation_end_date >= (SELECT first_day_of_month FROM DateParams))
                   AND (w.accommodation_start_date IS NULL OR w.accommodation_start_date < (SELECT first_day_of_next_month FROM DateParams))
-                  AND (w.special_status IS NULL OR w.special_status NOT ILIKE '%%掛宿外住%%')
             ),
             DormOccupancy AS (
-                -- 【核心修改】移除造成歧義的 FILTER 子句，直接計算
                 SELECT
                     dorm_id,
-                    COUNT(unique_id) AS total_residents,
+                    COUNT(unique_id) FILTER (WHERE unique_id IN (SELECT aw.unique_id FROM ActiveWorkers aw JOIN "Workers" w ON aw.unique_id = w.unique_id WHERE w.special_status IS NULL OR w.special_status NOT ILIKE '%%掛宿外住%%')) AS total_residents,
                     SUM(CASE WHEN employer_name = %(employer_name)s THEN 1 ELSE 0 END) AS employer_residents,
                     SUM(CASE WHEN employer_name = %(employer_name)s THEN total_fee ELSE 0 END) as employer_income
                 FROM ActiveWorkers
@@ -97,16 +96,17 @@ def get_employer_financial_summary(employer_name: str, year_month: str):
                 SELECT
                     dorm_id,
                     employer_income,
-                    employer_residents::decimal / total_residents AS proration_ratio
+                    CASE WHEN total_residents > 0 THEN employer_residents::decimal / total_residents ELSE 0 END AS proration_ratio
                 FROM DormOccupancy
-                WHERE employer_residents > 0 AND total_residents > 0
+                WHERE employer_residents > 0
             ),
             DormMonthlyExpenses AS (
                  SELECT
                     d.id as dorm_id,
                     d.original_address,
                     COALESCE(l.monthly_rent, 0) AS rent_expense,
-                    COALESCE(pu.total_utilities, 0) AS utilities_expense,
+                    COALESCE(pu.pass_through_expense, 0) as pass_through_expense,
+                    COALESCE(pu.company_expense, 0) as company_expense,
                     COALESCE(ae.total_amortized, 0) AS amortized_expense
                 FROM "Dormitories" d
                 LEFT JOIN (
@@ -116,11 +116,16 @@ def get_employer_financial_summary(employer_name: str, year_month: str):
                     ) as sub WHERE rn = 1
                 ) l ON d.id = l.dorm_id
                 LEFT JOIN (
-                    SELECT b.dorm_id, SUM(b.amount::decimal * EXTRACT(DAY FROM (LEAST(b.bill_end_date, (SELECT first_day_of_next_month FROM DateParams) - '1 day'::interval) - GREATEST(b.bill_start_date, (SELECT first_day_of_month FROM DateParams)) + '1 day'::interval)) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)) as total_utilities
-                    FROM "UtilityBills" b WHERE b.bill_start_date < (SELECT first_day_of_next_month FROM DateParams) AND b.bill_end_date >= (SELECT first_day_of_month FROM DateParams) GROUP BY b.dorm_id
+                    SELECT 
+                        b.dorm_id,
+                        SUM(CASE WHEN b.is_pass_through THEN b.amount::decimal ELSE 0 END) as pass_through_expense,
+                        SUM(CASE WHEN b.payer = '我司' THEN b.amount::decimal ELSE 0 END) as company_expense
+                    FROM "UtilityBills" b 
+                    WHERE b.bill_start_date < (SELECT first_day_of_next_month FROM DateParams) AND b.bill_end_date >= (SELECT first_day_of_month FROM DateParams) 
+                    GROUP BY b.dorm_id
                 ) pu ON d.id = pu.dorm_id
                 LEFT JOIN (
-                    SELECT dorm_id, SUM(ROUND(total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0))) as total_amortized
+                    SELECT dorm_id, SUM(ROUND(total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amort_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0))) as total_amortized
                     FROM "AnnualExpenses" WHERE TO_DATE(amortization_start_month, 'YYYY-MM') <= (SELECT first_day_of_month FROM DateParams) AND TO_DATE(amortization_end_month, 'YYYY-MM') >= (SELECT first_day_of_month FROM DateParams) GROUP BY dorm_id
                 ) ae ON d.id = ae.dorm_id
             )
@@ -128,7 +133,8 @@ def get_employer_financial_summary(employer_name: str, year_month: str):
                 dme.original_address AS "宿舍地址",
                 dp.employer_income::int AS "收入(員工月費)",
                 ROUND(dme.rent_expense * dp.proration_ratio)::int AS "分攤月租",
-                ROUND(dme.utilities_expense * dp.proration_ratio)::int AS "分攤雜費",
+                ROUND(dme.company_expense * dp.proration_ratio)::int AS "分攤雜費(我司支付)",
+                ROUND(dme.pass_through_expense * dp.proration_ratio)::int AS "分攤雜費(代收代付)",
                 ROUND(dme.amortized_expense * dp.proration_ratio)::int AS "分攤長期費用"
             FROM DormProration dp
             JOIN DormMonthlyExpenses dme ON dp.dorm_id = dme.dorm_id
