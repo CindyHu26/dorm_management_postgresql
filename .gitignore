@@ -75,3 +75,5 @@ config*.ini
 *.xls
 db_backup/
 *.json
+
+run_daily_sync.py

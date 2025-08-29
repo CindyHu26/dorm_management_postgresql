@@ -51,7 +51,7 @@ def get_dorm_meters(dorm_id: int):
 
 def get_resident_summary(dorm_id: int, year_month: str):
     """
-    計算指定月份，宿舍的在住人員統計數據。
+    【v2.0 修改版】計算指定月份，宿舍的在住人員統計數據。
     """
     conn = database.get_db_connection()
     if not conn: 
@@ -62,19 +62,22 @@ def get_resident_summary(dorm_id: int, year_month: str):
 
     try:
         params = {"dorm_id": dorm_id, "year_month": year_month}
+        # --- 核心修改點 ---
         query = """
             WITH DateParams AS (
                 SELECT 
                     TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
-                    (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval) as first_day_of_next_month
+                    (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
             )
             SELECT 
                 w.gender, w.nationality, w.monthly_fee
-            FROM "Workers" w
-            JOIN "Rooms" r ON w.room_id = r.id
+            FROM "AccommodationHistory" ah
+            JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+            JOIN "Rooms" r ON ah.room_id = r.id
+            CROSS JOIN DateParams dp
             WHERE r.dorm_id = %(dorm_id)s
-              AND (w.accommodation_start_date IS NULL OR w.accommodation_start_date < (SELECT first_day_of_next_month FROM DateParams))
-              AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date >= (SELECT first_day_of_month FROM DateParams))
+              AND ah.start_date <= dp.last_day_of_month
+              AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
         """
         df = _execute_query_to_dataframe(conn, query, params)
     finally:
@@ -103,20 +106,18 @@ def get_resident_summary(dorm_id: int, year_month: str):
     }
 
 def get_expense_summary(dorm_id: int, year_month: str):
-    """計算指定月份，宿舍的總支出細項 (已為 PostgreSQL 優化)。"""
+    """計算指定月份，宿舍的總支出細項 (維持不變)。"""
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     
     try:
         params = {"dorm_id": dorm_id, "year_month": year_month}
-        # 【核心修改】採用與 dashboard_model.py 相同的精準計算邏輯
         query = """
             WITH DateParams AS (
                 SELECT 
                     TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
                     (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval) as first_day_of_next_month
             )
-            -- 1. 月租金
             SELECT '月租金' AS "費用項目", monthly_rent AS "金額"
             FROM "Leases"
             WHERE dorm_id = %(dorm_id)s 
@@ -125,7 +126,6 @@ def get_expense_summary(dorm_id: int, year_month: str):
             
             UNION ALL
             
-            -- 2. 變動雜費 (按支付方分類)
             SELECT 
                 '雜費 (' || COALESCE(payer, '未指定') || '支付)' AS "費用項目",
                 SUM(b.amount::decimal * EXTRACT(DAY FROM (LEAST(b.bill_end_date, (SELECT first_day_of_next_month FROM DateParams) - '1 day'::interval) - GREATEST(b.bill_start_date, (SELECT first_day_of_month FROM DateParams)) + '1 day'::interval))
@@ -138,7 +138,6 @@ def get_expense_summary(dorm_id: int, year_month: str):
 
             UNION ALL
 
-            -- 3. 長期攤銷費用
             SELECT 
                 expense_item || ' (攤銷)' AS "費用項目",
                 SUM(ROUND(total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0)))
@@ -160,7 +159,7 @@ def get_expense_summary(dorm_id: int, year_month: str):
 
 def get_resident_details_as_df(dorm_id: int, year_month: str):
     """
-    為指定的單一宿舍和月份，查詢所有在住人員的詳細資料。
+    【v2.0 修改版】為指定的單一宿舍和月份，查詢所有在住人員的詳細資料。
     """
     if not dorm_id: return pd.DataFrame()
     conn = database.get_db_connection()
@@ -168,23 +167,26 @@ def get_resident_details_as_df(dorm_id: int, year_month: str):
 
     try:
         params = {"dorm_id": dorm_id, "year_month": year_month}
+        # --- 核心修改點 ---
         query = """
             WITH DateParams AS (
                 SELECT 
                     TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
-                    (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval) as first_day_of_next_month
+                    (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
             )
             SELECT 
                 r.room_number AS "房號", w.worker_name AS "姓名", w.employer_name AS "雇主",
-                w.gender AS "性別", w.nationality AS "國籍", w.accommodation_start_date AS "起住日",
-                w.accommodation_end_date AS "離住日", w.work_permit_expiry_date AS "工作期限",
+                w.gender AS "性別", w.nationality AS "國籍", ah.start_date AS "入住此房日",
+                ah.end_date AS "離開此房日", w.work_permit_expiry_date AS "工作期限",
                 w.monthly_fee AS "房租", w.utilities_fee AS "水電費", w.cleaning_fee AS "清潔費",
                 w.special_status AS "特殊狀況", w.worker_notes AS "備註"
-            FROM "Workers" w
-            JOIN "Rooms" r ON w.room_id = r.id
+            FROM "AccommodationHistory" ah
+            JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+            JOIN "Rooms" r ON ah.room_id = r.id
+            CROSS JOIN DateParams dp
             WHERE r.dorm_id = %(dorm_id)s
-              AND (w.accommodation_start_date IS NULL OR w.accommodation_start_date < (SELECT first_day_of_next_month FROM DateParams))
-              AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date >= (SELECT first_day_of_month FROM DateParams))
+              AND ah.start_date <= dp.last_day_of_month
+              AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
             ORDER BY r.room_number, w.worker_name
         """
         return _execute_query_to_dataframe(conn, query, params)
@@ -193,7 +195,7 @@ def get_resident_details_as_df(dorm_id: int, year_month: str):
 
 def get_dorm_analysis_data(dorm_id: int, year_month: str):
     """
-    為指定的單一宿舍和月份，執行全方位的營運數據分析。
+    【v2.0 修改版】為指定的單一宿舍和月份，執行全方位的營運數據分析。
     """
     conn = database.get_db_connection()
     if not conn: return None
@@ -202,19 +204,23 @@ def get_dorm_analysis_data(dorm_id: int, year_month: str):
         params = {"dorm_id": dorm_id, "year_month": year_month}
         rooms_df = _execute_query_to_dataframe(conn, 'SELECT * FROM "Rooms" WHERE dorm_id = %(dorm_id)s', params)
         
+        # --- 核心修改點 ---
         workers_query = """
             WITH DateParams AS (
                 SELECT 
                     TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
-                    (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval) as first_day_of_next_month
+                    (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
             )
             SELECT 
-                w.*, r.room_number, r.capacity as room_capacity, r.room_notes
-            FROM "Workers" w
-            JOIN "Rooms" r ON w.room_id = r.id
+                w.unique_id, w.gender, w.special_status,
+                ah.room_id, r.room_number, r.capacity as room_capacity, r.room_notes
+            FROM "AccommodationHistory" ah
+            JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+            JOIN "Rooms" r ON ah.room_id = r.id
+            CROSS JOIN DateParams dp
             WHERE r.dorm_id = %(dorm_id)s
-              AND (w.accommodation_start_date IS NULL OR w.accommodation_start_date < (SELECT first_day_of_next_month FROM DateParams))
-              AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date >= (SELECT first_day_of_month FROM DateParams))
+              AND ah.start_date <= dp.last_day_of_month
+              AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
         """
         workers_df = _execute_query_to_dataframe(conn, workers_query, params)
 

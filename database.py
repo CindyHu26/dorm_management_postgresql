@@ -39,7 +39,7 @@ def get_db_connection():
             user=config.get('user'),
             password=config.get('password'),
             dbname=config.get('dbname'),
-            # 【關鍵步驟 2】: 這行是解決問題的核心，它告訴 psycopg2 將查詢結果打包成字典
+            # 這行是解決問題的核心，它告訴 psycopg2 將查詢結果打包成字典
             cursor_factory=RealDictCursor 
         )
         # print("INFO: 已成功連線至 PostgreSQL 資料庫 (使用 RealDictCursor)。")
@@ -83,7 +83,9 @@ def create_all_tables_and_indexes():
 
             TABLES['Workers'] = """
             CREATE TABLE IF NOT EXISTS "Workers" (
-                "unique_id" VARCHAR(255) PRIMARY KEY, "room_id" INTEGER, "employer_name" VARCHAR(255) NOT NULL,
+                "unique_id" VARCHAR(255) PRIMARY KEY, 
+                "room_id" INTEGER, -- 【修改】此欄位未來僅作為「當前位置」的快取或參考，主要邏輯改查 AccommodationHistory
+                "employer_name" VARCHAR(255) NOT NULL,
                 "worker_name" VARCHAR(255) NOT NULL, "gender" VARCHAR(10), "nationality" VARCHAR(50),
                 "passport_number" VARCHAR(50), "arc_number" VARCHAR(50), "arrival_date" DATE,
                 "departure_date" DATE, "work_permit_expiry_date" DATE, "accommodation_start_date" DATE,
@@ -93,8 +95,22 @@ def create_all_tables_and_indexes():
                 "cleaning_fee" INTEGER,
                 "fee_notes" TEXT, "payment_method" VARCHAR(50), "data_source" VARCHAR(50) NOT NULL,
                 "worker_notes" TEXT, 
-                "special_status" VARCHAR(100), -- <<<<<<<<<<< 這就是關鍵的「當前狀態」欄位
+                "special_status" VARCHAR(100),
                 FOREIGN KEY ("room_id") REFERENCES "Rooms" ("id") ON DELETE SET NULL
+            );
+            """
+
+            # --- 【核心新增】建立住宿歷史紀錄表 ---
+            TABLES['AccommodationHistory'] = """
+            CREATE TABLE IF NOT EXISTS "AccommodationHistory" (
+                "id" SERIAL PRIMARY KEY,
+                "worker_unique_id" VARCHAR(255) NOT NULL,
+                "room_id" INTEGER NOT NULL,
+                "start_date" DATE NOT NULL,
+                "end_date" DATE,
+                "notes" TEXT,
+                FOREIGN KEY ("worker_unique_id") REFERENCES "Workers" ("unique_id") ON DELETE CASCADE,
+                FOREIGN KEY ("room_id") REFERENCES "Rooms" ("id") ON DELETE CASCADE
             );
             """
 
@@ -130,31 +146,29 @@ def create_all_tables_and_indexes():
                 "bill_type" VARCHAR(50) NOT NULL, "amount" INTEGER NOT NULL,
                 "bill_start_date" DATE NOT NULL, "bill_end_date" DATE NOT NULL,
                 "is_invoiced" BOOLEAN, "notes" TEXT,
-                "payer" VARCHAR(50), -- 【新增】支付方 (我司, 雇主, 工人)
-                "is_pass_through" BOOLEAN DEFAULT FALSE, -- 【新增】是否為代收代付
+                "payer" VARCHAR(50),
+                "is_pass_through" BOOLEAN DEFAULT FALSE,
                 FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE,
                 FOREIGN KEY ("meter_id") REFERENCES "Meters" ("id") ON DELETE SET NULL
             );
             """
 
-            # 1. 建立全新的、可共用的 ComplianceRecords 表格
             TABLES['ComplianceRecords'] = """
             CREATE TABLE IF NOT EXISTS "ComplianceRecords" (
                 "id" SERIAL PRIMARY KEY,
                 "dorm_id" INTEGER NOT NULL,
-                "record_type" VARCHAR(50) NOT NULL, -- 用來區分是 '建物申報', '保險', '消防安檢' 等
-                "details" JSONB,                     -- 用來儲存所有彈性細節的 JSON 袋子
+                "record_type" VARCHAR(50) NOT NULL,
+                "details" JSONB,
                 "created_at" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE
             );
             """
 
-            # 2. 修改 AnnualExpenses 表格，讓它可以關聯到 ComplianceRecords
             TABLES['AnnualExpenses'] = """
             CREATE TABLE IF NOT EXISTS "AnnualExpenses" (
                 "id" SERIAL PRIMARY KEY,
                 "dorm_id" INTEGER NOT NULL,
-                "compliance_record_id" INTEGER UNIQUE, -- 可選的關聯欄位，UNIQUE 確保一筆紀錄只對應一筆財務
+                "compliance_record_id" INTEGER UNIQUE,
                 "expense_item" VARCHAR(100) NOT NULL,
                 "payment_date" DATE,
                 "total_amount" INTEGER NOT NULL,
@@ -205,7 +219,10 @@ def create_all_tables_and_indexes():
                 'CREATE INDEX IF NOT EXISTS idx_rooms_dorm_id ON "Rooms" ("dorm_id");',
                 'CREATE INDEX IF NOT EXISTS idx_workers_room_id ON "Workers" ("room_id");',
                 'CREATE INDEX IF NOT EXISTS idx_feehistory_worker_id ON "FeeHistory" ("worker_unique_id");',
-                'CREATE INDEX IF NOT EXISTS idx_statushistory_worker_id ON "WorkerStatusHistory" ("worker_unique_id");'
+                'CREATE INDEX IF NOT EXISTS idx_statushistory_worker_id ON "WorkerStatusHistory" ("worker_unique_id");',
+                # --- 【核心新增】為新表格建立索引，加速查詢 ---
+                'CREATE INDEX IF NOT EXISTS idx_accomhistory_worker_id ON "AccommodationHistory" ("worker_unique_id");',
+                'CREATE INDEX IF NOT EXISTS idx_accomhistory_room_id ON "AccommodationHistory" ("room_id");'
             ]
             print("INFO: (PostgreSQL) 正在建立所有索引...")
             for index_sql in INDEXES:
@@ -219,7 +236,7 @@ def create_all_tables_and_indexes():
     finally:
         if conn:
             conn.close()
-
+            
 if __name__ == '__main__':
     print("正在根據 config.ini 設定初始化資料庫...")
     create_all_tables_and_indexes()
