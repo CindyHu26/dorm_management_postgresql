@@ -16,7 +16,7 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_dorm_report_data(dorm_id: int):
     """
-    為指定的單一宿舍，查詢產生深度分析報告所需的所有在住人員詳細資料 (已為 PostgreSQL 優化)。
+    【v2.0 修改版】為指定的單一宿舍，查詢產生深度分析報告所需的所有在住人員詳細資料。
     """
     if not dorm_id:
         return pd.DataFrame()
@@ -26,6 +26,7 @@ def get_dorm_report_data(dorm_id: int):
         return pd.DataFrame()
         
     try:
+        # --- 核心修改點 ---
         query = """
             SELECT
                 r.room_number,
@@ -36,10 +37,11 @@ def get_dorm_report_data(dorm_id: int):
                 w.monthly_fee,
                 w.special_status,
                 w.worker_notes
-            FROM "Workers" w
-            JOIN "Rooms" r ON w.room_id = r.id
+            FROM "AccommodationHistory" ah
+            JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+            JOIN "Rooms" r ON ah.room_id = r.id
             WHERE r.dorm_id = %s
-            AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)
+            AND (ah.end_date IS NULL OR ah.end_date > CURRENT_DATE)
             ORDER BY r.room_number, w.worker_name
         """
         return _execute_query_to_dataframe(conn, query, (dorm_id,))
@@ -53,7 +55,7 @@ def get_dorm_report_data(dorm_id: int):
 
 def get_monthly_exception_report(year_month: str):
     """
-    查詢指定月份中，所有「當月離住」或「有特殊狀況」的人員 (已為 PostgreSQL 優化)。
+    【v2.0 修改版】查詢指定月份中，所有「當月離住」或「有特殊狀況」的人員。
     """
     conn = database.get_db_connection()
     if not conn: 
@@ -61,7 +63,7 @@ def get_monthly_exception_report(year_month: str):
         
     try:
         query = """
-            -- 查詢一：找出所有在該月份離住的人員
+            -- 查詢一：找出所有在該月份『最終離住』的人員 (邏輯不變)
             SELECT
                 d.original_address AS "宿舍地址",
                 w.employer_name AS "雇主",
@@ -70,13 +72,13 @@ def get_monthly_exception_report(year_month: str):
                 w.accommodation_end_date AS "離住日",
                 '當月離住' AS "備註"
             FROM "Workers" w
-            LEFT JOIN "Rooms" r ON w.room_id = r.id
+            LEFT JOIN "Rooms" r ON w.room_id = r.id -- 這裡用舊的 room_id 作為參考地址
             LEFT JOIN "Dormitories" d ON r.dorm_id = d.id
             WHERE TO_CHAR(w.accommodation_end_date, 'YYYY-MM') = %s
 
             UNION ALL
 
-            -- 查詢二：找出所有在該月份有特殊狀況的在住人員
+            -- 查詢二：找出所有在該月份有特殊狀況的『在住』人員
             SELECT
                 d.original_address AS "宿舍地址",
                 w.employer_name AS "雇主",
@@ -84,13 +86,14 @@ def get_monthly_exception_report(year_month: str):
                 w.accommodation_start_date AS "起住日",
                 w.accommodation_end_date AS "離住日",
                 w.special_status AS "備註"
-            FROM "Workers" w
-            LEFT JOIN "Rooms" r ON w.room_id = r.id
-            LEFT JOIN "Dormitories" d ON r.dorm_id = d.id
+            FROM "AccommodationHistory" ah
+            JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+            JOIN "Rooms" r ON ah.room_id = r.id
+            JOIN "Dormitories" d ON r.dorm_id = d.id
             WHERE
                 -- 條件一：在該月份有居住事實
-                (w.accommodation_start_date IS NULL OR w.accommodation_start_date < (TO_DATE(%s, 'YYYY-MM') + '1 month'::interval))
-                AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date >= TO_DATE(%s, 'YYYY-MM'))
+                ah.start_date < (TO_DATE(%s, 'YYYY-MM') + '1 month'::interval)
+                AND (ah.end_date IS NULL OR ah.end_date >= TO_DATE(%s, 'YYYY-MM'))
                 -- 條件二：其 special_status 不為空或'在住'
                 AND w.special_status IS NOT NULL
                 AND w.special_status != ''

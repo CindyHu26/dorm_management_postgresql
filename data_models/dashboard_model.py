@@ -10,7 +10,6 @@ def _execute_query_to_dataframe(conn, query, params=None):
         cursor.execute(query, params)
         records = cursor.fetchall()
         if not records:
-            # 如果沒有紀錄，從 cursor.description 獲取欄位名，回傳一個空的 DataFrame
             columns = [desc[0] for desc in cursor.description] if cursor.description else []
             return pd.DataFrame([], columns=columns)
         
@@ -18,23 +17,37 @@ def _execute_query_to_dataframe(conn, query, params=None):
         return pd.DataFrame(records, columns=columns)
 
 def get_dormitory_dashboard_data():
-    """獲取每個宿舍的人數與租金統計，用於「住宿總覽」頁籤。"""
+    """
+    【v2.0 修改版】獲取每個宿舍的人數與租金統計，用於「住宿總覽」頁籤。
+    改為從 AccommodationHistory 查詢實際在住人數。
+    """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
+        # --- 核心修改點：JOIN AccommodationHistory 來計算實際在住人數 ---
         query = """
+            WITH CurrentResidents AS (
+                SELECT
+                    ah.room_id,
+                    w.unique_id,
+                    w.gender,
+                    (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0)) as total_fee
+                FROM "AccommodationHistory" ah
+                JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+                WHERE ah.end_date IS NULL OR ah.end_date > CURRENT_DATE
+            )
             SELECT 
                 d.original_address AS "宿舍地址", d.primary_manager AS "主要管理人",
-                COUNT(w.unique_id) AS "總人數",
-                SUM(CASE WHEN w.gender = '男' THEN 1 ELSE 0 END) AS "男性人數",
-                SUM(CASE WHEN w.gender = '女' THEN 1 ELSE 0 END) AS "女性人數",
-                SUM(COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0)) AS "月租金總額",
-                ROUND(AVG(COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0))) AS "平均租金"
+                COUNT(cr.unique_id) AS "總人數",
+                SUM(CASE WHEN cr.gender = '男' THEN 1 ELSE 0 END) AS "男性人數",
+                SUM(CASE WHEN cr.gender = '女' THEN 1 ELSE 0 END) AS "女性人數",
+                SUM(cr.total_fee) AS "月租金總額",
+                ROUND(AVG(cr.total_fee)) AS "平均租金"
             FROM "Dormitories" d
             LEFT JOIN "Rooms" r ON d.id = r.dorm_id
-            LEFT JOIN "Workers" w ON r.id = w.room_id
-            WHERE (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)
+            LEFT JOIN CurrentResidents cr ON r.id = cr.room_id
             GROUP BY d.id, d.original_address, d.primary_manager
+            HAVING COUNT(cr.unique_id) > 0 -- 只顯示有住人的宿舍
             ORDER BY "主要管理人", "總人數" DESC
         """
         return _execute_query_to_dataframe(conn, query)
@@ -42,7 +55,10 @@ def get_dormitory_dashboard_data():
         if conn: conn.close()
         
 def get_financial_dashboard_data(year_month: str):
-    """執行一個複雜的聚合查詢，為指定的月份計算收支與損益 (已為 PostgreSQL 全面重寫)。"""
+    """
+    【v2.0 修改版】執行一個複雜的聚合查詢，為指定的月份計算收支與損益。
+    收入計算改為基於 AccommodationHistory。
+    """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
@@ -52,59 +68,74 @@ def get_financial_dashboard_data(year_month: str):
             WITH DateParams AS (
                 SELECT 
                     TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
-                    (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval) as first_day_of_next_month
+                    (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
             ),
-            WorkerIncome AS ( -- 員工費用收入
-                SELECT r.dorm_id, 
-                       SUM(COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0)) as total_income
-                FROM "Workers" w JOIN "Rooms" r ON w.room_id = r.id JOIN "Dormitories" d ON r.dorm_id = d.id
+            -- 【核心修改點】收入計算改為精準計算當月在住天數比例
+            WorkerIncome AS (
+                SELECT 
+                    r.dorm_id, 
+                    SUM(
+                        (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0)) *
+                        -- 計算當月住了幾天 / 當月總天數 = 收入佔比
+                        (
+                            (LEAST(ah.end_date, (SELECT last_day_of_month FROM DateParams))::date - GREATEST(ah.start_date, (SELECT first_day_of_month FROM DateParams))::date + 1)
+                            / EXTRACT(DAY FROM (SELECT last_day_of_month FROM DateParams))::decimal
+                        )
+                    ) as total_income
+                FROM "AccommodationHistory" ah
+                JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+                JOIN "Rooms" r ON ah.room_id = r.id
+                JOIN "Dormitories" d ON r.dorm_id = d.id
+                CROSS JOIN DateParams dp
                 WHERE d.primary_manager = '我司'
-                  AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date >= (SELECT first_day_of_month FROM DateParams))
-                  AND (w.accommodation_start_date IS NULL OR w.accommodation_start_date < (SELECT first_day_of_next_month FROM DateParams))
+                  AND ah.start_date <= dp.last_day_of_month
+                  AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
                 GROUP BY r.dorm_id
             ),
-            PassThroughIncome AS ( -- 【新增】代收代付類型的收入
+            PassThroughIncome AS (
                 SELECT b.dorm_id, SUM(b.amount) as total_pass_through_income
                 FROM "UtilityBills" b
+                CROSS JOIN DateParams dp
                 WHERE b.is_pass_through = TRUE
-                  AND b.bill_start_date < (SELECT first_day_of_next_month FROM DateParams) 
-                  AND b.bill_end_date >= (SELECT first_day_of_month FROM DateParams)
+                  AND b.bill_start_date <= dp.last_day_of_month 
+                  AND b.bill_end_date >= dp.first_day_of_month
                 GROUP BY b.dorm_id
             ),
-            MonthlyRent AS ( -- 租金支出
-                SELECT dorm_id, monthly_rent FROM "Leases"
-                WHERE lease_start_date < (SELECT first_day_of_next_month FROM DateParams)
-                  AND (lease_end_date IS NULL OR lease_end_date >= (SELECT first_day_of_month FROM DateParams))
+            MonthlyRent AS (
+                SELECT dorm_id, monthly_rent 
+                FROM "Leases"
+                CROSS JOIN DateParams dp
+                WHERE lease_start_date <= dp.last_day_of_month
+                  AND (lease_end_date IS NULL OR lease_end_date >= dp.first_day_of_month)
             ),
-            ProratedUtilities AS ( -- 【修改】雜項支出，只計算我司支付的部分
+            ProratedUtilities AS (
                 SELECT b.dorm_id,
-                       SUM(b.amount::decimal * EXTRACT(DAY FROM (LEAST(b.bill_end_date, (SELECT first_day_of_next_month FROM DateParams) - '1 day'::interval) - GREATEST(b.bill_start_date, (SELECT first_day_of_month FROM DateParams)) + '1 day'::interval))
+                       SUM(b.amount::decimal * (LEAST(b.bill_end_date, (SELECT last_day_of_month FROM DateParams))::date - GREATEST(b.bill_start_date, (SELECT first_day_of_month FROM DateParams))::date + 1)
                            / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)
                        ) as total_utilities
                 FROM "UtilityBills" b
-                WHERE b.payer = '我司' -- 只計算我司支付
-                  AND b.bill_start_date < (SELECT first_day_of_next_month FROM DateParams) 
-                  AND b.bill_end_date >= (SELECT first_day_of_month FROM DateParams)
+                CROSS JOIN DateParams dp
+                WHERE b.payer = '我司'
+                  AND b.bill_start_date <= dp.last_day_of_month 
+                  AND b.bill_end_date >= dp.first_day_of_month
                 GROUP BY b.dorm_id
             ),
-            AmortizedExpenses AS ( -- 長期攤銷支出
+            AmortizedExpenses AS (
                 SELECT dorm_id, 
                        SUM(ROUND(total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0))) as total_amortized
                 FROM "AnnualExpenses"
-                WHERE TO_DATE(amortization_start_month, 'YYYY-MM') <= (SELECT first_day_of_month FROM DateParams)
-                  AND TO_DATE(amortization_end_month, 'YYYY-MM') >= (SELECT first_day_of_month FROM DateParams)
+                CROSS JOIN DateParams dp
+                WHERE TO_DATE(amortization_start_month, 'YYYY-MM') <= dp.first_day_of_month
+                  AND TO_DATE(amortization_end_month, 'YYYY-MM') >= dp.first_day_of_month
                 GROUP BY dorm_id
             )
             SELECT
                 d.original_address AS "宿舍地址",
-                -- 【修改】總收入 = 員工費用收入 + 代收代付收入
                 (COALESCE(wi.total_income, 0) + COALESCE(pti.total_pass_through_income, 0))::int AS "預計總收入",
                 COALESCE(mr.monthly_rent, 0)::int AS "宿舍月租",
                 ROUND(COALESCE(pu.total_utilities, 0))::int AS "變動雜費(我司支付)",
                 COALESCE(ae.total_amortized, 0)::int AS "長期攤銷",
-                -- 【修改】總支出 = 租金 + 我司支付雜費 + 長期攤銷 + 代收代付的支出部分
                 (COALESCE(mr.monthly_rent, 0) + ROUND(COALESCE(pu.total_utilities, 0)) + COALESCE(ae.total_amortized, 0) + COALESCE(pti.total_pass_through_income, 0))::int AS "預計總支出",
-                -- 損益計算中，代收代付的收入和支出會互相抵銷
                 (COALESCE(wi.total_income, 0) - (COALESCE(mr.monthly_rent, 0) + ROUND(COALESCE(pu.total_utilities, 0)) + COALESCE(ae.total_amortized, 0)))::int AS "預估損益"
             FROM "Dormitories" d
             LEFT JOIN WorkerIncome wi ON d.id = wi.dorm_id
@@ -164,7 +195,6 @@ def get_expense_forecast_data(lookback_days: int = 365):
         
         avg_daily_utilities = 0.0
         if not bills_df.empty:
-            # Pandas 的日期計算部分維持不變
             bills_df['bill_start_date'] = pd.to_datetime(bills_df['bill_start_date'])
             bills_df['bill_end_date'] = pd.to_datetime(bills_df['bill_end_date'])
             bills_df.dropna(subset=['bill_start_date', 'bill_end_date'], inplace=True)

@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 from data_models import importer_model
+from datetime import date
 
 def to_excel(df):
     """將 DataFrame 轉換為可供下載的 Excel 檔案。"""
@@ -143,6 +144,48 @@ def render():
                             label="📥 下載失敗紀錄報告",
                             data=to_excel(failed_df),
                             file_name="permit_import_failed_report.xlsx"
+                        )
+            except Exception as e:
+                st.error(f"處理檔案時發生錯誤：{e}")
+
+    # --- 區塊四：住宿分配匯入 ---
+    with st.container(border=True):
+        st.subheader("🏠 住宿分配/異動匯入")
+        st.info("用於批次分配或更新人員的實際住宿房間。")
+        
+        # --- 核心修改點：更新範本欄位名稱 ---
+        accommodation_template_df = pd.DataFrame({
+            "雇主": ["範例：ABC公司"],
+            "姓名": ["阮文雄"],
+            "護照號碼 (選填)": ["C1234567"],
+            "實際住宿地址": ["範例：彰化縣鹿港鎮中山路100號"],
+            "房號": ["A01"],
+            "入住日 (換宿/指定日期時填寫)": [date.today().strftime('%Y-%m-%d')]
+        })
+        st.download_button(
+            label="📥 下載住宿分配匯入範本",
+            data=to_excel(accommodation_template_df),
+            file_name="accommodation_import_template.xlsx"
+        )
+
+        uploaded_accommodation_file = st.file_uploader("上傳【住宿分配】Excel 檔案", type=["xlsx"], key="accommodation_uploader")
+
+        if uploaded_accommodation_file:
+            try:
+                df_accommodation = pd.read_excel(uploaded_accommodation_file, dtype=str).fillna('')
+                st.markdown("##### 檔案內容預覽：")
+                st.dataframe(df_accommodation.head())
+                if st.button("🚀 開始匯入住宿資料", type="primary", key="accommodation_import_btn"):
+                    with st.spinner("正在處理與匯入住宿資料..."):
+                        success, failed_df = importer_model.batch_import_accommodation(df_accommodation)
+                    st.success(f"匯入完成！成功 {success} 筆。")
+                    if not failed_df.empty:
+                        st.error(f"有 {len(failed_df)} 筆資料匯入失敗：")
+                        st.dataframe(failed_df)
+                        st.download_button(
+                            label="📥 下載失敗紀錄報告",
+                            data=to_excel(failed_df),
+                            file_name="accommodation_import_failed_report.xlsx",
                         )
             except Exception as e:
                 st.error(f"處理檔案時發生錯誤：{e}")

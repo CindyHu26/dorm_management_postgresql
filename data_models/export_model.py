@@ -19,11 +19,13 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_data_for_export():
     """
-    從本地資料庫中，獲取【經過篩選】的人員清冊數據。
+    【v2.0 修改版】從本地資料庫中，獲取用於匯出至 Google Sheet 的人員清冊數據。
+    確保地址為當前最新、最準確的地址。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
+        # --- 核心修改點 ---
         query = """
             SELECT
                 d.primary_manager AS "主要管理人",
@@ -35,12 +37,14 @@ def get_data_for_export():
                 w.nationality AS "國籍",
                 w.monthly_fee as "月費",
                 w.special_status as "特殊狀況"
-            FROM "Workers" w
-            LEFT JOIN "Rooms" r ON w.room_id = r.id
-            LEFT JOIN "Dormitories" d ON r.dorm_id = d.id
+            FROM "AccommodationHistory" ah
+            JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+            JOIN "Rooms" r ON ah.room_id = r.id
+            JOIN "Dormitories" d ON r.dorm_id = d.id
             WHERE 
                 d.primary_manager = '我司' AND
-                (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)
+                (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE) AND
+                (ah.end_date IS NULL OR ah.end_date > CURRENT_DATE)
             ORDER BY d.normalized_address, r.room_number, w.worker_name
         """
         df = _execute_query_to_dataframe(conn, query)
@@ -80,7 +84,6 @@ def update_google_sheet(gsheet_name: str, data_to_upload: dict):
     """
     將一個包含多個 DataFrame 的字典，上傳並覆蓋到指定的 Google Sheet 的不同工作表中。
     """
-    # 【核心修改】將 CREDENTIALS_FILE 移至函式內部，並移除對 GSHEET_NAME 的依賴
     CREDENTIALS_FILE = "credentials.json"
 
     print(f"INFO: 準備將數據上傳至 Google Sheet: '{gsheet_name}'...")
@@ -96,7 +99,6 @@ def update_google_sheet(gsheet_name: str, data_to_upload: dict):
             spreadsheet = client.open(gsheet_name)
         except gspread.exceptions.SpreadsheetNotFound:
             spreadsheet = client.create(gsheet_name)
-            # 請確保您的 service account 有權限分享給這個 email
             spreadsheet.share('your_email@gmail.com', perm_type='user', role='writer')
 
         for sheet_name, df in data_to_upload.items():
@@ -109,7 +111,6 @@ def update_google_sheet(gsheet_name: str, data_to_upload: dict):
             df_to_upload = df.fillna('')
             
             data_list = [df_to_upload.columns.values.tolist()] + df_to_upload.values.tolist()
-            # 使用 USER_ENTERED 可以讓 Google Sheet 自動解析日期等格式
             worksheet.update(data_list, value_input_option='USER_ENTERED')
             
             print(f"  > 工作表 '{sheet_name}' 已成功更新。")

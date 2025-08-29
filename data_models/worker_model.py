@@ -16,7 +16,8 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_workers_for_view(filters: dict):
     """
-    根據篩選條件，查詢移工的詳細住宿資訊 (已為 PostgreSQL 優化)。
+    【v2.0 修改版】根據篩選條件，查詢移工的詳細住宿資訊。
+    現在會從 AccommodationHistory 取得最新的住宿地點。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -24,7 +25,16 @@ def get_workers_for_view(filters: dict):
     current_date_func = "CURRENT_DATE"
     
     try:
+        # 使用子查詢找到每位工人的最新住宿紀錄
         base_query = f"""
+            WITH CurrentAccommodation AS (
+                SELECT 
+                    worker_unique_id,
+                    room_id,
+                    ROW_NUMBER() OVER(PARTITION BY worker_unique_id ORDER BY start_date DESC) as rn
+                FROM "AccommodationHistory"
+                WHERE start_date <= {current_date_func} AND (end_date IS NULL OR end_date >= {current_date_func})
+            )
             SELECT
                 w.employer_name AS "雇主", w.worker_name AS "姓名", d.primary_manager AS "主要管理人", w.gender AS "性別",
                 w.nationality AS "國籍", d.original_address as "宿舍地址", r.room_number as "房號",
@@ -39,7 +49,8 @@ def get_workers_for_view(filters: dict):
                 w.worker_notes AS "個人備註", w.unique_id, 
                 w.passport_number AS "護照號碼", w.arc_number AS "居留證號碼", w.data_source as "資料來源"
             FROM "Workers" w
-            LEFT JOIN "Rooms" r ON w.room_id = r.id
+            LEFT JOIN (SELECT * FROM CurrentAccommodation WHERE rn = 1) ca ON w.unique_id = ca.worker_unique_id
+            LEFT JOIN "Rooms" r ON ca.room_id = r.id
             LEFT JOIN "Dormitories" d ON r.dorm_id = d.id
         """
         
@@ -70,6 +81,88 @@ def get_workers_for_view(filters: dict):
     finally:
         if conn: conn.close()
 
+def get_workers_for_view(filters: dict):
+    """
+    【v2.1 修改版】根據篩選條件，查詢移工的詳細住宿資訊。
+    現在會同時顯示「系統地址」與「實際地址」。
+    """
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    
+    current_date_func = "CURRENT_DATE"
+    
+    try:
+        # 使用子查詢找到每位工人的最新住宿紀錄
+        base_query = f"""
+            WITH CurrentAccommodation AS (
+                SELECT 
+                    worker_unique_id,
+                    room_id,
+                    ROW_NUMBER() OVER(PARTITION BY worker_unique_id ORDER BY start_date DESC, id DESC) as rn
+                FROM "AccommodationHistory"
+                WHERE start_date <= {current_date_func} AND (end_date IS NULL OR end_date >= {current_date_func})
+            )
+            SELECT
+                w.employer_name AS "雇主", 
+                w.worker_name AS "姓名", 
+                -- 【核心修改點】同時查詢兩種地址
+                d_actual.original_address AS "實際地址",
+                r_actual.room_number AS "實際房號",
+                d_system.original_address AS "系統地址",
+                d_actual.primary_manager AS "主要管理人", 
+                w.gender AS "性別",
+                w.nationality AS "國籍", 
+                w.accommodation_start_date AS "入住日期", 
+                w.accommodation_end_date AS "離住日期",
+                w.work_permit_expiry_date AS "工作限期",
+                w.special_status as "特殊狀況",
+                CASE 
+                    WHEN w.accommodation_end_date IS NOT NULL AND w.accommodation_end_date <= {current_date_func}
+                    THEN '已離住' ELSE '在住'
+                END as "在住狀態",
+                w.monthly_fee AS "月費(房租)", w.utilities_fee AS "水電費", w.cleaning_fee AS "清潔費",
+                w.worker_notes AS "個人備註", 
+                w.passport_number AS "護照號碼", w.arc_number AS "居留證號碼", 
+                w.data_source as "資料來源"
+            FROM "Workers" w
+            -- 第一次 JOIN：用於取得「實際地址」
+            LEFT JOIN (SELECT * FROM CurrentAccommodation WHERE rn = 1) ca ON w.unique_id = ca.worker_unique_id
+            LEFT JOIN "Rooms" r_actual ON ca.room_id = r_actual.id
+            LEFT JOIN "Dormitories" d_actual ON r_actual.dorm_id = d_actual.id
+            -- 第二次 JOIN：用於取得「系統地址」
+            LEFT JOIN "Rooms" r_system ON w.room_id = r_system.id
+            LEFT JOIN "Dormitories" d_system ON r_system.dorm_id = d_system.id
+        """
+        
+        where_clauses = []
+        params = []
+        
+        if filters.get('name_search'):
+            term = f"%{filters['name_search']}%"
+            # 讓搜尋可以同時作用於兩種地址
+            where_clauses.append('(w.worker_name ILIKE %s OR w.employer_name ILIKE %s OR d_actual.original_address ILIKE %s OR d_system.original_address ILIKE %s)')
+            params.extend([term, term, term, term])
+            
+        if filters.get('dorm_id'):
+            # 篩選時，以實際地址為準
+            where_clauses.append("d_actual.id = %s")
+            params.append(filters['dorm_id'])
+
+        status_filter = filters.get('status')
+        if status_filter == '在住':
+            where_clauses.append(f"(w.accommodation_end_date IS NULL OR w.accommodation_end_date > {current_date_func})")
+        elif status_filter == '已離住':
+            where_clauses.append(f"(w.accommodation_end_date IS NOT NULL AND w.accommodation_end_date <= {current_date_func})")
+
+        if where_clauses:
+            base_query += " WHERE " + " AND ".join(where_clauses)
+            
+        base_query += ' ORDER BY d_actual.primary_manager, w.employer_name, w.worker_name'
+        
+        return _execute_query_to_dataframe(conn, base_query, params)
+    finally:
+        if conn: conn.close()
+
 def get_single_worker_details(unique_id: str):
     """取得單一移工的所有詳細資料。"""
     conn = database.get_db_connection()
@@ -89,24 +182,24 @@ def _log_fee_change(cursor, worker_id, details, old_details):
     today = date.today()
 
     for key, fee_type_name in fee_map.items():
-        # 從 details (新資料) 中獲取值，如果不存在則跳過
         if key not in details:
             continue
             
         new_value = details.get(key)
         old_value = old_details.get(key) if old_details else None
         
-        # 【核心修改】將兩者都轉換為整數再比較，避免型別問題
         new_amount = int(new_value) if new_value is not None else 0
         old_amount = int(old_value) if old_value is not None else 0
         
         if new_amount != old_amount:
             sql = 'INSERT INTO "FeeHistory" (worker_unique_id, fee_type, amount, effective_date) VALUES (%s, %s, %s, %s)'
             cursor.execute(sql, (worker_id, fee_type_name, new_amount, today))
-            print(f"記錄費用變更: {worker_id} - {fee_type_name} 從 {old_amount} 改為 {new_amount}")
 
 def update_worker_details(unique_id: str, details: dict):
-    """更新移工的核心資料，並自動記錄費用變更歷史。"""
+    """
+    【v2.0 修改版】更新移工的核心資料。
+    住宿變更的邏輯已移至新的函式 `change_worker_accommodation`。
+    """
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed."
     try:
@@ -117,6 +210,12 @@ def update_worker_details(unique_id: str, details: dict):
             
             _log_fee_change(cursor, unique_id, details, old_details)
             
+            # 從 details 中移除 room_id，因为它將由專門的函式處理
+            details.pop('room_id', None)
+            
+            if not details: # 如果只剩下 room_id，那這裡就沒事做了
+                 return True, "沒有核心資料需要更新。"
+
             fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
             values = list(details.values()) + [unique_id]
             sql = f'UPDATE "Workers" SET {fields} WHERE "unique_id" = %s'
@@ -130,9 +229,13 @@ def update_worker_details(unique_id: str, details: dict):
         if conn: conn.close()
 
 def add_manual_worker(details: dict, initial_status: dict):
-    """新增一筆手動管理的移工資料，並為其建立初始狀態。"""
+    """
+    【v2.0 修改版】新增手動管理的移工資料，並為其建立初始住宿和狀態紀錄。
+    """
     details['data_source'] = '手動管理(他仲)'
     details['special_status'] = initial_status.get('status')
+    room_id = details.get('room_id') # 先將 room_id 取出
+
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed.", None
     try:
@@ -141,17 +244,26 @@ def add_manual_worker(details: dict, initial_status: dict):
             if cursor.fetchone():
                 return False, f"新增失敗：員工ID '{details['unique_id']}' 已存在。", None
             
+            # 插入 Workers 表
             columns = ', '.join(f'"{k}"' for k in details.keys())
             placeholders = ', '.join(['%s'] * len(details))
             sql = f'INSERT INTO "Workers" ({columns}) VALUES ({placeholders})'
             cursor.execute(sql, tuple(details.values()))
             
+            # 如果有分配房間，則新增第一筆住宿歷史
+            if room_id:
+                accom_sql = 'INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date) VALUES (%s, %s, %s)'
+                start_date = details.get('accommodation_start_date', date.today())
+                cursor.execute(accom_sql, (details['unique_id'], room_id, start_date))
+            
+            # 新增初始狀態歷史
             if initial_status and initial_status.get('status'):
                 initial_status['worker_unique_id'] = details['unique_id']
                 status_cols = ', '.join(f'"{k}"' for k in initial_status.keys())
                 status_placeholders = ', '.join(['%s'] * len(initial_status))
                 status_sql = f'INSERT INTO "WorkerStatusHistory" ({status_cols}) VALUES ({status_placeholders})'
                 cursor.execute(status_sql, tuple(initial_status.values()))
+
         conn.commit()
         return True, f"成功新增手動管理員工 (ID: {details['unique_id']})", details['unique_id']
     except Exception as e:
@@ -161,14 +273,14 @@ def add_manual_worker(details: dict, initial_status: dict):
         if conn: conn.close()
 
 def delete_worker_by_id(unique_id: str):
-    """根據 unique_id 刪除一筆移工資料。"""
+    """根據 unique_id 刪除一筆移工資料 (級聯刪除會自動處理歷史紀錄)。"""
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed."
     try:
         with conn.cursor() as cursor:
             cursor.execute('DELETE FROM "Workers" WHERE unique_id = %s', (unique_id,))
         conn.commit()
-        return True, "員工資料已成功刪除。"
+        return True, "員工資料及其所有歷史紀錄已成功刪除。"
     except Exception as e:
         if conn: conn.rollback()
         return False, f"刪除員工時發生錯誤: {e}"
@@ -176,24 +288,18 @@ def delete_worker_by_id(unique_id: str):
         if conn: conn.close()
 
 def get_my_company_workers_for_selection():
-    """
-    獲取所有「在住」的員工列表，用於編輯下拉選單 (已修正)。
-    """
+    """【v2.0 修改版】獲取所有「在住」的員工列表，用於編輯下拉選單。"""
     conn = database.get_db_connection()
     if not conn: return []
     try:
         with conn.cursor() as cursor:
-            # 1. 使用 LEFT JOIN 確保沒有分配房間的員工也能被選中
-            # 2. 使用 COALESCE 讓未分配宿舍的員工也能正常顯示
-            # 3. 篩選所有在住的員工
             query = """
                 SELECT 
-                    w.unique_id, 
-                    w.employer_name, 
-                    w.worker_name, 
+                    w.unique_id, w.employer_name, w.worker_name, 
                     COALESCE(d.original_address, '--- 未分配宿舍 ---') as original_address
                 FROM "Workers" w
-                LEFT JOIN "Rooms" r ON w.room_id = r.id
+                LEFT JOIN "AccommodationHistory" ah ON w.unique_id = ah.worker_unique_id AND ah.end_date IS NULL
+                LEFT JOIN "Rooms" r ON ah.room_id = r.id
                 LEFT JOIN "Dormitories" d ON r.dorm_id = d.id
                 WHERE (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)
                 ORDER BY d.original_address, w.worker_name
@@ -203,6 +309,74 @@ def get_my_company_workers_for_selection():
             return [dict(row) for row in records]
     finally:
         if conn: conn.close()
+
+# --- 【以下為本次新增的函式，用於管理住宿歷史】 ---
+
+def get_accommodation_history_for_worker(worker_id: str):
+    """查詢單一工人的完整住宿歷史。"""
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        query = """
+            SELECT
+                ah.id, d.original_address AS "宿舍地址", r.room_number AS "房號",
+                ah.start_date AS "起始日", ah.end_date AS "結束日", ah.notes AS "備註"
+            FROM "AccommodationHistory" ah
+            JOIN "Rooms" r ON ah.room_id = r.id
+            JOIN "Dormitories" d ON r.dorm_id = d.id
+            WHERE ah.worker_unique_id = %s
+            ORDER BY ah.start_date DESC
+        """
+        return _execute_query_to_dataframe(conn, query, (worker_id,))
+    finally:
+        if conn: conn.close()
+
+def change_worker_accommodation(worker_id: str, new_room_id: int, change_date: date):
+    """
+    【v2.0 新增】處理工人換宿的核心業務邏輯。
+    """
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗"
+    try:
+        with conn.cursor() as cursor:
+            # 步驟 1: 找出目前正在住的紀錄
+            cursor.execute(
+                'SELECT id, room_id FROM "AccommodationHistory" WHERE worker_unique_id = %s AND end_date IS NULL ORDER BY start_date DESC LIMIT 1',
+                (worker_id,)
+            )
+            current_accommodation = cursor.fetchone()
+
+            # 如果新房間和舊房間一樣，則不進行任何操作
+            if current_accommodation and current_accommodation['room_id'] == new_room_id:
+                return True, "工人已在該房間，無需變更。"
+
+            # 步驟 2: 將目前正在住的紀錄加上結束日期
+            if current_accommodation:
+                cursor.execute(
+                    'UPDATE "AccommodationHistory" SET end_date = %s WHERE id = %s',
+                    (change_date, current_accommodation['id'])
+                )
+            
+            # 步驟 3: 新增一筆新的住宿紀錄
+            if new_room_id is not None:
+                cursor.execute(
+                    'INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date) VALUES (%s, %s, %s)',
+                    (worker_id, new_room_id, change_date)
+                )
+
+            # 步驟 4: 更新 Workers 表中的 room_id 快取欄位
+            cursor.execute('UPDATE "Workers" SET room_id = %s WHERE unique_id = %s', (new_room_id, worker_id))
+
+        conn.commit()
+        return True, "工人住宿資料更新成功！"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"變更住宿時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
+
+
+# --- 【以下函式與 WorkerStatusHistory, FeeHistory 相關，維持不變】 ---
 
 def get_worker_status_history(unique_id: str):
     """查詢單一移工的所有歷史狀態紀錄。"""
@@ -288,5 +462,129 @@ def get_fee_history_for_worker(unique_id: str):
     try:
         query = 'SELECT effective_date AS "生效日期", fee_type AS "費用類型", amount AS "金額" FROM "FeeHistory" WHERE worker_unique_id = %s ORDER BY effective_date DESC, created_at DESC'
         return _execute_query_to_dataframe(conn, query, (unique_id,))
+    finally:
+        if conn: conn.close()
+
+def change_worker_accommodation(worker_id: str, new_room_id: int, change_date: date):
+    """
+    【v2.1 修改版】處理工人換宿的核心業務邏輯。
+    新增在手動變更後，將工人的 data_source 更新為'手動調整'的機制。
+    """
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗"
+    try:
+        with conn.cursor() as cursor:
+            # 步驟 1: 找出目前正在住的紀錄
+            cursor.execute(
+                'SELECT id, room_id FROM "AccommodationHistory" WHERE worker_unique_id = %s AND end_date IS NULL ORDER BY start_date DESC LIMIT 1',
+                (worker_id,)
+            )
+            current_accommodation = cursor.fetchone()
+
+            if current_accommodation and current_accommodation['room_id'] == new_room_id:
+                return True, "工人已在該房間，無需變更。"
+
+            # 步驟 2: 將目前正在住的紀錄加上結束日期
+            if current_accommodation:
+                cursor.execute(
+                    'UPDATE "AccommodationHistory" SET end_date = %s WHERE id = %s',
+                    (change_date, current_accommodation['id'])
+                )
+            
+            # 步驟 3: 新增一筆新的住宿紀錄
+            if new_room_id is not None:
+                cursor.execute(
+                    'INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date) VALUES (%s, %s, %s)',
+                    (worker_id, new_room_id, change_date)
+                )
+
+            # 步驟 4: 更新 Workers 表中的 room_id 快取欄位
+            # --- 核心修改點 ---
+            # 同時更新 data_source，標記為手動調整，以保護此紀錄不被自動同步覆蓋
+            cursor.execute(
+                'UPDATE "Workers" SET room_id = %s, data_source = %s WHERE unique_id = %s',
+                (new_room_id, '手動調整', worker_id)
+            )
+
+        conn.commit()
+        return True, "工人住宿資料更新成功！"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"變更住宿時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
+
+def reset_worker_data_source(worker_id: str):
+    """
+    【v2.1 新增】將工人的 data_source 重設為'系統自動更新'，
+    使其恢復接受每日同步的住宿位置更新。
+    """
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗"
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                'UPDATE "Workers" SET data_source = %s WHERE unique_id = %s',
+                ('系統自動更新', worker_id)
+            )
+        conn.commit()
+        return True, "成功解除鎖定！此工人將在下次同步時恢復自動更新住宿位置。"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"解除鎖定時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
+
+def get_single_accommodation_details(history_id: int):
+    """
+    【v2.2 新增】取得單筆住宿歷史的詳細資料。
+    """
+    conn = database.get_db_connection()
+    if not conn: return None
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute('SELECT * FROM "AccommodationHistory" WHERE id = %s', (history_id,))
+            record = cursor.fetchone()
+            return dict(record) if record else None
+    finally:
+        if conn: conn.close()
+
+def update_accommodation_history(history_id: int, details: dict):
+    """
+    【v2.2 新增】更新一筆已存在的住宿歷史紀錄。
+    """
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗"
+    try:
+        with conn.cursor() as cursor:
+            # 安全性檢查：不允許透過此函式修改 room_id
+            details.pop('room_id', None)
+            
+            fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
+            values = list(details.values()) + [history_id]
+            sql = f'UPDATE "AccommodationHistory" SET {fields} WHERE id = %s'
+            cursor.execute(sql, tuple(values))
+        conn.commit()
+        return True, "住宿歷史紀錄更新成功！"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"更新住宿歷史時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
+
+def delete_accommodation_history(history_id: int):
+    """
+    【v2.2 新增】刪除一筆住宿歷史紀錄。
+    """
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗"
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute('DELETE FROM "AccommodationHistory" WHERE id = %s', (history_id,))
+        conn.commit()
+        return True, "住宿歷史紀錄已成功刪除。"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"刪除住宿歷史時發生錯誤: {e}"
     finally:
         if conn: conn.close()

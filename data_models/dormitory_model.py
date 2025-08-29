@@ -99,21 +99,26 @@ def update_dormitory_details(dorm_id: int, details: dict):
         if conn: conn.close()
 
 def delete_dormitory_by_id(dorm_id: int):
-    """刪除宿舍的業務邏輯：1. 檢查宿舍內是否還有在住移工。 2. 如果沒有，才執行刪除。"""
+    """
+    【v2.0 修改版】刪除宿舍的業務邏輯。
+    檢查宿舍內是否還有在住移工時，改為查詢 AccommodationHistory 表。
+    """
     conn = database.get_db_connection()
     if not conn: return False, "無法連接到資料庫"
     try:
         with conn.cursor() as cursor:
+            # --- 核心修改點 ---
             check_sql = """
-                SELECT COUNT(w.unique_id) as count 
-                FROM "Workers" w JOIN "Rooms" r ON w.room_id = r.id 
-                WHERE r.dorm_id = %s AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)
+                SELECT COUNT(ah.id) as count 
+                FROM "AccommodationHistory" ah 
+                JOIN "Rooms" r ON ah.room_id = r.id 
+                WHERE r.dorm_id = %s AND (ah.end_date IS NULL OR ah.end_date > CURRENT_DATE)
             """
             cursor.execute(check_sql, (dorm_id,))
             result = cursor.fetchone()
             
             if result and result['count'] > 0:
-                return False, f"刪除失敗：此宿舍尚有 {result['count']} 位在住移工。"
+                return False, f"刪除失敗：此宿舍尚有 {result['count']} 位在住移工的住宿紀錄。"
             
             cursor.execute('DELETE FROM "Dormitories" WHERE id = %s', (dorm_id,))
         conn.commit()
@@ -192,20 +197,24 @@ def add_new_room_to_dorm(details: dict):
         if conn: conn.close()
 
 def delete_room_by_id(room_id: int):
-    """刪除房間的業務邏輯：1. 檢查房間內是否還有在住移工。 2. 如果沒有，才執行刪除。"""
+    """
+    【v2.0 修改版】刪除房間的業務邏輯。
+    檢查房間內是否還有在住移工時，改為查詢 AccommodationHistory 表。
+    """
     conn = database.get_db_connection()
     if not conn: return False, "無法連接到資料庫"
     try:
         with conn.cursor() as cursor:
+            # --- 核心修改點 ---
             check_sql = """
-                SELECT COUNT(unique_id) as count 
-                FROM "Workers" 
-                WHERE room_id = %s AND (accommodation_end_date IS NULL OR accommodation_end_date > CURRENT_DATE)
+                SELECT COUNT(id) as count 
+                FROM "AccommodationHistory" 
+                WHERE room_id = %s AND (end_date IS NULL OR end_date > CURRENT_DATE)
             """
             cursor.execute(check_sql, (room_id,))
             result = cursor.fetchone()
             if result and result['count'] > 0:
-                return False, f"刪除失敗：此房間尚有 {result['count']} 位在住移工。"
+                return False, f"刪除失敗：此房間尚有 {result['count']} 位在住移工的住宿紀錄。"
             
             cursor.execute('DELETE FROM "Rooms" WHERE id = %s', (room_id,))
         conn.commit()
