@@ -1,11 +1,17 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
+from dateutil.relativedelta import relativedelta
 from data_models import lease_model, dormitory_model
 
 def render():
     """渲染「合約管理」頁面"""
     st.header("租賃合約管理")
+
+    # 【核心修改】計算前後 30 年的日期範圍
+    today = date.today()
+    thirty_years_ago = today - relativedelta(years=30)
+    thirty_years_from_now = today + relativedelta(years=30)
 
     with st.expander("➕ 新增租賃合約"):
         with st.form("new_lease_form", clear_on_submit=True):
@@ -15,8 +21,9 @@ def render():
             selected_dorm_id = st.selectbox("選擇宿舍地址", options=dorm_options.keys(), format_func=lambda x: dorm_options.get(x, "未知宿舍"))
             
             c1, c2 = st.columns(2)
-            lease_start_date = c1.date_input("合約起始日", value=None)
-            lease_end_date = c2.date_input("合約截止日", value=None)
+            # 【核心修改】為日期輸入框設定新的 min_value 和 max_value
+            lease_start_date = c1.date_input("合約起始日", value=None, min_value=thirty_years_ago, max_value=thirty_years_from_now)
+            lease_end_date = c2.date_input("合約截止日", value=None, min_value=thirty_years_ago, max_value=thirty_years_from_now)
             
             c3, c4, c5 = st.columns(3)
             monthly_rent = c3.number_input("月租金", min_value=0, step=1000)
@@ -64,7 +71,6 @@ def render():
     if leases_df.empty:
         st.info("目前沒有可供操作的合約紀錄。")
     else:
-        # 為了避免 st.rerun() 後 dorm_options 未定義的問題，重新獲取一次
         if 'dorm_options' not in locals():
             dorms = dormitory_model.get_dorms_for_selection() or []
             dorm_options = {d['id']: d['original_address'] for d in dorms}
@@ -89,12 +95,12 @@ def render():
                     st.text_input("宿舍地址", value=dorm_options.get(lease_details['dorm_id'], "未知"), disabled=True)
                     
                     ec1, ec2 = st.columns(2)
-                    # 【核心修改】直接使用 date 物件，不再需要 strptime
                     start_date_val = lease_details.get('lease_start_date')
                     end_date_val = lease_details.get('lease_end_date')
                     
-                    e_lease_start_date = ec1.date_input("合約起始日", value=start_date_val)
-                    e_lease_end_date = ec2.date_input("合約截止日", value=end_date_val)
+                    # 【核心修改】為日期輸入框設定新的 min_value 和 max_value
+                    e_lease_start_date = ec1.date_input("合約起始日", value=start_date_val, min_value=thirty_years_ago, max_value=thirty_years_from_now)
+                    e_lease_end_date = ec2.date_input("合約截止日", value=end_date_val, min_value=thirty_years_ago, max_value=thirty_years_from_now)
                     
                     ec3, ec4, ec5 = st.columns(3)
                     e_monthly_rent = ec3.number_input("月租金", min_value=0, step=1000, value=int(lease_details.get('monthly_rent') or 0))

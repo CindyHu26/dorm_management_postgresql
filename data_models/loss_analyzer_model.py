@@ -22,54 +22,58 @@ def get_loss_making_dorms(period: str):
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
 
-    # 根據傳入的 period 決定 SQL 的日期範圍
     if period == 'annual':
-        # 計算過去一整年的範圍
-        date_filter_clause = "AND b.bill_end_date >= (CURRENT_DATE - INTERVAL '1 year')"
-        date_filter_amortized = "AND TO_DATE(ae.amortization_start_month, 'YYYY-MM') >= (CURRENT_DATE - INTERVAL '1 year')"
+        # 在 Python 中準備好日期，而不是在 SQL 中重複計算
+        today = datetime.now().date()
+        start_date_str = (today.replace(day=1) - pd.DateOffset(years=1)).strftime('%Y-%m-01')
+        end_date_str = today.strftime('%Y-%m-%d')
+
+        date_filter_clause_workers = f"AND w.accommodation_end_date >= '{start_date_str}' AND w.accommodation_start_date <= '{end_date_str}'"
+        date_filter_clause_bills = f"AND b.bill_end_date >= '{start_date_str}' AND b.bill_start_date <= '{end_date_str}'"
+        date_filter_clause_amortized = f"AND TO_DATE(ae.amortization_end_month, 'YYYY-MM') >= '{start_date_str}' AND TO_DATE(ae.amortization_start_month, 'YYYY-MM') <= '{end_date_str}'"
+        # 年報需要計算平均值
+        divisor = 12.0
     else: # 單月
-        date_filter_clause = f"AND TO_CHAR(b.bill_end_date, 'YYYY-MM') = '{period}'"
-        date_filter_amortized = f"AND ae.amortization_start_month <= '{period}' AND ae.amortization_end_month >= '{period}'"
+        date_filter_clause_workers = f"AND TO_CHAR(w.accommodation_start_date, 'YYYY-MM') <= '{period}' AND (w.accommodation_end_date IS NULL OR TO_CHAR(w.accommodation_end_date, 'YYYY-MM') >= '{period}')"
+        date_filter_clause_bills = f"AND TO_CHAR(b.bill_end_date, 'YYYY-MM') = '{period}'"
+        date_filter_clause_amortized = f"AND ae.amortization_start_month <= '{period}' AND ae.amortization_end_month >= '{period}'"
+        divisor = 1.0
+
 
     try:
         query = f"""
             WITH 
-            -- 1. 計算每個宿舍的總收入 (只計員工費用，代收代付不計入真實收入)
             DormIncome AS (
                 SELECT 
                     r.dorm_id,
-                    SUM(COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0)) as "總收入"
+                    SUM(COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0)) / {divisor} as "總收入"
                 FROM "Workers" w
                 JOIN "Rooms" r ON w.room_id = r.id
-                WHERE (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE) -- 只計算在住員工
+                WHERE 1=1 {date_filter_clause_workers}
                 GROUP BY r.dorm_id
             ),
-            -- 2. 計算每個宿舍的月租支出
             DormRent AS (
                 SELECT dorm_id, AVG(monthly_rent) as "月租金支出"
                 FROM "Leases"
                 WHERE lease_start_date <= CURRENT_DATE AND (lease_end_date IS NULL OR lease_end_date >= CURRENT_DATE)
                 GROUP BY dorm_id
             ),
-            -- 3. 計算每個宿舍由「我司」支付的雜項費用
             DormUtilities AS (
                 SELECT 
                     dorm_id,
-                    SUM(amount) as "雜費支出"
+                    SUM(amount) / {divisor} as "雜費支出"
                 FROM "UtilityBills" b
-                WHERE b.payer = '我司' AND b.is_pass_through = FALSE {date_filter_clause}
+                WHERE b.payer = '我司' AND b.is_pass_through = FALSE {date_filter_clause_bills}
                 GROUP BY dorm_id
             ),
-            -- 4. 計算每個宿舍的長期攤銷費用
             DormAmortized AS (
                 SELECT
                     dorm_id,
                     SUM(ROUND(total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0))) as "長期攤銷支出"
                 FROM "AnnualExpenses" ae
-                WHERE 1=1 {date_filter_amortized}
+                WHERE 1=1 {date_filter_clause_amortized}
                 GROUP BY dorm_id
             )
-            -- 5. 組合所有數據並計算損益
             SELECT
                 d.original_address AS "宿舍地址",
                 COALESCE(di."總收入", 0)::int AS "總收入",
@@ -84,6 +88,8 @@ def get_loss_making_dorms(period: str):
             LEFT JOIN DormUtilities du ON d.id = du.dorm_id
             LEFT JOIN DormAmortized da ON d.id = da.dorm_id
             WHERE d.primary_manager = '我司'
+            -- 【核心修改】加入 GROUP BY 子句
+            GROUP BY d.original_address, di."總收入", dr."月租金支出", du."雜費支出", da."長期攤銷支出"
             HAVING (COALESCE(di."總收入", 0) - (COALESCE(dr."月租金支出", 0) + COALESCE(du."雜費支出", 0) + COALESCE(da."長期攤銷支出", 0))) < 0
             ORDER BY "淨損益" ASC;
         """
