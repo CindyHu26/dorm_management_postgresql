@@ -42,6 +42,8 @@ def get_dormitory_dashboard_data():
                 SUM(CASE WHEN cr.gender = '男' THEN 1 ELSE 0 END) AS "男性人數",
                 SUM(CASE WHEN cr.gender = '女' THEN 1 ELSE 0 END) AS "女性人數",
                 SUM(cr.total_fee) AS "月租金總額",
+                -- 【核心新增】計算最多人數的租金 (眾數)
+                MODE() WITHIN GROUP (ORDER BY cr.total_fee) AS "最多人數租金",
                 ROUND(AVG(cr.total_fee)) AS "平均租金"
             FROM "Dormitories" d
             LEFT JOIN "Rooms" r ON d.id = r.dorm_id
