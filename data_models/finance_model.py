@@ -1,6 +1,8 @@
 import pandas as pd
 from datetime import datetime
 import database
+import json
+from . import worker_model
 
 def _execute_query_to_dataframe(conn, query, params=None):
     """輔助函式，用來手動執行查詢並回傳 DataFrame。"""
@@ -337,5 +339,29 @@ def delete_annual_expense_record(record_id: int):
     except Exception as e:
         if conn: conn.rollback()
         return False, f"刪除年度費用時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
+
+def batch_delete_bill_records(record_ids: list):
+    """
+    根據提供的 ID 列表，批次刪除多筆帳單紀錄。
+    """
+    if not record_ids:
+        return False, "沒有選擇任何要刪除的紀錄。"
+        
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗。"
+    try:
+        with conn.cursor() as cursor:
+            # 使用 ANY(%s) 語法可以安全地處理 ID 列表
+            query = 'DELETE FROM "UtilityBills" WHERE id = ANY(%s)'
+            cursor.execute(query, (record_ids,))
+            # cursor.rowcount 會回傳受影響的行數
+            deleted_count = cursor.rowcount
+        conn.commit()
+        return True, f"成功刪除了 {deleted_count} 筆費用紀錄。"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"批次刪除帳單時發生錯誤: {e}"
     finally:
         if conn: conn.close()

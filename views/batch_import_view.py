@@ -64,8 +64,6 @@ def render():
             except Exception as e:
                 st.error(f"處理檔案時發生錯誤：{e}")
 
-    st.markdown("---")
-
     # --- 區塊二：一般年度費用匯入 ---
     with st.container(border=True):
         st.subheader("📋 一般年度費用匯入")
@@ -148,6 +146,7 @@ def render():
             except Exception as e:
                 st.error(f"處理檔案時發生錯誤：{e}")
 
+    st.markdown("---")
     # --- 區塊四：住宿分配匯入 ---
     with st.container(border=True):
         st.subheader("🏠 住宿分配/異動匯入")
@@ -186,6 +185,59 @@ def render():
                             label="📥 下載失敗紀錄報告",
                             data=to_excel(failed_df),
                             file_name="accommodation_import_failed_report.xlsx",
+                        )
+            except Exception as e:
+                st.error(f"處理檔案時發生錯誤：{e}")
+
+    st.markdown("---")
+    with st.container(border=True):
+        st.subheader("📄 房租合約匯入")
+        st.info("用於批次新增宿舍的租賃合約紀錄。")
+        
+        lease_template_df = pd.DataFrame({
+            "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號"],
+            "合約起始日": ["2025-01-01"],
+            "合約截止日": ["2026-12-31"],
+            "月租金": [25000],
+            "押金": [50000],
+            "租金含水電": ["False"]
+        })
+        st.download_button(
+            label="📥 下載房租合約匯入範本",
+            data=to_excel(lease_template_df),
+            file_name="lease_import_template.xlsx"
+        )
+
+        uploaded_lease_file = st.file_uploader("上傳【房租合約】Excel 檔案", type=["xlsx"], key="lease_uploader")
+
+        if uploaded_lease_file:
+            try:
+                df_lease = pd.read_excel(uploaded_lease_file)
+                st.markdown("##### 檔案內容預覽：")
+                st.dataframe(df_lease.head())
+                if st.button("🚀 開始匯入房租合約", type="primary", key="lease_import_btn"):
+                    with st.spinner("正在處理與匯入房租合約..."):
+                        success, failed_df, skipped_df = importer_model.batch_import_leases(df_lease)
+                    
+                    st.success(f"匯入完成！成功新增 {success} 筆。")
+
+                    # --- 新增顯示「跳過」紀錄的區塊 ---
+                    if not skipped_df.empty:
+                        st.warning(f"有 {len(skipped_df)} 筆資料因重複而跳過：")
+                        st.dataframe(skipped_df)
+                        st.download_button(
+                            label="📥 下載跳過紀錄報告",
+                            data=to_excel(skipped_df),
+                            file_name="lease_import_skipped_report.xlsx",
+                        )
+
+                    if not failed_df.empty:
+                        st.error(f"有 {len(failed_df)} 筆資料匯入失敗：")
+                        st.dataframe(failed_df)
+                        st.download_button(
+                            label="📥 下載失敗紀錄報告",
+                            data=to_excel(failed_df),
+                            file_name="lease_import_failed_report.xlsx",
                         )
             except Exception as e:
                 st.error(f"處理檔案時發生錯誤：{e}")

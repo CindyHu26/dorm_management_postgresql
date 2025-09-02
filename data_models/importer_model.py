@@ -438,3 +438,77 @@ def batch_import_accommodation(df: pd.DataFrame):
         if conn: conn.close()
 
     return success_count, pd.DataFrame(failed_records)
+
+def batch_import_leases(df: pd.DataFrame):
+    """
+    【v1.1 修改版】批次匯入【房租合約】的核心邏輯。
+    新增回傳重複的紀錄。
+    """
+    success_count = 0
+    failed_records = []
+    skipped_records = [] # 【核心修改點 1】新增一個列表來存放被跳過的紀錄
+    conn = database.get_db_connection()
+    if not conn:
+        error_df = df.copy()
+        error_df['錯誤原因'] = "無法連接到資料庫"
+        return 0, error_df, pd.DataFrame()
+
+    try:
+        with conn.cursor() as cursor:
+            dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, original_address, normalized_address FROM "Dormitories"')
+            original_addr_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
+            normalized_addr_map = {d['normalized_address']: d['id'] for _, d in dorms_df.iterrows()}
+            
+            for index, row in df.iterrows():
+                try:
+                    address = row.get('宿舍地址')
+                    if not address or pd.isna(address):
+                        raise ValueError("宿舍地址為空")
+                        
+                    addr_stripped = str(address).strip()
+                    dorm_id = original_addr_map.get(addr_stripped) or normalized_addr_map.get(normalize_taiwan_address(addr_stripped)['full'])
+                    if not dorm_id:
+                        raise ValueError(f"在資料庫中找不到對應的宿舍地址: {address}")
+
+                    def to_bool(val):
+                        if pd.isna(val): return False
+                        return str(val).strip().upper() in ['TRUE', '1', 'Y', 'YES', '是']
+
+                    details = {
+                        "dorm_id": dorm_id,
+                        "lease_start_date": pd.to_datetime(row.get('合約起始日')).strftime('%Y-%m-%d') if pd.notna(row.get('合約起始日')) else None,
+                        "lease_end_date": pd.to_datetime(row.get('合約截止日')).strftime('%Y-%m-%d') if pd.notna(row.get('合約截止日')) else None,
+                        "monthly_rent": int(pd.to_numeric(row.get('月租金'), errors='coerce')) if pd.notna(row.get('月租金')) else None,
+                        "deposit": int(pd.to_numeric(row.get('押金'), errors='coerce')) if pd.notna(row.get('押金')) else None,
+                        "utilities_included": to_bool(row.get('租金含水電')),
+                    }
+                    
+                    cursor.execute(
+                        'SELECT id FROM "Leases" WHERE dorm_id = %s AND lease_start_date = %s AND monthly_rent = %s',
+                        (details['dorm_id'], details['lease_start_date'], details['monthly_rent'])
+                    )
+                    if cursor.fetchone():
+                        # --- 【核心修改點 2】將跳過的紀錄加入 skipped_records ---
+                        row['錯誤原因'] = "資料重複，已跳過"
+                        skipped_records.append(row)
+                        continue
+
+                    columns = ', '.join(f'"{k}"' for k in details.keys())
+                    placeholders = ', '.join(['%s'] * len(details))
+                    sql = f'INSERT INTO "Leases" ({columns}) VALUES ({placeholders})'
+                    cursor.execute(sql, tuple(details.values()))
+                    success_count += 1
+                
+                except Exception as row_error:
+                    row['錯誤原因'] = str(row_error)
+                    failed_records.append(row)
+        
+        conn.commit()
+    except Exception as e:
+        if conn: conn.rollback()
+        print(f"批次匯入房租合約時發生嚴重錯誤: {e}")
+    finally:
+        if conn: conn.close()
+            
+    # --- 【核心修改點 3】回傳三個結果 ---
+    return success_count, pd.DataFrame(failed_records), pd.DataFrame(skipped_records)
