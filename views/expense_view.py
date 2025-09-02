@@ -29,6 +29,17 @@ def render():
     # --- 2. 新增帳單紀錄 ---
     with st.expander("📝 新增一筆費用帳單"):
         with st.form("new_bill_form", clear_on_submit=True):
+            
+            # --- 【核心修改點 1】---
+            # 在表單開始時，就先獲取宿舍的詳細資料
+            dorm_details = dormitory_model.get_dorm_details_by_id(selected_dorm_id)
+            default_payer = dorm_details.get('utilities_payer', '我司') if dorm_details else '我司'
+            payer_options = ["我司", "雇主", "工人"]
+            try:
+                default_payer_index = payer_options.index(default_payer)
+            except ValueError:
+                default_payer_index = 0 # 如果預設值不在選項中，安全地選擇第一個
+
             c1, c2, c3 = st.columns(3)
             
             bill_type_options = ["電費", "水費", "天然氣", "瓦斯費", "網路費", "子母車", "其他 (請手動輸入)"]
@@ -44,7 +55,10 @@ def render():
             dc1, dc2, dc3 = st.columns(3)
             bill_start_date = dc1.date_input("帳單起始日", value=None)
             bill_end_date = dc2.date_input("帳單結束日", value=None)
-            payer = dc3.selectbox("費用支付方", ["我司", "雇主", "工人"])
+            
+            # --- 【核心修改點 2】---
+            # 在下拉選單中使用我們計算好的預設索引 (default_payer_index)
+            payer = dc3.selectbox("費用支付方", payer_options, index=default_payer_index)
             
             is_invoiced = st.checkbox("已向雇主/員工請款?")
             is_pass_through = st.checkbox("此筆為「代收代付」帳款", help="勾選此項後，帳單金額將同時計入收入和支出，損益為零。適用於我司先向工人收費，再代為繳納的狀況。")
@@ -78,7 +92,7 @@ def render():
 
     st.markdown("---")
     
-    # --- 3. 帳單歷史紀錄與管理 ---
+    # --- 3. 帳單歷史紀錄與管理 (維持不變) ---
     st.subheader(f"歷史帳單總覽: {dorm_options.get(selected_dorm_id)}")
 
     if st.button("🔄 重新整理帳單列表"):
@@ -93,7 +107,6 @@ def render():
     if bills_df.empty:
         st.info("此宿舍尚無任何費用帳單紀錄。")
     else:
-        # 現在 DataFrame 會自動包含新欄位
         st.dataframe(bills_df, use_container_width=True, hide_index=True)
         
         st.markdown("---")
@@ -145,11 +158,10 @@ def render():
                     bill_start_date = dc1.date_input("帳單起始日", value=start_date)
                     bill_end_date = dc2.date_input("帳單結束日", value=end_date)
                     
-                    # 【核心修改】加入編輯欄位
-                    payer_options = ["我司", "雇主", "工人"]
-                    current_payer = bill_details.get('payer', '我司') # 預設為我司
-                    payer_index = payer_options.index(current_payer) if current_payer in payer_options else 0
-                    payer = dc3.selectbox("費用支付方", payer_options, index=payer_index)
+                    payer_options_edit = ["我司", "雇主", "工人"]
+                    current_payer = bill_details.get('payer', '我司')
+                    payer_index = payer_options_edit.index(current_payer) if current_payer in payer_options_edit else 0
+                    payer = dc3.selectbox("費用支付方", payer_options_edit, index=payer_index)
 
                     is_invoiced = st.checkbox("已向雇主/員工請款?", value=bool(bill_details.get('is_invoiced')))
                     is_pass_through = st.checkbox("此筆為「代收代付」帳款", value=bool(bill_details.get('is_pass_through')), help="勾選此項後，帳單金額將同時計入收入和支出，損益為零。適用於我司先向工人收費，再代為繳納的狀況。")
@@ -164,8 +176,8 @@ def render():
                             "bill_start_date": str(bill_start_date) if bill_start_date else None, 
                             "bill_end_date": str(bill_end_date) if bill_end_date else None,
                             "is_invoiced": is_invoiced, "notes": notes,
-                            "payer": payer, # 【新增】
-                            "is_pass_through": is_pass_through # 【新增】
+                            "payer": payer,
+                            "is_pass_through": is_pass_through
                         }
                         success, message = finance_model.update_bill_record(selected_bill_id, update_data)
                         if success:

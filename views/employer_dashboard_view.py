@@ -53,16 +53,15 @@ def render():
         if report_df.empty:
             st.info("這位雇主目前沒有任何在住員工的住宿紀錄。")
         else:
-            # --- 【核心修改】財務總覽 ---
             st.subheader(f"財務總覽 ({year_month_str})")
             
             if finance_df.empty:
                 st.warning("在選定月份中，找不到與此雇主相關的任何收支紀錄。")
             else:
-                # 計算總計
+                # --- 【核心修改點 1】---
+                # 將「我司分攤攤銷」費用加入總支出計算
                 total_income = finance_df['收入(員工月費)'].sum()
-                # 「我司」的總支出是我們需要負擔的月租和雜費的總和
-                total_expense_by_us = finance_df['我司分攤月租'].sum() + finance_df['我司分攤雜費'].sum()
+                total_expense_by_us = finance_df['我司分攤月租'].sum() + finance_df['我司分攤雜費'].sum() + finance_df['我司分攤攤銷'].sum()
                 profit_loss = total_income - total_expense_by_us
 
                 f_col1, f_col2, f_col3 = st.columns(3)
@@ -70,11 +69,11 @@ def render():
                 f_col2.metric("預估我司分攤總支出", f"NT$ {total_expense_by_us:,.0f}")
                 f_col3.metric("預估淨貢獻", f"NT$ {profit_loss:,.0f}", delta=f"{profit_loss:,.0f}")
 
-                # 顯示詳細收支表
                 st.markdown("##### 各宿舍收支詳情 (此雇主)")
-                # 重新組合要顯示的 DataFrame
                 display_df = finance_df.copy()
-                display_df['我司總支出'] = display_df['我司分攤月租'] + display_df['我司分攤雜費']
+                # --- 【核心修改點 2】---
+                # 將「我司分攤攤銷」費用加入各宿舍的總支出計算
+                display_df['我司總支出'] = display_df['我司分攤月租'] + display_df['我司分攤雜費'] + display_df['我司分攤攤銷']
                 display_df['雇主總支出'] = display_df['雇主分攤月租'] + display_df['雇主分攤雜費']
                 display_df['工人總支出'] = display_df['工人分攤月租'] + display_df['工人分攤雜費']
                 display_df['淨損益'] = display_df['收入(員工月費)'] - display_df['我司總支出']
