@@ -467,14 +467,13 @@ def get_fee_history_for_worker(unique_id: str):
 
 def change_worker_accommodation(worker_id: str, new_room_id: int, change_date: date):
     """
-    【v2.1 修改版】處理工人換宿的核心業務邏輯。
-    新增在手動變更後，將工人的 data_source 更新為'手動調整'的機制。
+    【v2.2 最終版】處理工人換宿的核心業務邏輯。
+    只更新住宿歷史與 data_source，不更動 Workers.room_id (系統地址)。
     """
     conn = database.get_db_connection()
     if not conn: return False, "資料庫連線失敗"
     try:
         with conn.cursor() as cursor:
-            # 步驟 1: 找出目前正在住的紀錄
             cursor.execute(
                 'SELECT id, room_id FROM "AccommodationHistory" WHERE worker_unique_id = %s AND end_date IS NULL ORDER BY start_date DESC LIMIT 1',
                 (worker_id,)
@@ -484,26 +483,23 @@ def change_worker_accommodation(worker_id: str, new_room_id: int, change_date: d
             if current_accommodation and current_accommodation['room_id'] == new_room_id:
                 return True, "工人已在該房間，無需變更。"
 
-            # 步驟 2: 將目前正在住的紀錄加上結束日期
             if current_accommodation:
                 cursor.execute(
                     'UPDATE "AccommodationHistory" SET end_date = %s WHERE id = %s',
                     (change_date, current_accommodation['id'])
                 )
             
-            # 步驟 3: 新增一筆新的住宿紀錄
             if new_room_id is not None:
                 cursor.execute(
                     'INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date) VALUES (%s, %s, %s)',
                     (worker_id, new_room_id, change_date)
                 )
 
-            # 步驟 4: 更新 Workers 表中的 room_id 快取欄位
-            # --- 核心修改點 ---
-            # 同時更新 data_source，標記為手動調整，以保護此紀錄不被自動同步覆蓋
+            # --- 【核心修改點】 ---
+            # 只更新 data_source 標記，不再更新 Workers 表的 room_id
             cursor.execute(
-                'UPDATE "Workers" SET room_id = %s, data_source = %s WHERE unique_id = %s',
-                (new_room_id, '手動調整', worker_id)
+                'UPDATE "Workers" SET data_source = %s WHERE unique_id = %s',
+                ('手動調整', worker_id)
             )
 
         conn.commit()

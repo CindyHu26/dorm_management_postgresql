@@ -57,8 +57,8 @@ def get_dormitory_dashboard_data():
         
 def get_financial_dashboard_data(year_month: str):
     """
-    【v2.0 修改版】執行一個複雜的聚合查詢，為指定的月份計算收支與損益。
-    收入計算改為基於 AccommodationHistory。
+    【v2.1 修改版】執行一個複雜的聚合查詢，為指定的月份計算收支與損益。
+    修正因多筆合約導致地址重複的問題。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -71,17 +71,13 @@ def get_financial_dashboard_data(year_month: str):
                     TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
                     (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
             ),
-            -- 【核心修改點】收入計算改為精準計算當月在住天數比例
             WorkerIncome AS (
                 SELECT 
                     r.dorm_id, 
                     SUM(
                         (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0)) *
-                        -- 計算當月住了幾天 / 當月總天數 = 收入佔比
-                        (
-                            (LEAST(ah.end_date, (SELECT last_day_of_month FROM DateParams))::date - GREATEST(ah.start_date, (SELECT first_day_of_month FROM DateParams))::date + 1)
-                            / EXTRACT(DAY FROM (SELECT last_day_of_month FROM DateParams))::decimal
-                        )
+                        ((LEAST(COALESCE(ah.end_date, (SELECT last_day_of_month FROM DateParams)), (SELECT last_day_of_month FROM DateParams))::date - GREATEST(ah.start_date, (SELECT first_day_of_month FROM DateParams))::date + 1)
+                         / EXTRACT(DAY FROM (SELECT last_day_of_month FROM DateParams))::decimal)
                     ) as total_income
                 FROM "AccommodationHistory" ah
                 JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
@@ -95,27 +91,27 @@ def get_financial_dashboard_data(year_month: str):
             ),
             PassThroughIncome AS (
                 SELECT b.dorm_id, SUM(b.amount) as total_pass_through_income
-                FROM "UtilityBills" b
-                CROSS JOIN DateParams dp
+                FROM "UtilityBills" b CROSS JOIN DateParams dp
                 WHERE b.is_pass_through = TRUE
                   AND b.bill_start_date <= dp.last_day_of_month 
                   AND b.bill_end_date >= dp.first_day_of_month
                 GROUP BY b.dorm_id
             ),
+            -- 【核心修改點】確保每月只抓取一筆最新的租賃合約
             MonthlyRent AS (
-                SELECT dorm_id, monthly_rent 
-                FROM "Leases"
-                CROSS JOIN DateParams dp
-                WHERE lease_start_date <= dp.last_day_of_month
-                  AND (lease_end_date IS NULL OR lease_end_date >= dp.first_day_of_month)
+                SELECT dorm_id, monthly_rent FROM (
+                    SELECT dorm_id, monthly_rent, ROW_NUMBER() OVER(PARTITION BY dorm_id ORDER BY lease_start_date DESC) as rn
+                    FROM "Leases" CROSS JOIN DateParams dp
+                    WHERE lease_start_date <= dp.last_day_of_month
+                      AND (lease_end_date IS NULL OR lease_end_date >= dp.first_day_of_month)
+                ) as sub_leases WHERE rn = 1
             ),
             ProratedUtilities AS (
                 SELECT b.dorm_id,
                        SUM(b.amount::decimal * (LEAST(b.bill_end_date, (SELECT last_day_of_month FROM DateParams))::date - GREATEST(b.bill_start_date, (SELECT first_day_of_month FROM DateParams))::date + 1)
                            / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)
                        ) as total_utilities
-                FROM "UtilityBills" b
-                CROSS JOIN DateParams dp
+                FROM "UtilityBills" b CROSS JOIN DateParams dp
                 WHERE b.payer = '我司'
                   AND b.bill_start_date <= dp.last_day_of_month 
                   AND b.bill_end_date >= dp.first_day_of_month
@@ -124,8 +120,7 @@ def get_financial_dashboard_data(year_month: str):
             AmortizedExpenses AS (
                 SELECT dorm_id, 
                        SUM(ROUND(total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0))) as total_amortized
-                FROM "AnnualExpenses"
-                CROSS JOIN DateParams dp
+                FROM "AnnualExpenses" CROSS JOIN DateParams dp
                 WHERE TO_DATE(amortization_start_month, 'YYYY-MM') <= dp.first_day_of_month
                   AND TO_DATE(amortization_end_month, 'YYYY-MM') >= dp.first_day_of_month
                 GROUP BY dorm_id
@@ -150,7 +145,7 @@ def get_financial_dashboard_data(year_month: str):
         return _execute_query_to_dataframe(conn, query, params)
     finally:
         if conn: conn.close()
-
+        
 def get_special_status_summary():
     """統計所有「在住」人員中，各種不同「特殊狀況」的人數。"""
     conn = database.get_db_connection()

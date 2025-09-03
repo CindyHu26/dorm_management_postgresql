@@ -9,7 +9,7 @@ def render():
 
     tab1, tab2 = st.tabs(["📊 住宿情況總覽", "💰 財務收支分析"])
 
-    # --- 頁籤一：住宿總覽 ---
+    # --- 頁籤一：住宿總覽 (維持不變) ---
     with tab1:
         st.subheader("各宿舍即時住宿統計")
         if st.button("🔄 重新整理住宿數據", key="refresh_overview"):
@@ -17,7 +17,6 @@ def render():
 
         @st.cache_data
         def get_overview_data():
-            """快取住宿總覽的查詢結果。"""
             return dashboard_model.get_dormitory_dashboard_data()
 
         overview_df = get_overview_data()
@@ -94,18 +93,10 @@ def render():
                 f_col1, f_col2 = st.columns(2)
                 
                 with f_col1:
-                    st.metric(
-                        label="預估單月總支出 (年均)",
-                        value=f"NT$ {annual_forecast_data['estimated_monthly_expense']:,.0f}",
-                        help=f"此估算基於過去 {annual_forecast_data['lookback_days']} 天的數據，適合用於整年度的宏觀預算規劃。"
-                    )
+                    st.metric(label="預估單月總支出 (年均)", value=f"NT$ {annual_forecast_data['estimated_monthly_expense']:,.0f}", help=f"此估算基於過去 {annual_forecast_data['lookback_days']} 天的數據。")
                 
                 with f_col2:
-                    st.metric(
-                        label=f"預估 {year_month_str} 單月總支出 (季節性)",
-                        value=f"NT$ {seasonal_forecast_data['estimated_monthly_expense']:,.0f}",
-                        help=f"此估算基於去年同期 ({seasonal_forecast_data.get('lookback_period', 'N/A')}) 的數據，更能反映季節性差異（如夏季電費）。"
-                    )
+                    st.metric(label=f"預估 {year_month_str} 單月總支出 (季節性)", value=f"NT$ {seasonal_forecast_data['estimated_monthly_expense']:,.0f}", help=f"此估算基於去年同期 ({seasonal_forecast_data.get('lookback_period', 'N/A')}) 的數據。")
             else:
                 st.info("尚無足夠歷史數據進行預測。")
 
@@ -114,12 +105,13 @@ def render():
         st.subheader("每月實際損益")
         st.info("此報表統計實際發生的「總收入」(員工月費+其他收入)與「總支出」(宿舍月租+當月帳單攤銷+年度費用攤銷)的差額。")
 
-        if st.button("🔍 產生財務報表"):
-            get_finance_data.clear()
-
+        # --- 【核心修改點】將函式定義移到按鈕上方 ---
         @st.cache_data
         def get_finance_data(period):
             return dashboard_model.get_financial_dashboard_data(period)
+
+        if st.button("🔍 產生財務報表"):
+            get_finance_data.clear()
 
         finance_df = get_finance_data(year_month_str)
 
@@ -137,12 +129,10 @@ def render():
 
             st.markdown("##### 各宿舍損益詳情")
             
-            # --- 重新引入 style.applymap 來為損益欄位上色 ---
             def style_profit(val):
                 color = 'red' if val < 0 else 'green' if val > 0 else 'grey'
                 return f'color: {color}'
             
-            # 將 column_config 和 style.applymap 結合使用
             st.dataframe(
                 finance_df.style.apply(lambda x: x.map(lambda y: style_profit(y) if x.name == '預估損益' else None)),
                 use_container_width=True, 
@@ -150,10 +140,9 @@ def render():
                 column_config={
                     "預計總收入": st.column_config.NumberColumn(format="NT$ %d"),
                     "宿舍月租": st.column_config.NumberColumn(format="NT$ %d"),
-                    "變動雜費": st.column_config.NumberColumn(format="NT$ %d"),
+                    "變動雜費(我司支付)": st.column_config.NumberColumn(format="NT$ %d"),
                     "長期攤銷": st.column_config.NumberColumn(format="NT$ %d"),
                     "預計總支出": st.column_config.NumberColumn(format="NT$ %d"),
-                    # 我們仍然可以為上色後的欄位設定數字格式
                     "預估損益": st.column_config.NumberColumn(format="NT$ %d")
                 }
             )
