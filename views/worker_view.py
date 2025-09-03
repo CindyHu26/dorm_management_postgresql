@@ -78,20 +78,30 @@ def render():
     
     @st.cache_data
     def get_editable_workers_list():
-        return worker_model.get_my_company_workers_for_selection()
+        return worker_model.get_workers_for_editor_selection()
 
     editable_workers = get_editable_workers_list()
     
     if not editable_workers:
-        st.info("目前沒有『我司』管理的宿舍中有在住人員可供編輯。")
+        st.info("系統中沒有任何工人資料可供編輯。")
     else:
-        worker_options = {w['unique_id']: f"{w['employer_name']} / {w['worker_name']} (宿舍: {w['original_address']})" for w in editable_workers}
+        # 建立資訊更豐富的選項文字
+        worker_options = {
+            w['unique_id']: (
+                f"{w.get('employer_name', 'N/A')} / "
+                f"{w.get('worker_name', 'N/A')} / "
+                f"護照:{w.get('passport_number') or '無'} / "
+                f"居留證:{w.get('arc_number') or '無'} "
+                f"({w.get('original_address', 'N/A')}){w.get('status_tag', '')}"
+            )
+            for w in editable_workers
+        }
         
         selected_worker_id = st.selectbox(
-            "請選擇要編輯或檢視的移工：",
+            "搜尋並選擇移工 (可輸入雇主/姓名/護照/居留證號)",
             options=[None] + list(worker_options.keys()),
             format_func=lambda x: "請選擇..." if x is None else worker_options.get(x),
-            key="main_worker_selector" # 【核心修改】
+            key="main_worker_selector"
         )
 
         if selected_worker_id:
@@ -255,7 +265,6 @@ def render():
                     with st.form("new_status_form", clear_on_submit=True):
                         s_c1, s_c2 = st.columns(2)
                         
-                        # --- 【核心修改 2】: 移除 "在住" 選項 ---
                         status_options = ["", "掛宿外住(不收費)", "掛宿外住(收費)", "費用不同", "其他"]
                         new_status = s_c1.selectbox("選擇新狀態 (若要改回正常在住，請留空)", status_options, key="new_status_selector")
 

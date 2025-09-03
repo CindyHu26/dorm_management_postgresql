@@ -287,30 +287,43 @@ def delete_worker_by_id(unique_id: str):
     finally:
         if conn: conn.close()
 
-def get_my_company_workers_for_selection():
-    """【v2.0 修改版】獲取所有「在住」的員工列表，用於編輯下拉選單。"""
+def get_workers_for_editor_selection():
+    """
+    【v2.8 修改版】獲取所有工人（包含在住與已離住），用於編輯區的下拉選單。
+    會取得每位工人最新的住宿地址作為參考。
+    """
     conn = database.get_db_connection()
     if not conn: return []
     try:
         with conn.cursor() as cursor:
             query = """
                 SELECT 
-                    w.unique_id, w.employer_name, w.worker_name, 
-                    COALESCE(d.original_address, '--- 未分配宿舍 ---') as original_address
+                    w.unique_id, 
+                    w.employer_name, 
+                    w.worker_name,
+                    w.passport_number,
+                    w.arc_number,
+                    COALESCE(d.original_address, '--- 未分配宿舍 ---') as original_address,
+                    CASE 
+                        WHEN w.accommodation_end_date IS NOT NULL AND w.accommodation_end_date <= CURRENT_DATE
+                        THEN ' (已離住)' ELSE ''
+                    END as status_tag
                 FROM "Workers" w
-                LEFT JOIN "AccommodationHistory" ah ON w.unique_id = ah.worker_unique_id AND ah.end_date IS NULL
+                -- 使用子查詢來確保只 JOIN 到每位工人最新的一筆住宿歷史紀錄
+                LEFT JOIN (
+                    SELECT DISTINCT ON (worker_unique_id) *
+                    FROM "AccommodationHistory"
+                    ORDER BY worker_unique_id, start_date DESC, id DESC
+                ) ah ON w.unique_id = ah.worker_unique_id
                 LEFT JOIN "Rooms" r ON ah.room_id = r.id
                 LEFT JOIN "Dormitories" d ON r.dorm_id = d.id
-                WHERE (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)
-                ORDER BY d.original_address, w.worker_name
+                ORDER BY w.accommodation_end_date DESC NULLS FIRST, w.worker_name
             """
             cursor.execute(query)
             records = cursor.fetchall()
             return [dict(row) for row in records]
     finally:
         if conn: conn.close()
-
-# --- 【以下為本次新增的函式，用於管理住宿歷史】 ---
 
 def get_accommodation_history_for_worker(worker_id: str):
     """查詢單一工人的完整住宿歷史。"""
