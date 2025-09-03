@@ -446,7 +446,7 @@ def batch_import_leases(df: pd.DataFrame):
     """
     success_count = 0
     failed_records = []
-    skipped_records = [] # 【核心修改點 1】新增一個列表來存放被跳過的紀錄
+    skipped_records = [] # 新增一個列表來存放被跳過的紀錄
     conn = database.get_db_connection()
     if not conn:
         error_df = df.copy()
@@ -488,7 +488,7 @@ def batch_import_leases(df: pd.DataFrame):
                         (details['dorm_id'], details['lease_start_date'], details['monthly_rent'])
                     )
                     if cursor.fetchone():
-                        # --- 【核心修改點 2】將跳過的紀錄加入 skipped_records ---
+                        # --- 將跳過的紀錄加入 skipped_records ---
                         row['錯誤原因'] = "資料重複，已跳過"
                         skipped_records.append(row)
                         continue
@@ -510,5 +510,102 @@ def batch_import_leases(df: pd.DataFrame):
     finally:
         if conn: conn.close()
             
-    # --- 【核心修改點 3】回傳三個結果 ---
+    # --- 回傳三個結果 ---
+    return success_count, pd.DataFrame(failed_records), pd.DataFrame(skipped_records)
+
+def batch_import_fire_safety(df: pd.DataFrame):
+    """
+    批次匯入【消防安檢】的核心邏輯。
+    """
+    success_count = 0
+    failed_records = []
+    skipped_records = []
+    # finance_model.add_compliance_record 函式需要從 data_models 導入
+    from . import finance_model
+
+    conn = database.get_db_connection()
+    if not conn:
+        error_df = df.copy()
+        error_df['錯誤原因'] = "無法連接到資料庫"
+        return 0, error_df, pd.DataFrame()
+
+    try:
+        with conn.cursor() as cursor:
+            dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, original_address, normalized_address FROM "Dormitories"')
+            original_addr_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
+            normalized_addr_map = {d['normalized_address']: d['id'] for _, d in dorms_df.iterrows()}
+            
+            for index, row in df.iterrows():
+                try:
+                    address = row.get('宿舍地址')
+                    if not address or pd.isna(address):
+                        raise ValueError("宿舍地址為空")
+                    
+                    addr_stripped = str(address).strip()
+                    dorm_id = original_addr_map.get(addr_stripped) or normalized_addr_map.get(normalize_taiwan_address(addr_stripped)['full'])
+                    if not dorm_id:
+                        raise ValueError(f"在資料庫中找不到對應的宿舍地址: {address}")
+
+                    # 將 Excel 日期轉換為字串，處理空值
+                    def format_date(date_val):
+                        if pd.isna(date_val): return None
+                        return pd.to_datetime(date_val).strftime('%Y-%m-%d')
+
+                    payment_date = pd.to_datetime(row.get('支付日期')).date() if pd.notna(row.get('支付日期')) else None
+                    total_amount = int(pd.to_numeric(row.get('支付總金額'), errors='coerce')) if pd.notna(row.get('支付總金額')) else 0
+                    
+                    # 檢查重複：如果同一宿舍、同一支付日期、同一金額的消防安檢已存在，則跳過
+                    cursor.execute(
+                        'SELECT id FROM "AnnualExpenses" WHERE dorm_id = %s AND payment_date = %s AND total_amount = %s AND expense_item = %s',
+                        (dorm_id, payment_date, total_amount, '消防安檢')
+                    )
+                    if cursor.fetchone():
+                        row['錯誤原因'] = "資料重複，已跳過"
+                        skipped_records.append(row)
+                        continue
+
+                    amort_start = pd.to_datetime(row.get('攤提起始日')).date() if pd.notna(row.get('攤提起始日')) else payment_date
+                    amort_period = int(pd.to_numeric(row.get('攤提月數'), errors='coerce')) if pd.notna(row.get('攤提月數')) else 12
+                    amort_end_obj = amort_start + relativedelta(months=amort_period - 1)
+                    
+                    # 準備傳遞給後端函式的資料
+                    record_details = {"dorm_id": dorm_id, "details": {
+                        "vendor": row.get('支出對象/廠商'),
+                        "declaration_item": row.get('申報項目'),
+                        "submission_date": format_date(row.get('申報文件送出日期')),
+                        "registered_mail_date": format_date(row.get('掛號憑證日期')),
+                        "certificate_date": format_date(row.get('收到憑證日期')),
+                        "next_declaration_start": format_date(row.get('下次申報起始日期')),
+                        "next_declaration_end": format_date(row.get('下次申報結束日期')),
+                        "approval_start_date": format_date(row.get('此次申報核准起始日期')),
+                        "approval_end_date": format_date(row.get('此次申報核准結束日期')),
+                    }}
+                    
+                    expense_details = {
+                        "dorm_id": dorm_id,
+                        "expense_item": str(row.get('申報項目')).strip() or '消防安檢',
+                        "payment_date": payment_date,
+                        "total_amount": total_amount,
+                        "amortization_start_month": amort_start.strftime('%Y-%m'),
+                        "amortization_end_month": amort_end_obj.strftime('%Y-%m')
+                    }
+
+                    # 呼叫通用的 add_compliance_record 函式
+                    success, message, _ = finance_model.add_compliance_record('消防安檢', record_details, expense_details)
+                    if success:
+                        success_count += 1
+                    else:
+                        raise Exception(message)
+
+                except Exception as row_error:
+                    row['錯誤原因'] = str(row_error)
+                    failed_records.append(row)
+        
+        # 注意：這裡不執行 conn.commit()，因為 add_compliance_record 內部已經處理了交易
+    except Exception as e:
+        # conn.rollback() 已在 add_compliance_record 內部處理
+        print(f"批次匯入消防安檢時發生嚴重錯誤: {e}")
+    finally:
+        if conn: conn.close()
+
     return success_count, pd.DataFrame(failed_records), pd.DataFrame(skipped_records)

@@ -29,7 +29,6 @@ def get_all_meters_for_selection():
             WHERE d.primary_manager = '我司'
             ORDER BY d.original_address, m.meter_type, m.meter_number
         """
-        # 對於需要回傳字典列表的，我們也手動處理
         with conn.cursor() as cursor:
             cursor.execute(query)
             records = cursor.fetchall()
@@ -62,7 +61,8 @@ def get_bill_history_for_meter(meter_id: int):
 
 def find_expense_anomalies():
     """
-    使用統計學方法 (IQR)，找出所有我司管理宿舍中，費用異常升高或降低的帳單紀錄。
+    【v1.1 修改版】使用統計學方法 (IQR)，找出所有我司管理宿舍中，費用異常升高或降低的帳單紀錄。
+    新增「支付方」和「是否為代收代付」欄位。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -74,7 +74,9 @@ def find_expense_anomalies():
                 m.meter_number,
                 b.bill_start_date,
                 b.bill_end_date,
-                b.amount
+                b.amount,
+                b.payer,
+                b.is_pass_through
             FROM "UtilityBills" b
             JOIN "Meters" m ON b.meter_id = m.id
             JOIN "Dormitories" d ON b.dorm_id = d.id
@@ -84,7 +86,6 @@ def find_expense_anomalies():
         if df.empty or len(df) < 4:
             return pd.DataFrame()
 
-        # Pandas 的 groupby 和統計計算邏輯維持不變
         anomalies = []
         for meter, group in df.groupby(['original_address', 'meter_type', 'meter_number']):
             if len(group) < 4: continue
@@ -107,14 +108,17 @@ def find_expense_anomalies():
             return pd.DataFrame()
             
         result_df = pd.concat(anomalies)
+        
         result_df.rename(columns={
             'original_address': '宿舍地址',
             'meter_type': '類型',
             'meter_number': '錶號',
             'bill_end_date': '帳單迄日',
-            'amount': '異常金額'
+            'amount': '異常金額',
+            'payer': '支付方',
+            'is_pass_through': '是否為代收代付'
         }, inplace=True)
         
-        return result_df[['宿舍地址', '類型', '錶號', '帳單迄日', '異常金額', '正常範圍', '判斷']]
+        return result_df[['宿舍地址', '類型', '錶號', '帳單迄日', '異常金額', '支付方', '是否為代收代付', '正常範圍', '判斷']]
     finally:
         if conn: conn.close()

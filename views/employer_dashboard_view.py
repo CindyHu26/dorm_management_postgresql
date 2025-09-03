@@ -77,7 +77,7 @@ def render():
                 display_df['雇主總支出'] = display_df['雇主分攤月租'] + display_df['雇主分攤雜費']
                 display_df['工人總支出'] = display_df['工人分攤月租'] + display_df['工人分攤雜費']
                 display_df['淨損益'] = display_df['收入(員工月費)'] - display_df['我司總支出']
-                
+                display_df = display_df.sort_values(by="我司總支出", ascending=False)
                 # 選擇要顯示的欄位和順序
                 cols_to_display = [
                     "宿舍地址", "收入(員工月費)", "我司總支出",

@@ -51,6 +51,70 @@ def add_building_permit_record(permit_details: dict, expense_details: dict):
     finally:
         if conn: conn.close()
 
+def add_compliance_record(record_type: str, record_details: dict, expense_details: dict):
+    """
+    新增一筆合規紀錄及其關聯的攤銷費用 (例如消防安檢、保險)。
+    """
+    conn = database.get_db_connection()
+    if not conn: return False, "DB connection failed.", None
+    
+    try:
+        with conn.cursor() as cursor:
+            compliance_sql = """
+                INSERT INTO "ComplianceRecords" (dorm_id, record_type, details)
+                VALUES (%s, %s, %s) RETURNING id;
+            """
+            details_json = json.dumps(record_details['details'], ensure_ascii=False, default=str)
+            cursor.execute(compliance_sql, (record_details['dorm_id'], record_type, details_json))
+            new_compliance_id = cursor.fetchone()['id']
+
+            expense_details['compliance_record_id'] = new_compliance_id
+            expense_columns = ', '.join(f'"{k}"' for k in expense_details.keys())
+            expense_placeholders = ', '.join(['%s'] * len(expense_details))
+            expense_sql = f'INSERT INTO "AnnualExpenses" ({expense_columns}) VALUES ({placeholders})'
+            cursor.execute(expense_sql, tuple(expense_details.values()))
+
+        conn.commit()
+        return True, f"成功新增 {record_type} 紀錄 (ID: {new_compliance_id})", new_compliance_id
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"新增 {record_type} 紀錄時發生錯誤: {e}", None
+    finally:
+        if conn: conn.close()
+
+def batch_delete_annual_expenses(record_ids: list):
+    """
+    根據提供的 ID 列表，批次刪除多筆年度費用紀錄。
+    這將會級聯刪除關聯的合規紀錄。
+    """
+    if not record_ids:
+        return False, "沒有選擇任何要刪除的紀錄。"
+        
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗。"
+    try:
+        with conn.cursor() as cursor:
+            # 先找出與這些費用紀錄相關聯的 compliance_record_id
+            cursor.execute('SELECT compliance_record_id FROM "AnnualExpenses" WHERE id = ANY(%s) AND compliance_record_id IS NOT NULL', (record_ids,))
+            compliance_ids_to_delete = [rec['compliance_record_id'] for rec in cursor.fetchall()]
+
+            # 刪除年度費用紀錄
+            query = 'DELETE FROM "AnnualExpenses" WHERE id = ANY(%s)'
+            cursor.execute(query, (record_ids,))
+            deleted_count = cursor.rowcount
+
+            # 如果有關聯的合規紀錄，也一併刪除
+            if compliance_ids_to_delete:
+                cursor.execute('DELETE FROM "ComplianceRecords" WHERE id = ANY(%s)', (compliance_ids_to_delete,))
+
+        conn.commit()
+        return True, f"成功刪除了 {deleted_count} 筆費用紀錄及其關聯資料。"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"批次刪除年度費用時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
+
 def get_all_annual_expenses_for_dorm(dorm_id: int):
     """查詢指定宿舍的所有年度/長期攤銷費用，包含一般費用和與合規紀錄關聯的費用。"""
     conn = database.get_db_connection()

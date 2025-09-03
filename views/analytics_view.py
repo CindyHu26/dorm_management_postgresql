@@ -12,7 +12,6 @@ def render():
 
     st.markdown("---")
 
-    # --- 異常數據警告區塊 (升級版) ---
     with st.container(border=True):
         st.subheader("🚨 費用異常數據警告")
         
@@ -38,27 +37,29 @@ def render():
         else:
             st.warning(f"系統偵測到 {len(anomalies_df)} 筆費用可能存在異常的帳單，請您關注：")
 
-            # --- 【核心修改】定義上色函式並應用 ---
             def style_anomaly_reason(val):
-                """根據判斷結果，回傳對應的顏色。"""
                 if '過高' in str(val):
                     color = 'red'
                 elif '過低' in str(val):
                     color = 'green'
                 else:
-                    color = 'inherit' # 預設顏色
+                    color = 'inherit'
                 return f'color: {color}; font-weight: bold;'
 
-            # 使用 .style.apply 來為特定欄位上色
+            # --- 【核心修改點】: 在 column_config 中，將布林值轉換為更容易閱讀的 "是/否" ---
             st.dataframe(
                 anomalies_df.style.apply(lambda x: x.map(style_anomaly_reason) if x.name == '判斷' else [''] * len(x)),
                 use_container_width=True, 
                 hide_index=True,
                 column_config={
                     "異常金額": st.column_config.NumberColumn(format="NT$ %d"),
+                    "是否為代收代付": st.column_config.CheckboxColumn(
+                        "代收代付?",
+                        help="是否為代收代付帳款",
+                        default=False,
+                    ),
                 }
             )
-            # --- 修改結束 ---
 
     st.markdown("---")
 

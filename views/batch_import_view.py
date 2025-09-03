@@ -146,6 +146,48 @@ def render():
             except Exception as e:
                 st.error(f"處理檔案時發生錯誤：{e}")
 
+    with st.container(border=True):
+        st.subheader("🔥 消防安檢匯入")
+        st.info("用於批次新增消防安檢的費用與憑證紀錄。")
+
+        fire_safety_template_df = pd.DataFrame({
+            "宿舍地址": ["範例：彰化縣鹿港鎮成功路123號"],
+            "支付日期": [date.today().strftime('%Y-%m-%d')],
+            "支付總金額": [12000],
+            "攤提起始日": [date.today().strftime('%Y-%m-%d')],
+            "攤提月數": [12],
+            "支出對象/廠商": ["ABC消防公司"],
+            "申報項目": ["114年度消防安檢"],
+            "申報文件送出日期": [None], "掛號憑證日期": [None], "收到憑證日期": [None],
+            "下次申報起始日期": [None], "下次申報結束日期": [None],
+            "此次申報核准起始日期": [None], "此次申報核准結束日期": [None],
+        })
+        st.download_button(
+            label="📥 下載消防安檢匯入範本",
+            data=to_excel(fire_safety_template_df),
+            file_name="fire_safety_import_template.xlsx"
+        )
+
+        uploaded_fire_safety_file = st.file_uploader("上傳【消防安檢】Excel 檔案", type=["xlsx"], key="fire_safety_uploader")
+
+        if uploaded_fire_safety_file:
+            try:
+                df_fire_safety = pd.read_excel(uploaded_fire_safety_file)
+                st.markdown("##### 檔案內容預覽：")
+                st.dataframe(df_fire_safety.head())
+                if st.button("🚀 開始匯入消防安檢紀錄", type="primary", key="fire_safety_import_btn"):
+                    with st.spinner("正在處理與匯入消防安檢紀錄..."):
+                        success, failed_df, skipped_df = importer_model.batch_import_fire_safety(df_fire_safety)
+                    st.success(f"匯入完成！成功新增 {success} 筆。")
+                    if not skipped_df.empty:
+                        st.warning(f"有 {len(skipped_df)} 筆資料因重複而跳過：")
+                        st.dataframe(skipped_df)
+                    if not failed_df.empty:
+                        st.error(f"有 {len(failed_df)} 筆資料匯入失敗：")
+                        st.dataframe(failed_df)
+            except Exception as e:
+                st.error(f"處理檔案時發生錯誤：{e}")
+
     st.markdown("---")
     # --- 區塊四：住宿分配匯入 ---
     with st.container(border=True):
