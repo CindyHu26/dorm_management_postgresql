@@ -11,8 +11,9 @@ def render():
         st.cache_data.clear()
 
     st.markdown("---")
+    tab1, tab2 = st.tabs(["🚨 金額異常數據警告", "💧 用量異常數據警告"])
 
-    with st.container(border=True):
+    with tab1:
         st.subheader("🚨 費用異常數據警告")
         
         with st.expander("點此查看異常判斷說明"):
@@ -63,7 +64,44 @@ def render():
 
     st.markdown("---")
 
-    # --- 歷史費用趨勢查詢 (維持不變) ---
+    with tab2:
+        st.subheader("用量波動異常偵測")
+        with st.expander("點此查看異常判斷說明"):
+            st.markdown("""
+            系統會將每一筆帳單的用量，分別與**「上一期帳單」**和**「去年同期的平均用量」**進行比較。
+            - 只要波動超過 **±10%**，就會被標記為「用量過高」或「用量過低」。
+            - 此功能有助於快速發現季節性用電異常或潛在的漏水問題。
+            *註：至少需要2筆歷史帳單才能與前期比較；需要有去年的資料才能與同期比較。*
+            """)
+
+        @st.cache_data
+        def get_usage_anomalies():
+            return analytics_model.find_usage_anomalies()
+            
+        usage_anomalies_df = get_usage_anomalies()
+
+        if usage_anomalies_df.empty:
+            st.success("恭喜！目前系統未偵測到任何用量波動異常的帳單紀錄。")
+        else:
+            st.warning(f"系統偵測到 {len(usage_anomalies_df)} 筆用量波動異常的帳單，請您關注：")
+
+            def style_usage_anomaly(val):
+                if '過高' in str(val): color = 'red'
+                elif '過低' in str(val): color = 'green'
+                else: color = 'inherit'
+                return f'color: {color}; font-weight: bold;'
+            
+            st.dataframe(
+                usage_anomalies_df.style.apply(lambda x: x.map(style_usage_anomaly) if x.name == '判斷' else [''] * len(x)),
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "本期用量": st.column_config.NumberColumn(format="%.2f"),
+                    "比較基準": st.column_config.NumberColumn(format="%.2f"),
+                    "代收代付?": st.column_config.CheckboxColumn(default=False),
+                }
+            )
+
+    st.markdown("---")
     st.subheader("📈 歷史費用趨勢查詢")
     
     my_dorms = dormitory_model.get_my_company_dorms_for_selection()
@@ -101,9 +139,16 @@ def render():
                 if history_df.empty:
                     st.info("此電水錶目前沒有任何費用帳單紀錄。")
                 else:
-                    st.markdown("##### 費用趨勢圖")
+                    # --- 【核心修改點】---
                     chart_df = history_df.set_index('帳單結束日')
+
+                    st.markdown("##### 金額趨勢圖")
                     st.line_chart(chart_df['帳單金額'])
+                    
+                    # 只有在「用量(度/噸)」欄位存在且有數據時，才顯示用量圖
+                    if '用量(度/噸)' in chart_df.columns and chart_df['用量(度/噸)'].notna().any():
+                        st.markdown("##### 用量趨勢圖")
+                        st.line_chart(chart_df['用量(度/噸)'])
                     
                     with st.expander("查看原始數據"):
                         st.dataframe(history_df, use_container_width=True, hide_index=True)

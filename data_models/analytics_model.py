@@ -37,7 +37,10 @@ def get_all_meters_for_selection():
         if conn: conn.close()
 
 def get_bill_history_for_meter(meter_id: int):
-    """根據指定的電水錶ID，查詢其所有的歷史帳單紀錄。"""
+    """
+    【v1.2 修改版】根據指定的電水錶ID，查詢其所有的歷史帳單紀錄。
+    新增回傳「用量」欄位。
+    """
     if not meter_id:
         return pd.DataFrame()
     conn = database.get_db_connection()
@@ -47,7 +50,8 @@ def get_bill_history_for_meter(meter_id: int):
             SELECT
                 bill_start_date AS "帳單起始日",
                 bill_end_date AS "帳單結束日",
-                amount AS "帳單金額"
+                amount AS "帳單金額",
+                usage_amount AS "用量(度/噸)"
             FROM "UtilityBills"
             WHERE meter_id = %(meter_id)s
             ORDER BY bill_end_date ASC
@@ -120,5 +124,81 @@ def find_expense_anomalies():
         }, inplace=True)
         
         return result_df[['宿舍地址', '類型', '錶號', '帳單迄日', '異常金額', '支付方', '是否為代收代付', '正常範圍', '判斷']]
+    finally:
+        if conn: conn.close()
+
+def find_usage_anomalies(threshold_percent: float = 10.0):
+    """
+    分析所有電水錶的「用量」，找出與「上一期」或「去年同期」相比，波動超過指定百分比的紀錄。
+    """
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        query = """
+            SELECT
+                d.original_address, m.meter_type, m.meter_number,
+                b.bill_end_date, b.usage_amount, b.payer, b.is_pass_through
+            FROM "UtilityBills" b
+            JOIN "Meters" m ON b.meter_id = m.id
+            JOIN "Dormitories" d ON b.dorm_id = d.id
+            WHERE d.primary_manager = '我司' AND b.usage_amount IS NOT NULL
+        """
+        df = _execute_query_to_dataframe(conn, query)
+        if df.empty:
+            return pd.DataFrame()
+
+        df['bill_end_date'] = pd.to_datetime(df['bill_end_date'])
+        df.sort_values(by=['original_address', 'meter_type', 'meter_number', 'bill_end_date'], inplace=True)
+        
+        anomalies = []
+        
+        for meter, group in df.groupby(['original_address', 'meter_type', 'meter_number']):
+            if len(group) < 2: continue # 至少需要兩筆資料才能比較
+
+            # 1. 與上一期比較
+            group['prev_usage'] = group['usage_amount'].shift(1)
+            group['prev_date'] = group['bill_end_date'].shift(1)
+            
+            # 2. 與去年同期比較
+            group['year'] = group['bill_end_date'].dt.year
+            group['month'] = group['bill_end_date'].dt.month
+            group['last_year_avg'] = group.groupby('month')['usage_amount'].transform(lambda x: x.shift(1).expanding().mean())
+
+            for _, row in group.iterrows():
+                # --- 比較邏輯 ---
+                current_usage = row['usage_amount']
+                
+                # 與上期比
+                prev_usage = row['prev_usage']
+                if pd.notna(prev_usage) and prev_usage > 0:
+                    percent_diff = ((current_usage - prev_usage) / prev_usage) * 100
+                    if abs(percent_diff) > threshold_percent:
+                        reason = f"較上期 ({row['prev_date'].strftime('%Y-%m-%d')}) {'增加' if percent_diff > 0 else '減少'} {abs(percent_diff):.0f}%"
+                        anomalies.append({
+                            "宿舍地址": meter[0], "類型": meter[1], "錶號": meter[2],
+                            "帳單迄日": row['bill_end_date'].strftime('%Y-%m-%d'),
+                            "本期用量": current_usage, "比較基準": prev_usage,
+                            "支付方": row['payer'], "代收代付?": row['is_pass_through'],
+                            "判斷": "用量過高" if percent_diff > 0 else "用量過低",
+                            "分析說明": reason
+                        })
+                        continue # 找到一個異常就跳到下一筆紀錄
+
+                # 與去年同期比
+                last_year_avg = row['last_year_avg']
+                if pd.notna(last_year_avg) and last_year_avg > 0:
+                    percent_diff = ((current_usage - last_year_avg) / last_year_avg) * 100
+                    if abs(percent_diff) > threshold_percent:
+                        reason = f"較去年同期平均 ({last_year_avg:.1f}) {'增加' if percent_diff > 0 else '減少'} {abs(percent_diff):.0f}%"
+                        anomalies.append({
+                            "宿舍地址": meter[0], "類型": meter[1], "錶號": meter[2],
+                            "帳單迄日": row['bill_end_date'].strftime('%Y-%m-%d'),
+                            "本期用量": current_usage, "比較基準": last_year_avg,
+                            "支付方": row['payer'], "代收代付?": row['is_pass_through'],
+                            "判斷": "用量過高" if percent_diff > 0 else "用量過低",
+                            "分析說明": reason
+                        })
+
+        return pd.DataFrame(anomalies)
     finally:
         if conn: conn.close()

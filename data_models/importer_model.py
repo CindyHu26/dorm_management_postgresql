@@ -84,7 +84,6 @@ def batch_import_expenses(df: pd.DataFrame):
                     usage_val = pd.to_numeric(row.get('用量(度/噸) (選填)'), errors='coerce')
                     usage_amount = usage_val if pd.notna(usage_val) else None
                     
-                    # --- 【核心修改點】---
                     notes_val = row.get('備註')
                     notes = str(notes_val).strip() if pd.notna(notes_val) and str(notes_val).strip() else None
 
