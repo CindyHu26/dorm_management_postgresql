@@ -111,9 +111,67 @@ def render():
             else:
                 st.markdown(f"#### 管理移工: {worker_details.get('worker_name')} ({worker_details.get('employer_name')})")
                 
-                tab1, tab2, tab3, tab4 = st.tabs(["🏠 住宿歷史管理", "✏️ 編輯核心資料", "🕒 狀態歷史管理", "💰 費用歷史"])
-            
+                tab1, tab2, tab3, tab4 = st.tabs(["✏️ 編輯核心資料", "🏠 住宿歷史管理", "🕒 狀態歷史管理", "💰 費用歷史"])
+
                 with tab1:
+                    with st.form("edit_worker_form"):
+                        st.info(f"資料來源: **{worker_details.get('data_source')}**")
+                        st.markdown("##### 基本資料 (多由系統同步)")
+                        ec1, ec2, ec3 = st.columns(3)
+                        ec1.text_input("性別", value=worker_details.get('gender'), disabled=True)
+                        ec2.text_input("國籍", value=worker_details.get('nationality'), disabled=True)
+                        ec3.text_input("護照號碼", value=worker_details.get('passport_number'), disabled=True)
+                        st.markdown("##### 住宿分配")
+                        st.info("工人的住宿地點管理已移至「🏠 住宿歷史管理」分頁。")
+                        st.markdown("##### 費用與狀態 (可手動修改)")
+                        fc1, fc2, fc3 = st.columns(3)
+                        monthly_fee = fc1.number_input("月費(房租)", value=int(worker_details.get('monthly_fee') or 0))
+                        utilities_fee = fc2.number_input("水電費", value=int(worker_details.get('utilities_fee') or 0))
+                        cleaning_fee = fc3.number_input("清潔費", value=int(worker_details.get('cleaning_fee') or 0))
+                        fcc1, fcc2 = st.columns(2)
+                        payment_method_options = ["", "員工自付", "雇主支付"]
+                        payment_method = fcc1.selectbox("付款方", payment_method_options, index=payment_method_options.index(worker_details.get('payment_method')) if worker_details.get('payment_method') in payment_method_options else 0)
+                        end_date_value = worker_details.get('accommodation_end_date')
+                        accommodation_end_date = fcc2.date_input("最終離住日期 (若留空表示在住)", value=end_date_value)
+                        worker_notes = st.text_area("個人備註", value=worker_details.get('worker_notes') or "")
+                        submitted = st.form_submit_button("儲存核心資料變更")
+                        if submitted:
+                            update_data = {
+                                'monthly_fee': monthly_fee, 'utilities_fee': utilities_fee, 'cleaning_fee': cleaning_fee,
+                                'payment_method': payment_method,
+                                'accommodation_end_date': str(accommodation_end_date) if accommodation_end_date else None,
+                                'worker_notes': worker_notes
+                            }
+                            success, message = worker_model.update_worker_details(selected_worker_id, update_data)
+                            if success:
+                                st.success(message)
+                                st.cache_data.clear()
+                                st.rerun()
+                            else:
+                                st.error(message)
+                    st.markdown("---")
+                    st.markdown("##### 危險操作區")
+                    if worker_details.get('data_source') == '手動調整':
+                        st.warning("此工人的住宿位置目前為手動鎖定狀態，不受每日自動同步影響。")
+                        if st.button("🔓 解除鎖定，恢復自動同步"):
+                            success, message = worker_model.reset_worker_data_source(selected_worker_id)
+                            if success:
+                                st.success(message)
+                                st.cache_data.clear()
+                                st.rerun()
+                            else:
+                                st.error(message)
+                    confirm_delete = st.checkbox("我了解並確認要刪除此移工的資料")
+                    if st.button("🗑️ 刪除此移工", type="primary", disabled=not confirm_delete):
+                        success, message = worker_model.delete_worker_by_id(selected_worker_id)
+                        if success:
+                            st.success(message)
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.error(message)
+
+                with tab2:
                     st.markdown("##### 新增一筆住宿紀錄 (換宿)")
                     st.info("當工人更換房間或宿舍時，請在此處新增一筆紀錄。系統將自動結束前一筆紀錄。")
                     
@@ -201,65 +259,8 @@ def render():
                                         st.rerun()
                                     else:
                                         st.error(message)
-                
-                with tab2:
-                    with st.form("edit_worker_form"):
-                        st.info(f"資料來源: **{worker_details.get('data_source')}**")
-                        st.markdown("##### 基本資料 (多由系統同步)")
-                        ec1, ec2, ec3 = st.columns(3)
-                        ec1.text_input("性別", value=worker_details.get('gender'), disabled=True)
-                        ec2.text_input("國籍", value=worker_details.get('nationality'), disabled=True)
-                        ec3.text_input("護照號碼", value=worker_details.get('passport_number'), disabled=True)
-                        st.markdown("##### 住宿分配")
-                        st.info("工人的住宿地點管理已移至「🏠 住宿歷史管理」分頁。")
-                        st.markdown("##### 費用與狀態 (可手動修改)")
-                        fc1, fc2, fc3 = st.columns(3)
-                        monthly_fee = fc1.number_input("月費(房租)", value=int(worker_details.get('monthly_fee') or 0))
-                        utilities_fee = fc2.number_input("水電費", value=int(worker_details.get('utilities_fee') or 0))
-                        cleaning_fee = fc3.number_input("清潔費", value=int(worker_details.get('cleaning_fee') or 0))
-                        fcc1, fcc2 = st.columns(2)
-                        payment_method_options = ["", "員工自付", "雇主支付"]
-                        payment_method = fcc1.selectbox("付款方", payment_method_options, index=payment_method_options.index(worker_details.get('payment_method')) if worker_details.get('payment_method') in payment_method_options else 0)
-                        end_date_value = worker_details.get('accommodation_end_date')
-                        accommodation_end_date = fcc2.date_input("最終離住日期 (若留空表示在住)", value=end_date_value)
-                        worker_notes = st.text_area("個人備註", value=worker_details.get('worker_notes') or "")
-                        submitted = st.form_submit_button("儲存核心資料變更")
-                        if submitted:
-                            update_data = {
-                                'monthly_fee': monthly_fee, 'utilities_fee': utilities_fee, 'cleaning_fee': cleaning_fee,
-                                'payment_method': payment_method,
-                                'accommodation_end_date': str(accommodation_end_date) if accommodation_end_date else None,
-                                'worker_notes': worker_notes
-                            }
-                            success, message = worker_model.update_worker_details(selected_worker_id, update_data)
-                            if success:
-                                st.success(message)
-                                st.cache_data.clear()
-                                st.rerun()
-                            else:
-                                st.error(message)
-                    st.markdown("---")
-                    st.markdown("##### 危險操作區")
-                    if worker_details.get('data_source') == '手動調整':
-                        st.warning("此工人的住宿位置目前為手動鎖定狀態，不受每日自動同步影響。")
-                        if st.button("🔓 解除鎖定，恢復自動同步"):
-                            success, message = worker_model.reset_worker_data_source(selected_worker_id)
-                            if success:
-                                st.success(message)
-                                st.cache_data.clear()
-                                st.rerun()
-                            else:
-                                st.error(message)
-                    confirm_delete = st.checkbox("我了解並確認要刪除此移工的資料")
-                    if st.button("🗑️ 刪除此移工", type="primary", disabled=not confirm_delete):
-                        success, message = worker_model.delete_worker_by_id(selected_worker_id)
-                        if success:
-                            st.success(message)
-                            st.cache_data.clear()
-                            st.rerun()
-                        else:
-                            st.error(message)
-                
+               
+            
                 with tab3:
                     st.markdown("##### 新增一筆狀態紀錄")
                     with st.form("new_status_form", clear_on_submit=True):

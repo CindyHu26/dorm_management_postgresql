@@ -17,10 +17,9 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], None]):
     """
-    【v2.3 最終版】執行核心的資料庫更新流程。
-    - 保護手動調整的「實際地址」。
-    - 無差別更新所有工人的「系統地址」。
-    - 無差別更新所有不在最新名單上的工人為「離住」。
+    【v2.4 最終版】執行核心的資料庫更新流程。
+    - 保護「手動管理(他仲)」的工人不被標記為離住。
+    - 其餘工人若不在新名單中，則標記離住。
     """
     log_callback("\n===== 開始執行核心資料庫更新程序 =====")
     today = datetime.now().date()
@@ -33,7 +32,7 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
         
     try:
         with conn.cursor() as cursor:
-            # --- 步驟 1 & 2: 地址同步與資料映射 (維持不變) ---
+            # ... (步驟 1, 2, 3 維持不變) ...
             log_callback("INFO: 步驟 1/4 - 同步宿舍地址...")
             db_dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, normalized_address FROM "Dormitories"')
             db_addresses = set(db_dorms_df['normalized_address']) if not db_dorms_df.empty else set()
@@ -55,7 +54,6 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
             address_room_map = pd.Series(address_room_df.room_id.values, index=address_room_df.normalized_address).to_dict()
             fresh_df['room_id'] = fresh_df['normalized_address'].map(address_room_map)
 
-            # --- 步驟 3: 取得所有工人的最新狀態 (維持不變) ---
             log_callback("INFO: 步驟 3/4 - 正在取得現有工人的最新住宿與來源狀態...")
             
             all_workers_info_df = _execute_query_to_dataframe(conn, """
@@ -122,17 +120,19 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                 processed_ids.add(unique_id)
             
             # --- 處理離職員工 (核心修改點) ---
-            db_system_ids_df = _execute_query_to_dataframe(conn, 'SELECT unique_id FROM "Workers"')
-            db_all_ids = set(db_system_ids_df['unique_id']) if not db_system_ids_df.empty else set()
-            ids_to_check_for_departure = db_all_ids - processed_ids
+            # 1. 找出資料庫中所有「應該」被同步的工人 (排除他仲)
+            cursor.execute('SELECT unique_id FROM "Workers" WHERE data_source != %s', ('手動管理(他仲)',))
+            db_syncable_ids = {rec['unique_id'] for rec in cursor.fetchall()}
+
+            # 2. 用「應該同步的工人」減去「這次實際處理過的工人」，剩下的就是離職者
+            ids_to_check_for_departure = db_syncable_ids - processed_ids
             
             if ids_to_check_for_departure:
                 for uid in ids_to_check_for_departure:
-                    # 無差別更新離住日，無論 data_source 為何
+                    # 無差別更新離住日，因為這個名單已經排除了他仲工人
                     cursor.execute('UPDATE "Workers" SET accommodation_end_date = %s WHERE unique_id = %s AND accommodation_end_date IS NULL', (today, uid))
                     if cursor.rowcount > 0:
                         marked_as_left_count += 1
-                        # 同時結束住宿歷史
                         cursor.execute('UPDATE "AccommodationHistory" SET end_date = %s WHERE worker_unique_id = %s AND end_date IS NULL', (today, uid))
                         log_callback(f"INFO: 移工 '{uid}' (資料來源: {worker_data_sources.get(uid, '未知')}) 已不在最新名單，更新住宿迄日並結束住宿歷史。")
 

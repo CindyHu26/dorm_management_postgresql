@@ -260,14 +260,14 @@ def batch_update_rent(filters: dict, old_rent: int, new_rent: int, update_nulls:
 
 # --- 費用管理 (帳單式) ---
 def get_bill_records_for_dorm_as_df(dorm_id: int):
-    """查詢指定宿舍的所有獨立帳單紀錄。"""
+    """【v1.1 修改版】查詢指定宿舍的所有獨立帳單紀錄，新增用量欄位。"""
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
-        # 【核心修改】在 SELECT 中加入 payer 和 is_pass_through 欄位
         query = """
             SELECT 
                 b.id, b.bill_type AS "費用類型", b.amount AS "帳單金額",
+                b.usage_amount AS "用量(度/噸)",
                 b.bill_start_date AS "帳單起始日", b.bill_end_date AS "帳單結束日",
                 m.meter_number AS "對應錶號",
                 b.payer AS "支付方", 
@@ -296,7 +296,7 @@ def get_single_bill_details(record_id: int):
         if conn: conn.close()
 
 def add_bill_record(details: dict):
-    """新增一筆獨立的帳單紀錄。"""
+    """【v1.1 修改版】新增一筆獨立的帳單紀錄，包含用量欄位。"""
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed.", None
     try:
@@ -321,7 +321,7 @@ def add_bill_record(details: dict):
         if conn: conn.close()
 
 def update_bill_record(record_id: int, details: dict):
-    """更新一筆已存在的費用帳單。"""
+    """【v1.1 修改版】更新一筆已存在的費用帳單，包含用量欄位。"""
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed."
     try:

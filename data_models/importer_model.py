@@ -27,8 +27,8 @@ def clean_nan_for_json(data_dict):
 
 def batch_import_expenses(df: pd.DataFrame):
     """
-    批次匯入【每月/變動費用】的核心邏輯。
-    採用 Upsert 模式：如果紀錄已存在，則更新；否則，新增。
+    【v1.3 修改版】批次匯入【每月/變動費用】的核心邏輯。
+    修正「備註」欄位存為 nan 的問題。
     """
     success_count = 0
     failed_records = []
@@ -81,19 +81,26 @@ def batch_import_expenses(df: pd.DataFrame):
                         if pd.isna(val): return False
                         return str(val).strip().upper() in ['TRUE', '1', 'Y', 'YES', '是']
 
+                    usage_val = pd.to_numeric(row.get('用量(度/噸) (選填)'), errors='coerce')
+                    usage_amount = usage_val if pd.notna(usage_val) else None
+                    
+                    # --- 【核心修改點】---
+                    notes_val = row.get('備註')
+                    notes = str(notes_val).strip() if pd.notna(notes_val) and str(notes_val).strip() else None
+
                     details = {
                         "dorm_id": dorm_id, "meter_id": meter_id,
                         "bill_type": str(row.get('費用類型', '')).strip(),
                         "amount": int(pd.to_numeric(row.get('帳單金額'), errors='coerce')),
+                        "usage_amount": usage_amount,
                         "bill_start_date": pd.to_datetime(row.get('帳單起始日'), errors='coerce').strftime('%Y-%m-%d'),
                         "bill_end_date": pd.to_datetime(row.get('帳單結束日'), errors='coerce').strftime('%Y-%m-%d'),
                         "payer": str(row.get('支付方', '我司')).strip(),
                         "is_pass_through": to_bool(row.get('是否為代收代付')),
                         "is_invoiced": to_bool(row.get('是否已請款')),
-                        "notes": str(row.get('備註', ''))
+                        "notes": notes
                     }
                     
-                    # --- 【核心修改】將 "檢查並拒絕" 邏輯改為 "Upsert" 邏輯 ---
                     query = 'SELECT id FROM "UtilityBills" WHERE dorm_id = %s AND bill_type = %s AND bill_start_date = %s'
                     params = [details['dorm_id'], details['bill_type'], details['bill_start_date']]
                     
@@ -107,14 +114,12 @@ def batch_import_expenses(df: pd.DataFrame):
                     existing = cursor.fetchone()
 
                     if existing:
-                        # 如果找到紀錄，則執行 UPDATE (覆蓋)
                         existing_id = existing['id']
                         fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
                         values = list(details.values()) + [existing_id]
                         update_sql = f'UPDATE "UtilityBills" SET {fields} WHERE id = %s'
                         cursor.execute(update_sql, tuple(values))
                     else:
-                        # 如果找不到紀錄，則執行 INSERT (新增)
                         columns = ', '.join(f'"{k}"' for k in details.keys())
                         placeholders = ', '.join(['%s'] * len(details))
                         insert_sql = f'INSERT INTO "UtilityBills" ({columns}) VALUES ({placeholders})'
