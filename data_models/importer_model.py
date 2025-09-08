@@ -3,6 +3,7 @@ import database
 import json
 from data_processor import normalize_taiwan_address
 import numpy as np
+from dateutil.relativedelta import relativedelta
 
 def _execute_query_to_dataframe(conn, query, params=None):
     """一個輔助函式，用來手動執行查詢並回傳 DataFrame。"""

@@ -53,7 +53,8 @@ def add_building_permit_record(permit_details: dict, expense_details: dict):
 
 def add_compliance_record(record_type: str, record_details: dict, expense_details: dict):
     """
-    新增一筆合規紀錄及其關聯的攤銷費用 (例如消防安檢、保險)。
+    【v1.1 修正版】新增一筆合規紀錄及其關聯的攤銷費用 (例如消防安檢、保險)。
+    修正 placeholder 變數未定義的錯誤。
     """
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed.", None
@@ -70,8 +71,10 @@ def add_compliance_record(record_type: str, record_details: dict, expense_detail
 
             expense_details['compliance_record_id'] = new_compliance_id
             expense_columns = ', '.join(f'"{k}"' for k in expense_details.keys())
+            
+            # placeholders 變數未定義，修正為動態產生
             expense_placeholders = ', '.join(['%s'] * len(expense_details))
-            expense_sql = f'INSERT INTO "AnnualExpenses" ({expense_columns}) VALUES ({placeholders})'
+            expense_sql = f'INSERT INTO "AnnualExpenses" ({expense_columns}) VALUES ({expense_placeholders})'
             cursor.execute(expense_sql, tuple(expense_details.values()))
 
         conn.commit()

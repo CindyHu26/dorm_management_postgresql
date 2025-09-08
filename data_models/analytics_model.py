@@ -129,7 +129,8 @@ def find_expense_anomalies():
 
 def find_usage_anomalies(threshold_percent: float = 10.0):
     """
-    分析所有電水錶的「用量」，找出與「上一期」或「去年同期」相比，波動超過指定百分比的紀錄。
+    【v1.1 修正版】分析所有電水錶的「用量」，找出與「上一期」或「去年同期」相比，波動超過指定百分比的紀錄。
+    修正 Decimal 與 float 型別不相容的錯誤。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -153,24 +154,23 @@ def find_usage_anomalies(threshold_percent: float = 10.0):
         anomalies = []
         
         for meter, group in df.groupby(['original_address', 'meter_type', 'meter_number']):
-            if len(group) < 2: continue # 至少需要兩筆資料才能比較
+            if len(group) < 2: continue
 
-            # 1. 與上一期比較
             group['prev_usage'] = group['usage_amount'].shift(1)
             group['prev_date'] = group['bill_end_date'].shift(1)
             
-            # 2. 與去年同期比較
             group['year'] = group['bill_end_date'].dt.year
             group['month'] = group['bill_end_date'].dt.month
             group['last_year_avg'] = group.groupby('month')['usage_amount'].transform(lambda x: x.shift(1).expanding().mean())
 
             for _, row in group.iterrows():
-                # --- 比較邏輯 ---
-                current_usage = row['usage_amount']
+                # --- 【核心修正點】: 將所有運算元都轉為 float 型別 ---
+                current_usage = float(row['usage_amount'])
                 
                 # 與上期比
                 prev_usage = row['prev_usage']
                 if pd.notna(prev_usage) and prev_usage > 0:
+                    prev_usage = float(prev_usage)
                     percent_diff = ((current_usage - prev_usage) / prev_usage) * 100
                     if abs(percent_diff) > threshold_percent:
                         reason = f"較上期 ({row['prev_date'].strftime('%Y-%m-%d')}) {'增加' if percent_diff > 0 else '減少'} {abs(percent_diff):.0f}%"
@@ -182,7 +182,7 @@ def find_usage_anomalies(threshold_percent: float = 10.0):
                             "判斷": "用量過高" if percent_diff > 0 else "用量過低",
                             "分析說明": reason
                         })
-                        continue # 找到一個異常就跳到下一筆紀錄
+                        continue
 
                 # 與去年同期比
                 last_year_avg = row['last_year_avg']
