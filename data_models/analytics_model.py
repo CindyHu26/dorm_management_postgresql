@@ -38,8 +38,8 @@ def get_all_meters_for_selection():
 
 def get_bill_history_for_meter(meter_id: int):
     """
-    【v1.2 修改版】根據指定的電水錶ID，查詢其所有的歷史帳單紀錄。
-    新增回傳「用量」欄位。
+    【v1.3 修正版】根據指定的電水錶ID，查詢其所有的歷史帳單紀錄。
+    在讀取後立刻將 Decimal 型別轉為 float，以確保前端顯示正常。
     """
     if not meter_id:
         return pd.DataFrame()
@@ -57,8 +57,16 @@ def get_bill_history_for_meter(meter_id: int):
             ORDER BY bill_end_date ASC
         """
         df = _execute_query_to_dataframe(conn, query, {"meter_id": meter_id})
+        
         if not df.empty:
+            # --- 【核心修正點】---
+            # 在資料回傳給前端之前，就先將所有數字欄位轉換為標準的 float 格式
             df['帳單結束日'] = pd.to_datetime(df['帳單結束日'])
+            if "用量(度/噸)" in df.columns:
+                df["用量(度/噸)"] = pd.to_numeric(df["用量(度/噸)"], errors='coerce')
+            if "帳單金額" in df.columns:
+                df["帳單金額"] = pd.to_numeric(df["帳單金額"], errors='coerce')
+
         return df
     finally:
         if conn: conn.close()
@@ -164,7 +172,7 @@ def find_usage_anomalies(threshold_percent: float = 10.0):
             group['last_year_avg'] = group.groupby('month')['usage_amount'].transform(lambda x: x.shift(1).expanding().mean())
 
             for _, row in group.iterrows():
-                # --- 【核心修正點】: 將所有運算元都轉為 float 型別 ---
+                # --- 將所有運算元都轉為 float 型別 ---
                 current_usage = float(row['usage_amount'])
                 
                 # 與上期比

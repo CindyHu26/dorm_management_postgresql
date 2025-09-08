@@ -62,8 +62,8 @@ def get_employer_resident_details(employer_name: str):
 
 def get_employer_financial_summary(employer_name: str, year_month: str):
     """
-    【v2.1 修改版】為指定雇主和月份，計算【按宿舍地址和支付方細分】的收支與損益。
-    新增「我司分攤攤銷」費用欄位。
+    【v2.3 修正版】為指定雇主和月份，計算【按宿舍地址和支付方細分】的收支與損益。
+    新增「其他收入」的分攤計算。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -106,15 +106,33 @@ def get_employer_financial_summary(employer_name: str, year_month: str):
                 FROM DormOccupancy
                 WHERE employer_residents > 0
             ),
+            -- 新增一個 CTE 來計算每間宿舍當月的其他收入總和
+            DormOtherIncome AS (
+                SELECT
+                    dorm_id,
+                    SUM(amount) as total_other_income
+                FROM "OtherIncome"
+                CROSS JOIN DateParams dp
+                WHERE transaction_date >= dp.first_day_of_month AND transaction_date <= dp.last_day_of_month
+                GROUP BY dorm_id
+            ),
             DormMonthlyExpenses AS (
                  SELECT
                     d.id as dorm_id, d.original_address, d.rent_payer, d.utilities_payer,
                     COALESCE(l.monthly_rent, 0) AS rent_expense,
                     COALESCE(pu.pass_through_expense, 0) as pass_through_expense,
                     COALESCE(pu.company_expense, 0) as company_expense,
-                    COALESCE(ae.total_amortized, 0) AS amortized_expense
+                    COALESCE(ae.total_amortized, 0) AS amortized_expense,
+                    COALESCE(oi.total_other_income, 0) AS other_income -- 將其他收入 JOIN 進來
                 FROM "Dormitories" d
-                LEFT JOIN (SELECT dorm_id, monthly_rent FROM "Leases" CROSS JOIN DateParams dp WHERE lease_start_date <= dp.last_day_of_month AND (lease_end_date IS NULL OR lease_end_date >= dp.first_day_of_month)) l ON d.id = l.dorm_id
+                LEFT JOIN (
+                    SELECT dorm_id, monthly_rent FROM (
+                        SELECT dorm_id, monthly_rent, ROW_NUMBER() OVER(PARTITION BY dorm_id ORDER BY lease_start_date DESC) as rn
+                        FROM "Leases" CROSS JOIN DateParams dp
+                        WHERE lease_start_date <= dp.last_day_of_month
+                          AND (lease_end_date IS NULL OR lease_end_date >= dp.first_day_of_month)
+                    ) as sub_leases WHERE rn = 1
+                ) l ON d.id = l.dorm_id
                 LEFT JOIN (
                     SELECT b.dorm_id,
                         SUM(CASE WHEN b.is_pass_through THEN (b.amount::decimal * (LEAST(b.bill_end_date, (SELECT last_day_of_month FROM DateParams))::date - GREATEST(b.bill_start_date, (SELECT first_day_of_month FROM DateParams))::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)) ELSE 0 END) as pass_through_expense,
@@ -125,15 +143,16 @@ def get_employer_financial_summary(employer_name: str, year_month: str):
                     SELECT dorm_id, SUM(ROUND(total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0))) as total_amortized
                     FROM "AnnualExpenses" CROSS JOIN DateParams dp WHERE TO_DATE(amortization_start_month, 'YYYY-MM') <= dp.first_day_of_month AND TO_DATE(amortization_end_month, 'YYYY-MM') >= dp.first_day_of_month GROUP BY dorm_id
                 ) ae ON d.id = ae.dorm_id
+                LEFT JOIN DormOtherIncome oi ON d.id = oi.dorm_id
             )
             SELECT 
                 dme.original_address AS "宿舍地址",
                 dp.employer_income::int AS "收入(員工月費)",
+                ROUND(dme.other_income * dp.proration_ratio)::int AS "分攤其他收入",
                 ROUND(CASE WHEN dme.rent_payer = '我司' THEN dme.rent_expense * dp.proration_ratio ELSE 0 END)::int AS "我司分攤月租",
                 ROUND(CASE WHEN dme.rent_payer = '雇主' THEN dme.rent_expense * dp.proration_ratio ELSE 0 END)::int AS "雇主分攤月租",
                 ROUND(CASE WHEN dme.rent_payer = '工人' THEN dme.rent_expense * dp.proration_ratio ELSE 0 END)::int AS "工人分攤月租",
                 ROUND(CASE WHEN dme.utilities_payer = '我司' THEN (dme.company_expense + dme.pass_through_expense) * dp.proration_ratio ELSE 0 END)::int AS "我司分攤雜費",
-                -- 【核心修改點】新增「我司分攤攤銷」欄位
                 ROUND(dme.amortized_expense * dp.proration_ratio)::int AS "我司分攤攤銷",
                 ROUND(CASE WHEN dme.utilities_payer = '雇主' THEN (dme.company_expense + dme.pass_through_expense) * dp.proration_ratio ELSE 0 END)::int AS "雇主分攤雜費",
                 ROUND(CASE WHEN dme.utilities_payer = '工人' THEN (dme.company_expense + dme.pass_through_expense) * dp.proration_ratio ELSE 0 END)::int AS "工人分攤雜費"

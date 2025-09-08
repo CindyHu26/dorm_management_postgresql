@@ -145,9 +145,12 @@ def render():
                     st.markdown("##### 金額趨勢圖")
                     st.line_chart(chart_df['帳單金額'])
                     
-                    # 只有在「用量(度/噸)」欄位存在且有數據時，才顯示用量圖
                     if '用量(度/噸)' in chart_df.columns and chart_df['用量(度/噸)'].notna().any():
                         st.markdown("##### 用量趨勢圖")
+                        
+                        # --- 【核心修正】在這裡強制將資料轉換為數字格式，增強圖表的穩定性 ---
+                        chart_df['用量(度/噸)'] = pd.to_numeric(chart_df['用量(度/噸)'], errors='coerce')
+                        
                         st.line_chart(chart_df['用量(度/噸)'])
                     
                     with st.expander("查看原始數據"):

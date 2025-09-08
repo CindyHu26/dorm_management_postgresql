@@ -119,10 +119,14 @@ def batch_delete_annual_expenses(record_ids: list):
         if conn: conn.close()
 
 def get_all_annual_expenses_for_dorm(dorm_id: int):
-    """查詢指定宿舍的所有年度/長期攤銷費用，包含一般費用和與合規紀錄關聯的費用。"""
+    """
+    【v1.1 修正版】查詢指定宿舍的所有年度/長期攤銷費用。
+    備註欄位將直接顯示關聯紀錄的詳細資訊，使其更直觀。
+    """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
+        # --- 【核心修正點】修改 CASE WHEN 語句，從 JSONB 欄位中提取詳細資料 ---
         query = """
             SELECT 
                 ae.id, 
@@ -131,12 +135,18 @@ def get_all_annual_expenses_for_dorm(dorm_id: int):
                 ae.total_amount AS "總金額", 
                 ae.amortization_start_month AS "攤提起始月",
                 ae.amortization_end_month AS "攤提結束月", 
-                -- 使用 CASE WHEN 來決定備註內容
                 CASE 
-                    WHEN cr.record_type IS NOT NULL THEN '詳見 ' || cr.record_type || ' 紀錄 (ID:' || cr.id || ')'
+                    WHEN cr.record_type = '保險' THEN
+                        '保險公司: ' || COALESCE(cr.details ->> 'vendor', 'N/A') || 
+                        ', 起迄: ' || COALESCE(cr.details ->> 'insurance_start_date', 'N/A') || ' ~ ' || COALESCE(cr.details ->> 'insurance_end_date', 'N/A')
+                    WHEN cr.record_type = '建物申報' THEN
+                        '申報項目: ' || COALESCE(cr.details ->> 'declaration_item', 'N/A') ||
+                        ', 建築師: ' || COALESCE(cr.details ->> 'architect_name', 'N/A')
+                    WHEN cr.record_type = '消防安檢' THEN
+                        '申報項目: ' || COALESCE(cr.details ->> 'declaration_item', 'N/A') ||
+                        ', 廠商: ' || COALESCE(cr.details ->> 'vendor', 'N/A')
                     ELSE ae.notes 
                 END AS "備註",
-                -- 新增一個欄位來標示類型，方便前端操作
                 CASE
                     WHEN cr.record_type IS NOT NULL THEN cr.record_type
                     ELSE '一般費用'
@@ -149,6 +159,7 @@ def get_all_annual_expenses_for_dorm(dorm_id: int):
         return _execute_query_to_dataframe(conn, query, (dorm_id,))
     finally:
         if conn: conn.close()
+
 
 def get_compliance_records_for_dorm(dorm_id: int, record_type: str):
     """查詢指定宿舍下特定類型的所有合規紀錄。"""
@@ -430,5 +441,38 @@ def batch_delete_bill_records(record_ids: list):
     except Exception as e:
         if conn: conn.rollback()
         return False, f"批次刪除帳單時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
+
+def get_single_annual_expense_details(expense_id: int):
+    """取得單筆年度費用紀錄的詳細資料。"""
+    conn = database.get_db_connection()
+    if not conn: return None
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute('SELECT * FROM "AnnualExpenses" WHERE id = %s', (expense_id,))
+            record = cursor.fetchone()
+            return dict(record) if record else None
+    finally:
+        if conn: conn.close()
+
+def update_annual_expense_record(expense_id: int, details: dict):
+    """更新一筆已存在的年度費用紀錄。"""
+    conn = database.get_db_connection()
+    if not conn: return False, "DB connection failed."
+    try:
+        with conn.cursor() as cursor:
+            # 安全性措施：不允許透過此函式修改與合規紀錄的關聯
+            details.pop('compliance_record_id', None)
+            
+            fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
+            values = list(details.values()) + [expense_id]
+            sql = f'UPDATE "AnnualExpenses" SET {fields} WHERE id = %s'
+            cursor.execute(sql, tuple(values))
+        conn.commit()
+        return True, "年度費用紀錄更新成功！"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"更新年度費用時發生錯誤: {e}"
     finally:
         if conn: conn.close()

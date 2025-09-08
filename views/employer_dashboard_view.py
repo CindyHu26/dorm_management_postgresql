@@ -58,29 +58,26 @@ def render():
             if finance_df.empty:
                 st.warning("在選定月份中，找不到與此雇主相關的任何收支紀錄。")
             else:
-                # --- 【核心修改點 1】---
-                # 將「我司分攤攤銷」費用加入總支出計算
-                total_income = finance_df['收入(員工月費)'].sum()
+                finance_df['總收入'] = finance_df['收入(員工月費)'] + finance_df['分攤其他收入']
+                total_income = finance_df['總收入'].sum()
                 total_expense_by_us = finance_df['我司分攤月租'].sum() + finance_df['我司分攤雜費'].sum() + finance_df['我司分攤攤銷'].sum()
                 profit_loss = total_income - total_expense_by_us
 
                 f_col1, f_col2, f_col3 = st.columns(3)
-                f_col1.metric("預估總收入 (員工月費)", f"NT$ {total_income:,.0f}")
+                f_col1.metric("預估總收入", f"NT$ {total_income:,.0f}", help="總收入 = 員工月費 + 分攤的其他收入")
                 f_col2.metric("預估我司分攤總支出", f"NT$ {total_expense_by_us:,.0f}")
                 f_col3.metric("預估淨貢獻", f"NT$ {profit_loss:,.0f}", delta=f"{profit_loss:,.0f}")
 
                 st.markdown("##### 各宿舍收支詳情 (此雇主)")
                 display_df = finance_df.copy()
-                # --- 【核心修改點 2】---
-                # 將「我司分攤攤銷」費用加入各宿舍的總支出計算
                 display_df['我司總支出'] = display_df['我司分攤月租'] + display_df['我司分攤雜費'] + display_df['我司分攤攤銷']
                 display_df['雇主總支出'] = display_df['雇主分攤月租'] + display_df['雇主分攤雜費']
                 display_df['工人總支出'] = display_df['工人分攤月租'] + display_df['工人分攤雜費']
-                display_df['淨損益'] = display_df['收入(員工月費)'] - display_df['我司總支出']
+                display_df['淨損益'] = display_df['總收入'] - display_df['我司總支出']
                 display_df = display_df.sort_values(by="我司總支出", ascending=False)
-                # 選擇要顯示的欄位和順序
+                
                 cols_to_display = [
-                    "宿舍地址", "收入(員工月費)", "我司總支出",
+                    "宿舍地址", "總收入", "收入(員工月費)", "分攤其他收入", "我司總支出",
                     "雇主總支出", "工人總支出", "淨損益"
                 ]
                 st.dataframe(display_df[cols_to_display], use_container_width=True, hide_index=True)

@@ -61,12 +61,80 @@ def render():
                     st.error(message)
 
     st.markdown("---")
+    st.subheader("✏️ 編輯單筆費用紀錄")
+
+    if all_expenses_df.empty:
+        st.info("目前沒有可供編輯的費用紀錄。")
+    else:
+        options_dict = {
+            row['id']: f"ID:{row['id']} - {row['支付日期']} {row['費用項目']} (金額: {row['總金額']})"
+            for _, row in all_expenses_df.iterrows()
+        }
+        selected_expense_id = st.selectbox(
+            "請從上方列表選擇一筆紀錄進行編輯：",
+            options=[None] + list(options_dict.keys()),
+            format_func=lambda x: "請選擇..." if x is None else options_dict.get(x)
+        )
+
+        if selected_expense_id:
+            expense_details = finance_model.get_single_annual_expense_details(selected_expense_id)
+            expense_type = all_expenses_df.loc[all_expenses_df['id'] == selected_expense_id, '費用類型'].iloc[0]
+
+            if not expense_details:
+                st.error("找不到選定的費用資料，可能已被刪除。")
+            else:
+                with st.form(f"edit_annual_expense_{selected_expense_id}"):
+                    st.markdown(f"###### 正在編輯 ID: {expense_details['id']} ({expense_type})")
+                    is_general_expense = (expense_type == '一般費用')
+
+                    edit_expense_item = st.text_input(
+                        "費用項目",
+                        value=expense_details.get('expense_item', ''),
+                        disabled=not is_general_expense,
+                        help="關聯到建物申報或保險的費用項目為自動產生，無法直接修改。"
+                    )
+                    e_c1, e_c2 = st.columns(2)
+                    edit_payment_date = e_c1.date_input("實際支付日期", value=expense_details.get('payment_date'))
+                    edit_total_amount = e_c2.number_input("支付總金額", min_value=0, step=1000, value=expense_details.get('total_amount', 0))
+
+                    st.markdown("###### 攤提期間")
+                    e_sc1, e_sc2 = st.columns(2)
+                    edit_amort_start = e_sc1.text_input("攤提起始月 (YYYY-MM)", value=expense_details.get('amortization_start_month', ''))
+                    edit_amort_end = e_sc2.text_input("攤提結束月 (YYYY-MM)", value=expense_details.get('amortization_end_month', ''))
+
+                    edit_notes = st.text_area(
+                        "備註",
+                        value=expense_details.get('notes', ''),
+                        disabled=not is_general_expense,
+                        help="關聯到建物申報或保險的備註為自動產生，無法直接修改。"
+                    )
+
+                    submitted = st.form_submit_button("儲存變更")
+                    if submitted:
+                        update_data = {
+                            "payment_date": edit_payment_date,
+                            "total_amount": edit_total_amount,
+                            "amortization_start_month": edit_amort_start,
+                            "amortization_end_month": edit_amort_end,
+                        }
+                        if is_general_expense:
+                            update_data["expense_item"] = edit_expense_item
+                            update_data["notes"] = edit_notes
+
+                        success, message = finance_model.update_annual_expense_record(selected_expense_id, update_data)
+                        if success:
+                            st.success(message)
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.error(message)
+
+    st.markdown("---")
     
     st.subheader("新增費用紀錄")
     tab1, tab2, tab3 = st.tabs(["📋 一般費用", "🏗️ 建物申報", "🔥 消防與保險"])
 
     with tab1:
-        # ... (一般費用的表單維持不變) ...
         with st.form("new_annual_expense_form", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
             expense_item_options = ["維修", "傢俱", "其他(請手動輸入)"]
