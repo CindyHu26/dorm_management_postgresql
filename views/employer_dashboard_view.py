@@ -33,7 +33,6 @@ def render():
 
     if selected_employer:
         
-        # --- 【核心修改】將介面改為頁籤式 ---
         tab1, tab2 = st.tabs(["📊 按月檢視", "📅 年度總覽"])
 
         with tab1:
@@ -67,13 +66,21 @@ def render():
 
                 st.markdown("##### 各宿舍收支詳情 (此雇主)")
                 display_df = finance_df_month.copy()
-                display_df['我司總支出'] = display_df['我司分攤月租'] + display_df['我司分攤雜費'] + display_df['我司分攤攤銷']
-                display_df['淨損益'] = display_df['總收入'] - display_df['我司總支出']
-                display_df = display_df.sort_values(by="我司總支出", ascending=False)
+                display_df['淨損益'] = (display_df['收入(員工月費)'] + display_df['分攤其他收入']) - \
+                                    (display_df['我司分攤月租'] + display_df['我司分攤雜費'] + display_df['我司分攤攤銷'])
                 
-                cols_to_display = ["宿舍地址", "總收入", "收入(員工月費)", "分攤其他收入", "我司總支出", "淨損益"]
-                st.dataframe(display_df[cols_to_display], use_container_width=True, hide_index=True,
-                    column_config={col: st.column_config.NumberColumn(format="NT$ %d") for col in cols_to_display if col != "宿舍地址"})
+                # --- 【核心修改點】---
+                # 重新定義要顯示的欄位，直接展示所有細項
+                cols_to_display = [
+                    "宿舍地址", "淨損益", "收入(員工月費)", "分攤其他收入", 
+                    "我司分攤月租", "我司分攤雜費", "我司分攤攤銷"
+                ]
+                
+                # 篩選出存在的欄位來顯示，避免錯誤
+                cols_to_display_exist = [col for col in cols_to_display if col in display_df.columns]
+                
+                st.dataframe(display_df[cols_to_display_exist], use_container_width=True, hide_index=True,
+                    column_config={col: st.column_config.NumberColumn(format="NT$ %d") for col in cols_to_display_exist if col != "宿舍地址"})
 
         with tab2:
             st.subheader("年度財務總覽")
@@ -103,16 +110,22 @@ def render():
 
                 st.markdown("##### 各宿舍年度收支詳情 (此雇主)")
                 display_df_annual = finance_df_annual.copy()
-                display_df_annual['我司總支出'] = display_df_annual['我司分攤月租'] + display_df_annual['我司分攤雜費'] + display_df_annual['我司分攤攤銷']
-                display_df_annual['淨損益'] = display_df_annual['總收入'] - display_df_annual['我司總支出']
-                display_df_annual = display_df_annual.sort_values(by="我司總支出", ascending=False)
+                display_df_annual['淨損益'] = (display_df_annual['收入(員工月費)'] + display_df_annual['分攤其他收入']) - \
+                                            (display_df_annual['我司分攤月租'] + display_df_annual['我司分攤雜費'] + display_df_annual['我司分攤攤銷'])
                 
-                cols_to_display_annual = ["宿舍地址", "總收入", "收入(員工月費)", "分攤其他收入", "我司總支出", "淨損益"]
-                st.dataframe(display_df_annual[cols_to_display_annual], use_container_width=True, hide_index=True,
-                    column_config={col: st.column_config.NumberColumn(format="NT$ %d") for col in cols_to_display_annual if col != "宿舍地址"})
+                # --- 【核心修改點】---
+                # 同樣為年度總覽定義要顯示的細項欄位
+                cols_to_display_annual = [
+                    "宿舍地址", "淨損益", "收入(員工月費)", "分攤其他收入", 
+                    "我司分攤月租", "我司分攤雜費", "我司分攤攤銷"
+                ]
+                
+                cols_to_display_annual_exist = [col for col in cols_to_display_annual if col in display_df_annual.columns]
+
+                st.dataframe(display_df_annual[cols_to_display_annual_exist], use_container_width=True, hide_index=True,
+                    column_config={col: st.column_config.NumberColumn(format="NT$ %d") for col in cols_to_display_annual_exist if col != "宿舍地址"})
 
         st.markdown("---")
-        # --- 住宿分佈總覽（維持不變，放在頁籤外部共享）---
         st.subheader("各宿舍即時住宿分佈")
         @st.cache_data
         def get_details(employer):
