@@ -1,3 +1,4 @@
+# cindyhu26/dorm_management_postgresql/dorm_management_postgresql-40db7a95298be6441da6d9bda99bf22aaaeaa89c/data_models/single_dorm_analyzer.py
 import pandas as pd
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
@@ -62,7 +63,6 @@ def get_resident_summary(dorm_id: int, year_month: str):
 
     try:
         params = {"dorm_id": dorm_id, "year_month": year_month}
-        # --- 核心修改點 ---
         query = """
             WITH DateParams AS (
                 SELECT 
@@ -106,7 +106,10 @@ def get_resident_summary(dorm_id: int, year_month: str):
     }
 
 def get_expense_summary(dorm_id: int, year_month: str):
-    """計算指定月份，宿舍的總支出細項 (維持不變)。"""
+    """
+    【v1.1 修正版】計算指定月份，宿舍的總支出細項。
+    修正月租金重複計算的問題，並納入變動費用 (水電雜費) 的計算。
+    """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     
@@ -116,25 +119,31 @@ def get_expense_summary(dorm_id: int, year_month: str):
             WITH DateParams AS (
                 SELECT 
                     TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
-                    (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval) as first_day_of_next_month
+                    (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
             )
             SELECT '月租金' AS "費用項目", monthly_rent AS "金額"
-            FROM "Leases"
-            WHERE dorm_id = %(dorm_id)s 
-              AND lease_start_date < (SELECT first_day_of_next_month FROM DateParams)
-              AND (lease_end_date IS NULL OR lease_end_date >= (SELECT first_day_of_month FROM DateParams))
+            FROM (
+                SELECT monthly_rent, ROW_NUMBER() OVER(PARTITION BY dorm_id ORDER BY lease_start_date DESC) as rn
+                FROM "Leases" CROSS JOIN DateParams dp
+                WHERE dorm_id = %(dorm_id)s 
+                  AND lease_start_date <= dp.last_day_of_month
+                  AND (lease_end_date IS NULL OR lease_end_date >= dp.first_day_of_month)
+            ) as sub_leases
+            WHERE rn = 1
             
             UNION ALL
             
             SELECT 
-                '雜費 (' || COALESCE(payer, '未指定') || '支付)' AS "費用項目",
-                SUM(b.amount::decimal * EXTRACT(DAY FROM (LEAST(b.bill_end_date, (SELECT first_day_of_next_month FROM DateParams) - '1 day'::interval) - GREATEST(b.bill_start_date, (SELECT first_day_of_month FROM DateParams)) + '1 day'::interval))
-                    / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0))
+                bill_type || ' (' || COALESCE(payer, '未指定') || '支付)' AS "費用項目",
+                SUM(b.amount::decimal * (LEAST(b.bill_end_date, (SELECT last_day_of_month FROM DateParams))::date - GREATEST(b.bill_start_date, (SELECT first_day_of_month FROM DateParams))::date + 1)
+                    / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)
+                ) as "金額"
             FROM "UtilityBills" b
+            CROSS JOIN DateParams dp
             WHERE b.dorm_id = %(dorm_id)s
-              AND b.bill_start_date < (SELECT first_day_of_next_month FROM DateParams) 
-              AND b.bill_end_date >= (SELECT first_day_of_month FROM DateParams)
-            GROUP BY b.payer
+              AND b.bill_start_date <= dp.last_day_of_month 
+              AND b.bill_end_date >= dp.first_day_of_month
+            GROUP BY b.bill_type, b.payer
 
             UNION ALL
 
@@ -142,9 +151,10 @@ def get_expense_summary(dorm_id: int, year_month: str):
                 expense_item || ' (攤銷)' AS "費用項目",
                 SUM(ROUND(total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0)))
             FROM "AnnualExpenses"
+            CROSS JOIN DateParams dp
             WHERE dorm_id = %(dorm_id)s
-              AND TO_DATE(amortization_start_month, 'YYYY-MM') <= (SELECT first_day_of_month FROM DateParams)
-              AND TO_DATE(amortization_end_month, 'YYYY-MM') >= (SELECT first_day_of_month FROM DateParams)
+              AND TO_DATE(amortization_start_month, 'YYYY-MM') <= dp.first_day_of_month
+              AND TO_DATE(amortization_end_month, 'YYYY-MM') >= dp.first_day_of_month
             GROUP BY expense_item
         """
         
@@ -156,6 +166,64 @@ def get_expense_summary(dorm_id: int, year_month: str):
 
     finally:
         if conn: conn.close()
+        
+# --- 【核心新增】計算總收入的函式 ---
+def get_income_summary(dorm_id: int, year_month: str):
+    """
+    計算指定月份，單一宿舍的總收入 (工人月費 + 其他收入)。
+    """
+    conn = database.get_db_connection()
+    if not conn: return 0
+    
+    total_income = 0
+    params = {"dorm_id": dorm_id, "year_month": year_month}
+    
+    try:
+        with conn.cursor() as cursor:
+            # 1. 計算工人月費收入
+            worker_income_query = """
+                WITH DateParams AS (
+                    SELECT 
+                        TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
+                        (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
+                )
+                SELECT 
+                    SUM(
+                        (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0)) *
+                        ((LEAST(COALESCE(ah.end_date, (SELECT last_day_of_month FROM DateParams)), (SELECT last_day_of_month FROM DateParams))::date - GREATEST(ah.start_date, (SELECT first_day_of_month FROM DateParams))::date + 1)
+                         / EXTRACT(DAY FROM (SELECT last_day_of_month FROM DateParams))::decimal)
+                    ) as total_income
+                FROM "AccommodationHistory" ah
+                JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+                JOIN "Rooms" r ON ah.room_id = r.id
+                CROSS JOIN DateParams dp
+                WHERE r.dorm_id = %(dorm_id)s
+                  AND ah.start_date <= dp.last_day_of_month
+                  AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
+            """
+            cursor.execute(worker_income_query, params)
+            worker_income_result = cursor.fetchone()
+            if worker_income_result and worker_income_result['total_income']:
+                total_income += worker_income_result['total_income']
+
+            # 2. 計算其他收入
+            other_income_query = """
+                SELECT SUM(amount) as total_other_income
+                FROM "OtherIncome"
+                WHERE dorm_id = %(dorm_id)s
+                  AND TO_CHAR(transaction_date, 'YYYY-MM') = %(year_month)s
+            """
+            cursor.execute(other_income_query, params)
+            other_income_result = cursor.fetchone()
+            if other_income_result and other_income_result['total_other_income']:
+                total_income += other_income_result['total_other_income']
+                
+    except Exception as e:
+        print(f"計算收入時發生錯誤: {e}")
+    finally:
+        if conn: conn.close()
+        
+    return int(total_income)
 
 def get_resident_details_as_df(dorm_id: int, year_month: str):
     """
@@ -167,7 +235,6 @@ def get_resident_details_as_df(dorm_id: int, year_month: str):
 
     try:
         params = {"dorm_id": dorm_id, "year_month": year_month}
-        # --- 核心修改點 ---
         query = """
             WITH DateParams AS (
                 SELECT 
@@ -204,7 +271,6 @@ def get_dorm_analysis_data(dorm_id: int, year_month: str):
         params = {"dorm_id": dorm_id, "year_month": year_month}
         rooms_df = _execute_query_to_dataframe(conn, 'SELECT * FROM "Rooms" WHERE dorm_id = %(dorm_id)s', params)
         
-        # --- 核心修改點 ---
         workers_query = """
             WITH DateParams AS (
                 SELECT 

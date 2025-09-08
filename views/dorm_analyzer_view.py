@@ -1,3 +1,4 @@
+# cindyhu26/dorm_management_postgresql/dorm_management_postgresql-40db7a95298be6441da6d9bda99bf22aaaeaa89c/views/dorm_analyzer_view.py
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -34,7 +35,6 @@ def render():
         c2.metric("租金支付方", basic_info.get('rent_payer'))
         c3.metric("水電支付方", basic_info.get('utilities_payer'))
         
-        # --- 更安全的格式化方式 ---
         rent_value = basic_info.get('monthly_rent') or 0
         c4.metric("當前月租", f"NT$ {int(rent_value):,}")
 
@@ -55,11 +55,9 @@ def render():
     selected_month = sc2.selectbox("選擇月份", options=range(1, 13), index=today.month - 1)
     year_month_str = f"{selected_year}-{selected_month:02d}"
 
-    # 獲取數據
+    # 獲取住宿人員數據
     resident_data = single_dorm_analyzer.get_resident_summary(selected_dorm_id, year_month_str)
-    expense_data_df = single_dorm_analyzer.get_expense_summary(selected_dorm_id, year_month_str)
-
-    # 顯示數據
+    
     st.markdown(f"#### {year_month_str} 住宿人員分析")
     st.metric("總在住人數", f"{resident_data['total_residents']} 人")
 
@@ -74,34 +72,22 @@ def render():
         st.markdown("**房租簡表**")
         st.dataframe(resident_data['rent_summary'], use_container_width=True, hide_index=True)
 
-    # --- 3-2. 數據分析區塊 (徹底重構) ---
+    # --- 營運分析區塊 (維持不變) ---
     st.subheader(f"{year_month_str} 宿舍營運分析")
-    
-    # 獲取所有分析數據
     analysis_data = single_dorm_analyzer.get_dorm_analysis_data(selected_dorm_id, year_month_str)
-
     if not analysis_data:
         st.error("分析數據時發生錯誤，請檢查資料庫連線。")
     else:
-        # A. 宿舍容量與概況
         st.markdown("##### Ａ. 宿舍容量與概況")
         st.metric("宿舍總床位容量", f"{analysis_data['total_capacity']} 床")
-        
-        # B. 當月實際住宿分析
         st.markdown("##### Ｂ. 當月實際住宿分析")
-        ar = analysis_data['actual_residents']
-        er = analysis_data['external_residents']
-        ab = analysis_data['available_beds']
-
+        ar, er, ab = analysis_data['actual_residents'], analysis_data['external_residents'], analysis_data['available_beds']
         b_col1, b_col2, b_col3 = st.columns(3)
         b_col1.metric("目前實際住宿人數", f"{ar['total']} 人", help="計算方式：所有住在該宿舍的人員，扣除『掛宿外住』者。")
         b_col2.metric("掛宿外住人數", f"{er['total']} 人", help="計算方式：統計特殊狀況為『掛宿外住』的人員總數。")
         b_col3.metric("一般可住空床數", f"{ab['total']} 床", help="計算方式：[總容量] - [實際住宿人數] - [特殊房間獨立空床數]。代表可自由安排的床位。")
-
         st.markdown(f"**實際住宿性別比**：男 {ar['male']} 人 / 女 {ar['female']} 人")
         st.markdown(f"**掛宿外住性別比**：男 {er['male']} 人 / 女 {er['female']} 人")
-
-        # C. 特殊房間註記與獨立空床
         st.markdown("##### Ｃ. 特殊房間註記與獨立空床")
         special_rooms_df = analysis_data['special_rooms']
         if special_rooms_df.empty:
@@ -110,22 +96,33 @@ def render():
             st.warning("注意：下方所列房間的空床位『不』計入上方的一般可住空床數，需獨立評估安排。")
             st.dataframe(
                 special_rooms_df[['room_number', 'room_notes', 'capacity', '目前住的人數', '獨立空床數']],
-                use_container_width=True,
-                hide_index=True
+                use_container_width=True, hide_index=True
             )
+            
     st.markdown("---")
 
-    st.markdown(f"#### {year_month_str} 預估支出分析")
-    total_expense = int(expense_data_df['金額'].sum())
-    st.metric("預估總支出", f"NT$ {total_expense:,}")
-    st.dataframe(expense_data_df, use_container_width=True, hide_index=True)
+    # --- 【核心修改】新增收入與損益計算，並調整支出分析區塊 ---
+    st.subheader(f"{year_month_str} 財務分析")
 
+    # 獲取收支數據
+    income_total = single_dorm_analyzer.get_income_summary(selected_dorm_id, year_month_str)
+    expense_data_df = single_dorm_analyzer.get_expense_summary(selected_dorm_id, year_month_str)
+    expense_total = int(expense_data_df['金額'].sum())
+    profit_loss = income_total - expense_total
 
-    # --- 4. 【本次新增】在住人員詳細名單 ---
+    # 顯示指標卡
+    fin_col1, fin_col2, fin_col3 = st.columns(3)
+    fin_col1.metric("預估總收入", f"NT$ {income_total:,}", help="工人月費總和 + 其他收入")
+    fin_col2.metric("預估總支出", f"NT$ {expense_total:,}")
+    fin_col3.metric("預估淨損益", f"NT$ {profit_loss:,}", delta=f"{profit_loss:,}")
+
+    # 顯示支出細項
+    with st.expander("點此查看支出細項"):
+        st.dataframe(expense_data_df, use_container_width=True, hide_index=True)
+
     st.markdown("---")
     st.subheader(f"{year_month_str} 在住人員詳細名單")
     
-    # 從後端獲取詳細名單
     resident_details_df = single_dorm_analyzer.get_resident_details_as_df(selected_dorm_id, year_month_str)
 
     if resident_details_df.empty:
