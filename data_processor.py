@@ -232,11 +232,12 @@ def parse_and_process_reports(
     log_callback(f"INFO: 已過濾 {original_rows - len(master_df)} 筆無效資料列。")
 
     log_callback("INFO: 正在進行資料欄位標準化與正規化...")
+    # --- 【核心修改點 1】: 新增 '移工英文姓名' 的映射 ---
     column_mapping = {
-        '雇主簡稱': 'employer_name', '中文譯名': 'worker_name', '性別': 'gender',
-        '國籍': 'nationality', '護照號碼': 'passport_number', '居留證號': 'arc_number',
-        '入境日': 'arrival_date', '離境日': 'departure_date', '工作期限': 'work_permit_expiry_date',
-        '居留地址': 'original_address',
+        '雇主簡稱': 'employer_name', '中文譯名': 'worker_name', '移工英文姓名': 'native_name',
+        '性別': 'gender', '國籍': 'nationality', '護照號碼': 'passport_number', 
+        '居留證號': 'arc_number', '入境日': 'arrival_date', '離境日': 'departure_date', 
+        '工作期限': 'work_permit_expiry_date', '居留地址': 'original_address',
     }
     master_df.rename(columns=column_mapping, inplace=True)
 
@@ -266,14 +267,14 @@ def parse_and_process_reports(
     addr_info = master_df['original_address'].apply(normalize_taiwan_address).apply(pd.Series)
     master_df[['normalized_address', 'city', 'district']] = addr_info[['full', 'city', 'district']]
     
+    # --- 將 native_name 加入最終輸出的欄位列表 ---
     final_columns = [
-        'unique_id', 'employer_name', 'worker_name', 'gender', 'nationality', 
+        'unique_id', 'employer_name', 'worker_name', 'native_name', 'gender', 'nationality', 
         'passport_number', 'arc_number', 'arrival_date', 'departure_date', 
         'work_permit_expiry_date', 'original_address', 'normalized_address', 'city', 'district'
     ]
     existing_final_columns = [col for col in final_columns if col in master_df.columns]
     
-    # 在去重複前，確保 unique_id 不是空的
     final_df = master_df[master_df['unique_id'] != '_'].copy()
     final_df = final_df[existing_final_columns].drop_duplicates(subset=['unique_id'], keep='first')
     

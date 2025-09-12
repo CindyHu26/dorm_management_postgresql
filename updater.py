@@ -18,8 +18,6 @@ def _execute_query_to_dataframe(conn, query, params=None):
 def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], None]):
     """
     【v2.4 最終版】執行核心的資料庫更新流程。
-    - 保護「手動管理(他仲)」的工人不被標記為離住。
-    - 其餘工人若不在新名單中，則標記離住。
     """
     log_callback("\n===== 開始執行核心資料庫更新程序 =====")
     today = datetime.now().date()
@@ -32,7 +30,6 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
         
     try:
         with conn.cursor() as cursor:
-            # ... (步驟 1, 2, 3 維持不變) ...
             log_callback("INFO: 步驟 1/4 - 同步宿舍地址...")
             db_dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, normalized_address FROM "Dormitories"')
             db_addresses = set(db_dorms_df['normalized_address']) if not db_dorms_df.empty else set()
@@ -55,7 +52,6 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
             fresh_df['room_id'] = fresh_df['normalized_address'].map(address_room_map)
 
             log_callback("INFO: 步驟 3/4 - 正在取得現有工人的最新住宿與來源狀態...")
-            
             all_workers_info_df = _execute_query_to_dataframe(conn, """
                 SELECT w.unique_id, w.data_source, ah.room_id
                 FROM "Workers" w
@@ -66,9 +62,7 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
             current_accommodation_records = pd.Series(all_workers_info_df.room_id.values, index=all_workers_info_df.unique_id).to_dict()
             worker_data_sources = pd.Series(all_workers_info_df.data_source.values, index=all_workers_info_df.unique_id).to_dict()
             
-            # --- 步驟 4: 執行逐筆比對與更新 ---
             log_callback("INFO: 步驟 4/4 - 正在執行逐筆資料比對與更新...")
-            
             processed_ids = set()
             added_count, updated_count, marked_as_left_count, moved_count = 0, 0, 0, 0
             
@@ -84,7 +78,8 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                 existing_worker = cursor.fetchone()
 
                 if existing_worker:
-                    update_cols = ['gender', 'nationality', 'passport_number', 'arc_number', 'arrival_date', 'departure_date', 'work_permit_expiry_date']
+                    # --- 【核心修改點】: 在更新列表中加入 'native_name' ---
+                    update_cols = ['native_name', 'gender', 'nationality', 'passport_number', 'arc_number', 'arrival_date', 'departure_date', 'work_permit_expiry_date']
                     update_details = {col: fresh_worker.get(col) for col in update_cols if col in fresh_worker}
                     update_details['accommodation_end_date'] = None
                     update_details['room_id'] = new_room_id
@@ -103,7 +98,6 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                             log_callback(f"INFO: [自動] 偵測到住宿異動！工人 '{unique_id}' 已從房間 {current_room_id} 移至 {new_room_id}。")
                     else:
                         log_callback(f"INFO: [保護] 工人 '{unique_id}' 為手動調整狀態，跳過「實際住宿」歷史紀錄的更新。")
-
                 else:
                     new_worker_details = fresh_worker.to_dict()
                     new_worker_details['data_source'] = '系統自動更新'
@@ -119,17 +113,12 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                 
                 processed_ids.add(unique_id)
             
-            # --- 處理離職員工 (核心修改點) ---
-            # 1. 找出資料庫中所有「應該」被同步的工人 (排除他仲)
             cursor.execute('SELECT unique_id FROM "Workers" WHERE data_source != %s', ('手動管理(他仲)',))
             db_syncable_ids = {rec['unique_id'] for rec in cursor.fetchall()}
-
-            # 2. 用「應該同步的工人」減去「這次實際處理過的工人」，剩下的就是離職者
             ids_to_check_for_departure = db_syncable_ids - processed_ids
             
             if ids_to_check_for_departure:
                 for uid in ids_to_check_for_departure:
-                    # 無差別更新離住日，因為這個名單已經排除了他仲工人
                     cursor.execute('UPDATE "Workers" SET accommodation_end_date = %s WHERE unique_id = %s AND accommodation_end_date IS NULL', (today, uid))
                     if cursor.rowcount > 0:
                         marked_as_left_count += 1
