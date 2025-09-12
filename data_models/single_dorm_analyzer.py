@@ -1,4 +1,3 @@
-# cindyhu26/dorm_management_postgresql/dorm_management_postgresql-40db7a95298be6441da6d9bda99bf22aaaeaa89c/data_models/single_dorm_analyzer.py
 import pandas as pd
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
@@ -107,8 +106,7 @@ def get_resident_summary(dorm_id: int, year_month: str):
 
 def get_expense_summary(dorm_id: int, year_month: str):
     """
-    【v1.1 修正版】計算指定月份，宿舍的總支出細項。
-    修正月租金重複計算的問題，並納入變動費用 (水電雜費) 的計算。
+    【最終修正版】計算指定月份宿舍的總支出細項，並明確標示支付方。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -121,18 +119,22 @@ def get_expense_summary(dorm_id: int, year_month: str):
                     TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
                     (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
             )
-            SELECT '月租金' AS "費用項目", monthly_rent AS "金額"
-            FROM (
-                SELECT monthly_rent, ROW_NUMBER() OVER(PARTITION BY dorm_id ORDER BY lease_start_date DESC) as rn
+            -- 1. 月租金支出，明確標示支付方
+            SELECT 
+                '月租金 (' || d.rent_payer || '支付)' AS "費用項目", 
+                l.monthly_rent AS "金額"
+            FROM "Dormitories" d
+            JOIN (
+                SELECT dorm_id, monthly_rent, ROW_NUMBER() OVER(PARTITION BY dorm_id ORDER BY lease_start_date DESC) as rn
                 FROM "Leases" CROSS JOIN DateParams dp
-                WHERE dorm_id = %(dorm_id)s 
-                  AND lease_start_date <= dp.last_day_of_month
+                WHERE lease_start_date <= dp.last_day_of_month
                   AND (lease_end_date IS NULL OR lease_end_date >= dp.first_day_of_month)
-            ) as sub_leases
-            WHERE rn = 1
+            ) l ON d.id = l.dorm_id
+            WHERE d.id = %(dorm_id)s AND l.rn = 1
             
             UNION ALL
             
+            -- 2. 變動雜費，明確標示支付方
             SELECT 
                 bill_type || ' (' || COALESCE(payer, '未指定') || '支付)' AS "費用項目",
                 SUM(b.amount::decimal * (LEAST(b.bill_end_date, (SELECT last_day_of_month FROM DateParams))::date - GREATEST(b.bill_start_date, (SELECT first_day_of_month FROM DateParams))::date + 1)
@@ -147,8 +149,9 @@ def get_expense_summary(dorm_id: int, year_month: str):
 
             UNION ALL
 
+            -- 3. 長期攤銷費用，預設為我司支付
             SELECT 
-                expense_item || ' (攤銷)' AS "費用項目",
+                expense_item || ' (攤銷, 我司支付)' AS "費用項目",
                 SUM(ROUND(total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0)))
             FROM "AnnualExpenses"
             CROSS JOIN DateParams dp
@@ -166,8 +169,7 @@ def get_expense_summary(dorm_id: int, year_month: str):
 
     finally:
         if conn: conn.close()
-        
-# --- 【核心新增】計算總收入的函式 ---
+
 def get_income_summary(dorm_id: int, year_month: str):
     """
     計算指定月份，單一宿舍的總收入 (工人月費 + 其他收入)。

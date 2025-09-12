@@ -1,5 +1,5 @@
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 import database
 import json
 from . import worker_model
@@ -188,17 +188,17 @@ def get_compliance_records_for_dorm(dorm_id: int, record_type: str):
     finally:
         if conn: conn.close()
 
-# --- 房租管理 ---
-def get_workers_for_rent_management(filters: dict):
+# --- 房租管理 (已升級為通用費用管理) ---
+def get_workers_for_fee_management(filters: dict):
     """
-    根據提供的篩選條件(宿舍或雇主)，查詢所有在住移工的房租相關資訊。
+    【最終修正版】根據提供的多重篩選條件(宿舍、雇主)，查詢在住移工的費用資訊。
     """
-    filter_by = filters.get("filter_by")
-    values = filters.get("values")
+    dorm_ids = filters.get("dorm_ids")
+    employer_names = filters.get("employer_names")
 
-    if not filter_by or not values:
+    if not dorm_ids and not employer_names:
         return pd.DataFrame()
-    
+
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
@@ -206,71 +206,77 @@ def get_workers_for_rent_management(filters: dict):
             SELECT
                 w.unique_id, d.original_address AS "宿舍地址", r.room_number AS "房號",
                 w.employer_name AS "雇主", w.worker_name AS "姓名", 
-                w.monthly_fee AS "目前月費", w.utilities_fee as "水電費", w.cleaning_fee as "清潔費"
+                w.monthly_fee AS "月費(房租)", w.utilities_fee as "水電費", w.cleaning_fee as "清潔費",
+                w.accommodation_start_date AS "入住日"
             FROM "Workers" w
             JOIN "Rooms" r ON w.room_id = r.id
             JOIN "Dormitories" d ON r.dorm_id = d.id
         """
         
-        # 動態產生 WHERE 子句
-        placeholders = ', '.join(['%s'] * len(values))
-        if filter_by == "dorm":
-            base_query += f' WHERE d.id IN ({placeholders})'
-        elif filter_by == "employer":
-            base_query += f' WHERE w.employer_name IN ({placeholders})'
-        else:
-            return pd.DataFrame() # 不支援的篩選方式
+        where_clauses = []
+        params = []
+        
+        # 動態建立 WHERE 條件
+        if dorm_ids:
+            where_clauses.append(f"d.id IN ({', '.join(['%s'] * len(dorm_ids))})")
+            params.extend(dorm_ids)
+            
+        if employer_names:
+            where_clauses.append(f"w.employer_name IN ({', '.join(['%s'] * len(employer_names))})")
+            params.extend(employer_names)
 
+        base_query += " WHERE " + " AND ".join(where_clauses)
         base_query += " AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)"
         base_query += " ORDER BY d.original_address, r.room_number, w.worker_name"
         
-        return _execute_query_to_dataframe(conn, base_query, tuple(values))
+        return _execute_query_to_dataframe(conn, base_query, tuple(params))
     finally:
         if conn: conn.close()
 
-def batch_update_rent(filters: dict, old_rent: int, new_rent: int, update_nulls: bool = False):
+def batch_update_worker_fees(filters: dict, fee_type: str, fee_type_display: str, old_fee: int, new_fee: int, change_date: date, update_nulls: bool = False):
     """
-    批次更新指定篩選條件下移工的月費，並為每一筆變動建立歷史紀錄。
+    【最終版】批次更新指定費用，並可指定生效日期。
     """
-    # 【核心修改】不再直接操作資料庫，而是先找出目標，再呼叫 worker_model
-    
-    # 步驟 1: 找出所有符合條件的員工
-    # 我們可以複用 get_workers_for_rent_management 來找出目標
-    all_workers_df = get_workers_for_rent_management(filters)
+    all_workers_df = get_workers_for_fee_management(filters)
     if all_workers_df.empty:
         return False, "在選定條件中，找不到任何在住人員。"
 
-    # 步驟 2: 根據舊租金條件再次篩選
     if update_nulls:
-        target_df = all_workers_df[all_workers_df['目前月費'].isnull()]
-        target_description = "目前房租為『未設定』"
+        target_df = all_workers_df[all_workers_df[fee_type_display].isnull()]
+        target_description = f"目前{fee_type_display}為『未設定』"
     else:
-        target_df = all_workers_df[all_workers_df['目前月費'] == old_rent]
-        target_description = f"目前月費為 {old_rent}"
+        target_df = all_workers_df[all_workers_df[fee_type_display].fillna(-1) == old_fee]
+        target_description = f"目前{fee_type_display}為 {old_fee}"
     
     if target_df.empty:
         return False, f"在選定條件中，找不到{target_description}的在住人員。"
 
-    target_ids = target_df['unique_id'].tolist()
     updated_count = 0
     failed_ids = []
 
-    # 步驟 3: 逐一呼叫 worker_model 的更新函式
-    for worker_id in target_ids:
-        update_data = {'monthly_fee': new_rent}
-        success, message = worker_model.update_worker_details(worker_id, update_data)
+    for index, worker_row in target_df.iterrows():
+        worker_id = worker_row['unique_id']
+        update_data = {fee_type: new_fee}
+        
+        effective_date = change_date
+        if update_nulls:
+            accommodation_start = worker_row.get('accommodation_start_date')
+            if accommodation_start and change_date < accommodation_start:
+                effective_date = accommodation_start
+        
+        success, message = worker_model.update_worker_details(worker_id, update_data, effective_date=effective_date)
         if success:
             updated_count += 1
         else:
             failed_ids.append(worker_id)
-            print(f"更新 worker_id: {worker_id} 失敗: {message}")
+            print(f"更新 worker_id: {worker_id} 的 {fee_type} 失敗: {message}")
 
     if updated_count > 0 and not failed_ids:
-        return True, f"成功更新了 {updated_count} 位人員的房租，並已寫入歷史紀錄。"
+        return True, f"成功更新了 {updated_count} 位人員的「{fee_type_display}」，並已寫入歷史紀錄。"
     elif updated_count > 0 and failed_ids:
         return True, f"成功更新 {updated_count} 位，但有 {len(failed_ids)} 位更新失敗。"
     else:
-        return False, "沒有任何人員的房租被更新（可能所有符合條件人員的房租已是新金額，或更新失敗）。"
+        return False, f"沒有任何人員的「{fee_type_display}」被更新（可能所有符合條件人員的費用已是新金額，或更新失敗）。"
 
 # --- 費用管理 (帳單式) ---
 def get_bill_records_for_dorm_as_df(dorm_id: int):

@@ -176,10 +176,12 @@ def get_single_worker_details(unique_id: str):
     finally:
         if conn: conn.close()
 
-def _log_fee_change(cursor, worker_id, details, old_details):
-    """內部函式：比較新舊費用資料，並將變動寫入 FeeHistory。"""
+def _log_fee_change(cursor, worker_id, details, old_details, effective_date):
+    """
+    【升級版】內部函式：比較新舊費用資料，並將變動寫入 FeeHistory。
+    現在使用傳入的 effective_date。
+    """
     fee_map = {'monthly_fee': '房租', 'utilities_fee': '水電費', 'cleaning_fee': '清潔費'}
-    today = date.today()
 
     for key, fee_type_name in fee_map.items():
         if key not in details:
@@ -192,28 +194,31 @@ def _log_fee_change(cursor, worker_id, details, old_details):
         old_amount = int(old_value) if old_value is not None else 0
         
         if new_amount != old_amount:
+            # 【核心修改】: 使用傳入的 effective_date
             sql = 'INSERT INTO "FeeHistory" (worker_unique_id, fee_type, amount, effective_date) VALUES (%s, %s, %s, %s)'
-            cursor.execute(sql, (worker_id, fee_type_name, new_amount, today))
+            cursor.execute(sql, (worker_id, fee_type_name, new_amount, effective_date))
 
-def update_worker_details(unique_id: str, details: dict):
+def update_worker_details(unique_id: str, details: dict, effective_date: date = None):
     """
-    【v2.0 修改版】更新移工的核心資料。
-    住宿變更的邏輯已移至新的函式 `change_worker_accommodation`。
+    【升級版】更新移工的核心資料。現在可以接收一個 effective_date 用於記錄費用歷史。
     """
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed."
     try:
         with conn.cursor() as cursor:
-            cursor.execute('SELECT monthly_fee, utilities_fee, cleaning_fee FROM "Workers" WHERE unique_id = %s', (unique_id,))
+            # 查詢時也把 accommodation_start_date 一起查出來
+            cursor.execute('SELECT monthly_fee, utilities_fee, cleaning_fee, accommodation_start_date FROM "Workers" WHERE unique_id = %s', (unique_id,))
             old_details = cursor.fetchone()
             if not old_details: return False, "找不到指定的員工。"
             
-            _log_fee_change(cursor, unique_id, details, old_details)
+            # 【核心修改】: 決定最終的生效日期
+            final_effective_date = effective_date if effective_date else date.today()
             
-            # 從 details 中移除 room_id，因为它將由專門的函式處理
+            _log_fee_change(cursor, unique_id, details, old_details, final_effective_date)
+            
             details.pop('room_id', None)
             
-            if not details: # 如果只剩下 room_id，那這裡就沒事做了
+            if not details:
                  return True, "沒有核心資料需要更新。"
 
             fields = ', '.join([f'"{key}" = %s' for key in details.keys()])

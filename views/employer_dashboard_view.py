@@ -1,15 +1,13 @@
-# cindyhu26/dorm_management_postgresql/dorm_management_postgresql-40db7a95298be6441da6d9bda99bf22aaaeaa89c/views/employer_dashboard_view.py
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from data_models import employer_dashboard_model
+from data_models import employer_dashboard_model, dormitory_model
 
 def render():
     """渲染「雇主儀表板」頁面"""
     st.header("雇主視角儀表板")
     st.info("請從下方選擇一位雇主，以檢視其所有在住員工的詳細住宿分佈與財務貢獻情況。")
 
-    # --- 1. 雇主選擇 ---
     @st.cache_data
     def get_employers_list():
         return employer_dashboard_model.get_all_employers()
@@ -33,6 +31,12 @@ def render():
 
     if selected_employer:
         
+        @st.cache_data
+        def get_dorm_id_map():
+            all_dorms = dormitory_model.get_dorms_for_selection()
+            return {d['original_address']: d['id'] for d in all_dorms}
+        dorm_id_map = get_dorm_id_map()
+
         tab1, tab2 = st.tabs(["📊 按月檢視", "📅 年度總覽"])
 
         with tab1:
@@ -69,18 +73,37 @@ def render():
                 display_df['淨損益'] = (display_df['收入(員工月費)'] + display_df['分攤其他收入']) - \
                                     (display_df['我司分攤月租'] + display_df['我司分攤雜費'] + display_df['我司分攤攤銷'])
                 
-                # --- 【核心修改點】---
-                # 重新定義要顯示的欄位，直接展示所有細項
-                cols_to_display = [
-                    "宿舍地址", "淨損益", "收入(員工月費)", "分攤其他收入", 
-                    "我司分攤月租", "我司分攤雜費", "我司分攤攤銷"
-                ]
-                
-                # 篩選出存在的欄位來顯示，避免錯誤
+                cols_to_display = ["宿舍地址", "淨損益", "收入(員工月費)", "分攤其他收入", "我司分攤月租", "我司分攤雜費", "我司分攤攤銷"]
                 cols_to_display_exist = [col for col in cols_to_display if col in display_df.columns]
                 
-                st.dataframe(display_df[cols_to_display_exist], width="stretch", hide_index=True,
+                st.dataframe(display_df[cols_to_display_exist], width='stretch', hide_index=True,
                     column_config={col: st.column_config.NumberColumn(format="NT$ %d") for col in cols_to_display_exist if col != "宿舍地址"})
+
+                st.markdown("---")
+                st.markdown("##### 查看單一宿舍財務細項")
+                
+                dorm_options = ["請選擇..."] + list(display_df['宿舍地址'].unique())
+                selected_dorm_address = st.selectbox("選擇要查看詳情的宿舍：", options=dorm_options, key="monthly_detail_select")
+
+                if selected_dorm_address and selected_dorm_address != "請選擇...":
+                    selected_dorm_id = dorm_id_map.get(selected_dorm_address)
+                    if selected_dorm_id:
+                        with st.spinner(f"正在查詢 {selected_dorm_address} 的詳細資料..."):
+                            income_details, expense_details = employer_dashboard_model.get_employer_financial_details_for_dorm(
+                                selected_employer, selected_dorm_id, year_month_str
+                            )
+                        
+                        st.markdown(f"**收入明細**")
+                        if income_details is None or income_details.empty:
+                            st.info("無收入明細資料。")
+                        else:
+                            st.dataframe(income_details, width='stretch', hide_index=True)
+
+                        st.markdown(f"**支出明細 (我司分攤後)**")
+                        if expense_details is None or expense_details.empty:
+                            st.info("無支出明細資料。")
+                        else:
+                            st.dataframe(expense_details, width='stretch', hide_index=True)
 
         with tab2:
             st.subheader("年度財務總覽")
@@ -113,8 +136,6 @@ def render():
                 display_df_annual['淨損益'] = (display_df_annual['收入(員工月費)'] + display_df_annual['分攤其他收入']) - \
                                             (display_df_annual['我司分攤月租'] + display_df_annual['我司分攤雜費'] + display_df_annual['我司分攤攤銷'])
                 
-                # --- 【核心修改點】---
-                # 同樣為年度總覽定義要顯示的細項欄位
                 cols_to_display_annual = [
                     "宿舍地址", "淨損益", "收入(員工月費)", "分攤其他收入", 
                     "我司分攤月租", "我司分攤雜費", "我司分攤攤銷"
@@ -122,9 +143,35 @@ def render():
                 
                 cols_to_display_annual_exist = [col for col in cols_to_display_annual if col in display_df_annual.columns]
 
-                st.dataframe(display_df_annual[cols_to_display_annual_exist], width="stretch", hide_index=True,
+                st.dataframe(display_df_annual[cols_to_display_annual_exist], width='stretch', hide_index=True,
                     column_config={col: st.column_config.NumberColumn(format="NT$ %d") for col in cols_to_display_annual_exist if col != "宿舍地址"})
+                
+                st.markdown("---")
+                st.markdown("##### 查看單一宿舍年度財務細項")
+                
+                dorm_options_annual = ["請選擇..."] + list(display_df_annual['宿舍地址'].unique())
+                selected_dorm_address_annual = st.selectbox("選擇要查看詳情的宿舍：", options=dorm_options_annual, key="annual_detail_select")
 
+                if selected_dorm_address_annual and selected_dorm_address_annual != "請選擇...":
+                    selected_dorm_id_annual = dorm_id_map.get(selected_dorm_address_annual)
+                    if selected_dorm_id_annual:
+                        with st.spinner(f"正在查詢 {selected_dorm_address_annual} 的詳細資料..."):
+                             income_details_annual, expense_details_annual = employer_dashboard_model.get_employer_financial_details_for_dorm(
+                                selected_employer, selected_dorm_id_annual, str(selected_year_annual)
+                            )
+                        
+                        st.markdown(f"**年度收入明細**")
+                        if income_details_annual is None or income_details_annual.empty:
+                            st.info("無收入明細資料。")
+                        else:
+                            st.dataframe(income_details_annual, width='stretch', hide_index=True)
+
+                        st.markdown(f"**年度支出明細 (我司分攤後)**")
+                        if expense_details_annual is None or expense_details_annual.empty:
+                            st.info("無支出明細資料。")
+                        else:
+                            st.dataframe(expense_details_annual, width='stretch', hide_index=True)
+        
         st.markdown("---")
         st.subheader("各宿舍即時住宿分佈")
         @st.cache_data
@@ -159,7 +206,7 @@ def render():
             nationality_df = grouped['國籍'].apply(create_distribution_string).rename('國籍分佈')
             status_df = grouped['特殊狀況'].apply(create_status_string).rename('特殊狀況總計')
             dorm_summary_df = pd.concat([summary_df, nationality_df, status_df], axis=1).reset_index()
-            st.dataframe(dorm_summary_df, width="stretch", hide_index=True)
+            st.dataframe(dorm_summary_df, width='stretch', hide_index=True)
             
             with st.expander("點此查看員工住宿詳情"):
-                st.dataframe(report_df, width="stretch", hide_index=True)
+                st.dataframe(report_df, width='stretch', hide_index=True)

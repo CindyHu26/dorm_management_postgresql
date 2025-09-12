@@ -1,4 +1,3 @@
-# cindyhu26/dorm_management_postgresql/dorm_management_postgresql-40db7a95298be6441da6d9bda99bf22aaaeaa89c/views/dorm_analyzer_view.py
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -55,7 +54,6 @@ def render():
     selected_month = sc2.selectbox("選擇月份", options=range(1, 13), index=today.month - 1)
     year_month_str = f"{selected_year}-{selected_month:02d}"
 
-    # 獲取住宿人員數據
     resident_data = single_dorm_analyzer.get_resident_summary(selected_dorm_id, year_month_str)
     
     st.markdown(f"#### {year_month_str} 住宿人員分析")
@@ -64,15 +62,14 @@ def render():
     res_c1, res_c2, res_c3 = st.columns(3)
     with res_c1:
         st.markdown("**性別分佈**")
-        st.dataframe(resident_data['gender_counts'], width="stretch", hide_index=True)
+        st.dataframe(resident_data['gender_counts'],  width="stretch", hide_index=True)
     with res_c2:
         st.markdown("**國籍分佈**")
-        st.dataframe(resident_data['nationality_counts'], width="stretch", hide_index=True)
+        st.dataframe(resident_data['nationality_counts'],  width="stretch", hide_index=True)
     with res_c3:
         st.markdown("**房租簡表**")
-        st.dataframe(resident_data['rent_summary'], width="stretch", hide_index=True)
+        st.dataframe(resident_data['rent_summary'],  width="stretch", hide_index=True)
 
-    # --- 營運分析區塊 (維持不變) ---
     st.subheader(f"{year_month_str} 宿舍營運分析")
     analysis_data = single_dorm_analyzer.get_dorm_analysis_data(selected_dorm_id, year_month_str)
     if not analysis_data:
@@ -96,29 +93,33 @@ def render():
             st.warning("注意：下方所列房間的空床位『不』計入上方的一般可住空床數，需獨立評估安排。")
             st.dataframe(
                 special_rooms_df[['room_number', 'room_notes', 'capacity', '目前住的人數', '獨立空床數']],
-                width="stretch", hide_index=True
+                 width="stretch", hide_index=True
             )
             
     st.markdown("---")
 
-    # --- 【核心修改】新增收入與損益計算，並調整支出分析區塊 ---
-    st.subheader(f"{year_month_str} 財務分析")
+    # --- 【核心修改點】 ---
+    st.subheader(f"{year_month_str} 財務分析 (我司視角)")
 
-    # 獲取收支數據
     income_total = single_dorm_analyzer.get_income_summary(selected_dorm_id, year_month_str)
     expense_data_df = single_dorm_analyzer.get_expense_summary(selected_dorm_id, year_month_str)
-    expense_total = int(expense_data_df['金額'].sum())
-    profit_loss = income_total - expense_total
+    
+    # 只計算「我司支付」的費用
+    our_company_expense_df = expense_data_df[expense_data_df['費用項目'].str.contains("我司支付", na=False)]
+    expense_total_our_company = int(our_company_expense_df['金額'].sum())
+    
+    profit_loss = income_total - expense_total_our_company
 
-    # 顯示指標卡
+    # 更新指標卡標題與數值
     fin_col1, fin_col2, fin_col3 = st.columns(3)
-    fin_col1.metric("預估總收入", f"NT$ {income_total:,}", help="工人月費總和 + 其他收入")
-    fin_col2.metric("預估總支出", f"NT$ {expense_total:,}")
-    fin_col3.metric("預估淨損益", f"NT$ {profit_loss:,}", delta=f"{profit_loss:,}")
+    fin_col1.metric("我司預估總收入", f"NT$ {income_total:,}", help="工人月費總和 + 其他收入")
+    fin_col2.metric("我司預估總支出", f"NT$ {expense_total_our_company:,}", help="僅加總支付方為「我司」的費用項目")
+    fin_col3.metric("我司預估淨損益", f"NT$ {profit_loss:,}", delta=f"{profit_loss:,}")
 
-    # 顯示支出細項
-    with st.expander("點此查看支出細項"):
+    # 展開區塊顯示所有支付方的明細
+    with st.expander("點此查看支出細項 (含所有支付方)"):
         st.dataframe(expense_data_df, width="stretch", hide_index=True)
+    # --- 修改結束 ---
 
     st.markdown("---")
     st.subheader(f"{year_month_str} 在住人員詳細名單")
