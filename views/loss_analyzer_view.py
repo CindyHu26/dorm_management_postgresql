@@ -27,7 +27,7 @@ def render():
         st.success("恭喜！在過去一年內，沒有任何宿舍出現整體虧損。")
     else:
         st.warning(f"在過去一年內，共發現 {len(annual_loss_df)} 間宿舍整體呈現虧損：")
-        st.dataframe(annual_loss_df, use_container_width=True, hide_index=True)
+        st.dataframe(annual_loss_df, width="stretch", hide_index=True)
 
     st.markdown("---")
 
@@ -51,4 +51,4 @@ def render():
         st.success(f"在 {year_month_str}，沒有任何宿舍出現虧損。")
     else:
         st.warning(f"在 {year_month_str}，共發現 {len(monthly_loss_df)} 間宿舍呈現虧損：")
-        st.dataframe(monthly_loss_df, use_container_width=True, hide_index=True)
+        st.dataframe(monthly_loss_df, width="stretch", hide_index=True)

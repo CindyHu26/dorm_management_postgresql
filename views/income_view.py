@@ -55,12 +55,12 @@ def render():
     if income_df.empty:
         st.info("此宿舍尚無任何其他收入紀錄。")
     else:
-        st.dataframe(income_df, use_container_width=True, hide_index=True)
+        st.dataframe(income_df, width="stretch", hide_index=True)
 
         st.markdown("---")
         st.subheader("刪除單筆紀錄")
         
-        # 【核心修改】使用獨立的下拉選單來選擇要刪除的項目
+        # 使用獨立的下拉選單來選擇要刪除的項目
         options_dict = {
             row['id']: f"ID:{row['id']} - {row['收入日期']} {row['收入項目']} 金額:{row['金額']}" 
             for _, row in income_df.iterrows()

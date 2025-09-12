@@ -31,7 +31,7 @@ def render():
     st.subheader(f"📜 即將到期的合規申報 ({len(reminders.get('compliance', []))} 筆)")
     compliance_df = reminders.get('compliance', pd.DataFrame())
     if not compliance_df.empty:
-        st.dataframe(compliance_df, use_container_width=True, hide_index=True)
+        st.dataframe(compliance_df, width="stretch", hide_index=True)
     else:
         st.success("在指定範圍內，沒有即將到期的建物或消防申報項目。")       
     st.markdown("---")
@@ -40,7 +40,7 @@ def render():
     st.subheader(f"📄 即將到期的租賃合約 ({len(reminders.get('leases', []))} 筆)")
     leases_df = reminders.get('leases', pd.DataFrame())
     if not leases_df.empty:
-        st.dataframe(leases_df, use_container_width=True, hide_index=True)
+        st.dataframe(leases_df, width="stretch", hide_index=True)
     else:
         st.success("在指定範圍內，沒有即將到期的租賃合約。")
     st.markdown("---")
@@ -49,7 +49,7 @@ def render():
     st.subheader(f"🧯 即將到期的設備 ({len(reminders.get('equipment', []))} 筆)")
     equipment_df = reminders.get('equipment', pd.DataFrame())
     if not equipment_df.empty:
-        st.dataframe(equipment_df, use_container_width=True, hide_index=True)
+        st.dataframe(equipment_df, width="stretch", hide_index=True)
     else:
         st.success("在指定範圍內，沒有需要更換或檢查的設備。")     
     st.markdown("---")
@@ -58,7 +58,7 @@ def render():
     st.subheader(f"🛡️ 即將到期的宿舍保險 ({len(reminders.get('insurance', []))} 筆)")
     insurance_df = reminders.get('insurance', pd.DataFrame())
     if not insurance_df.empty:
-        st.dataframe(insurance_df, use_container_width=True, hide_index=True)
+        st.dataframe(insurance_df, width="stretch", hide_index=True)
     else:
         st.success("在指定範圍內，沒有即將到期的宿舍保險。")
     st.markdown("---")
@@ -67,6 +67,6 @@ def render():
     st.subheader(f"🧑‍💼 即將到期的移工工作期限 ({len(reminders.get('workers', []))} 筆)")
     workers_df = reminders.get('workers', pd.DataFrame())
     if not workers_df.empty:
-        st.dataframe(workers_df, use_container_width=True, hide_index=True)
+        st.dataframe(workers_df, width="stretch", hide_index=True)
     else:
         st.success("在指定範圍內，沒有即將到期的移工工作期限。")

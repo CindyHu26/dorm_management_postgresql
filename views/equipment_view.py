@@ -78,7 +78,7 @@ def render():
     if equipment_df.empty:
         st.info("此宿舍尚無任何設備紀錄。")
     else:
-        st.dataframe(equipment_df, use_container_width=True, hide_index=True)
+        st.dataframe(equipment_df, width="stretch", hide_index=True)
         
         st.markdown("---")
         st.subheader("編輯或刪除單筆設備")

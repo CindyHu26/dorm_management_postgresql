@@ -76,7 +76,7 @@ def render():
     if meters_df.empty:
         st.info("此宿舍尚無任何用戶號紀錄。")
     else:
-        st.dataframe(meters_df, use_container_width=True, hide_index=True)
+        st.dataframe(meters_df, width="stretch", hide_index=True)
         
         # 刪除功能
         delete_c1, delete_c2 = st.columns([3,1])

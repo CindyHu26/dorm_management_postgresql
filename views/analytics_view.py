@@ -47,10 +47,10 @@ def render():
                     color = 'inherit'
                 return f'color: {color}; font-weight: bold;'
 
-            # --- 【核心修改點】: 在 column_config 中，將布林值轉換為更容易閱讀的 "是/否" ---
+            # --- 在 column_config 中，將布林值轉換為更容易閱讀的 "是/否" ---
             st.dataframe(
                 anomalies_df.style.apply(lambda x: x.map(style_anomaly_reason) if x.name == '判斷' else [''] * len(x)),
-                use_container_width=True, 
+                width="stretch", 
                 hide_index=True,
                 column_config={
                     "異常金額": st.column_config.NumberColumn(format="NT$ %d"),
@@ -93,7 +93,7 @@ def render():
             
             st.dataframe(
                 usage_anomalies_df.style.apply(lambda x: x.map(style_usage_anomaly) if x.name == '判斷' else [''] * len(x)),
-                use_container_width=True, hide_index=True,
+                width="stretch", hide_index=True,
                 column_config={
                     "本期用量": st.column_config.NumberColumn(format="%.2f"),
                     "比較基準": st.column_config.NumberColumn(format="%.2f"),
@@ -154,4 +154,4 @@ def render():
                         st.line_chart(chart_df['用量(度/噸)'])
                     
                     with st.expander("查看原始數據"):
-                        st.dataframe(history_df, use_container_width=True, hide_index=True)
+                        st.dataframe(history_df, width="stretch", hide_index=True)

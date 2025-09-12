@@ -38,7 +38,7 @@ def render():
     else:
         selection = st.dataframe(
             all_expenses_df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             on_select="rerun",
             selection_mode="multi-row"

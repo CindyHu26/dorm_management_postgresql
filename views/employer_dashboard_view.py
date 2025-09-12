@@ -79,7 +79,7 @@ def render():
                 # 篩選出存在的欄位來顯示，避免錯誤
                 cols_to_display_exist = [col for col in cols_to_display if col in display_df.columns]
                 
-                st.dataframe(display_df[cols_to_display_exist], use_container_width=True, hide_index=True,
+                st.dataframe(display_df[cols_to_display_exist], width="stretch", hide_index=True,
                     column_config={col: st.column_config.NumberColumn(format="NT$ %d") for col in cols_to_display_exist if col != "宿舍地址"})
 
         with tab2:
@@ -122,7 +122,7 @@ def render():
                 
                 cols_to_display_annual_exist = [col for col in cols_to_display_annual if col in display_df_annual.columns]
 
-                st.dataframe(display_df_annual[cols_to_display_annual_exist], use_container_width=True, hide_index=True,
+                st.dataframe(display_df_annual[cols_to_display_annual_exist], width="stretch", hide_index=True,
                     column_config={col: st.column_config.NumberColumn(format="NT$ %d") for col in cols_to_display_annual_exist if col != "宿舍地址"})
 
         st.markdown("---")
@@ -159,7 +159,7 @@ def render():
             nationality_df = grouped['國籍'].apply(create_distribution_string).rename('國籍分佈')
             status_df = grouped['特殊狀況'].apply(create_status_string).rename('特殊狀況總計')
             dorm_summary_df = pd.concat([summary_df, nationality_df, status_df], axis=1).reset_index()
-            st.dataframe(dorm_summary_df, use_container_width=True, hide_index=True)
+            st.dataframe(dorm_summary_df, width="stretch", hide_index=True)
             
             with st.expander("點此查看員工住宿詳情"):
-                st.dataframe(report_df, use_container_width=True, hide_index=True)
+                st.dataframe(report_df, width="stretch", hide_index=True)

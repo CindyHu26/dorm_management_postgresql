@@ -42,7 +42,7 @@ def render():
 
     if not meters_df.empty:
         with st.expander("顯示此宿舍的電水錶號"):
-            st.dataframe(meters_df, use_container_width=True, hide_index=True)
+            st.dataframe(meters_df, width="stretch", hide_index=True)
             
     st.markdown("---")
 
@@ -64,13 +64,13 @@ def render():
     res_c1, res_c2, res_c3 = st.columns(3)
     with res_c1:
         st.markdown("**性別分佈**")
-        st.dataframe(resident_data['gender_counts'], use_container_width=True, hide_index=True)
+        st.dataframe(resident_data['gender_counts'], width="stretch", hide_index=True)
     with res_c2:
         st.markdown("**國籍分佈**")
-        st.dataframe(resident_data['nationality_counts'], use_container_width=True, hide_index=True)
+        st.dataframe(resident_data['nationality_counts'], width="stretch", hide_index=True)
     with res_c3:
         st.markdown("**房租簡表**")
-        st.dataframe(resident_data['rent_summary'], use_container_width=True, hide_index=True)
+        st.dataframe(resident_data['rent_summary'], width="stretch", hide_index=True)
 
     # --- 營運分析區塊 (維持不變) ---
     st.subheader(f"{year_month_str} 宿舍營運分析")
@@ -96,7 +96,7 @@ def render():
             st.warning("注意：下方所列房間的空床位『不』計入上方的一般可住空床數，需獨立評估安排。")
             st.dataframe(
                 special_rooms_df[['room_number', 'room_notes', 'capacity', '目前住的人數', '獨立空床數']],
-                use_container_width=True, hide_index=True
+                width="stretch", hide_index=True
             )
             
     st.markdown("---")
@@ -118,7 +118,7 @@ def render():
 
     # 顯示支出細項
     with st.expander("點此查看支出細項"):
-        st.dataframe(expense_data_df, use_container_width=True, hide_index=True)
+        st.dataframe(expense_data_df, width="stretch", hide_index=True)
 
     st.markdown("---")
     st.subheader(f"{year_month_str} 在住人員詳細名單")
@@ -128,4 +128,4 @@ def render():
     if resident_details_df.empty:
         st.info("此宿舍於該月份沒有在住人員。")
     else:
-        st.dataframe(resident_details_df, use_container_width=True, hide_index=True)
+        st.dataframe(resident_details_df, width="stretch", hide_index=True)

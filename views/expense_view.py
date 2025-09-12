@@ -114,7 +114,7 @@ def render():
         st.info("此宿舍尚無任何費用帳單紀錄。")
     else:
         selection = st.dataframe(
-            bills_df, use_container_width=True, hide_index=True,
+            bills_df, width="stretch", hide_index=True,
             on_select="rerun", selection_mode="multi-row", key="bill_selection"
         )
         selected_rows = bills_df.iloc[selection.selection.rows]

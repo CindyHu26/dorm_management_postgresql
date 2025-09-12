@@ -62,7 +62,7 @@ def render():
 
     leases_df = get_leases(dorm_id_filter)
     
-    st.dataframe(leases_df, use_container_width=True, hide_index=True)
+    st.dataframe(leases_df, width="stretch", hide_index=True)
     
     st.markdown("---")
 

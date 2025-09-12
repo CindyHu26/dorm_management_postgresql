@@ -205,7 +205,7 @@ def render():
                     st.markdown("---")
                     st.markdown("##### 歷史住宿紀錄")
                     accommodation_history_df = worker_model.get_accommodation_history_for_worker(selected_worker_id)
-                    st.dataframe(accommodation_history_df, use_container_width=True, hide_index=True, column_config={"id": None})
+                    st.dataframe(accommodation_history_df, width="stretch", hide_index=True, column_config={"id": None})
 
                     st.markdown("---")
                     st.subheader("編輯或刪除單筆住宿歷史")
@@ -286,7 +286,7 @@ def render():
                     
                     st.markdown("##### 狀態歷史紀錄")
                     history_df = worker_model.get_worker_status_history(selected_worker_id)
-                    st.dataframe(history_df, use_container_width=True, hide_index=True, column_config={"id": None})
+                    st.dataframe(history_df, width="stretch", hide_index=True, column_config={"id": None})
 
                     st.markdown("---")
                     st.subheader("編輯或刪除狀態")
@@ -348,7 +348,7 @@ def render():
                 with tab4:
                     st.markdown("##### 費用變更歷史紀錄")
                     fee_history_df = worker_model.get_fee_history_for_worker(selected_worker_id)
-                    st.dataframe(fee_history_df, use_container_width=True, hide_index=True)
+                    st.dataframe(fee_history_df, width="stretch", hide_index=True)
 
     st.markdown("---")
     
@@ -390,4 +390,4 @@ def render():
     # 直接從 session_state 讀取篩選條件來查詢資料
     workers_df = worker_model.get_workers_for_view(st.session_state.worker_view_filters)
     
-    st.dataframe(workers_df, use_container_width=True, hide_index=True)
+    st.dataframe(workers_df, width="stretch", hide_index=True)

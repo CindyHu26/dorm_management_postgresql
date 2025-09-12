@@ -64,7 +64,7 @@ def render():
     # 執行搜尋
     dorms_df = get_dorms_df(search_term)
     
-    selection = st.dataframe(dorms_df, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row")
+    selection = st.dataframe(dorms_df, width="stretch", hide_index=True, on_select="rerun", selection_mode="single-row")
 
     if selection.selection['rows']:
         st.session_state.selected_dorm_id = int(dorms_df.iloc[selection.selection['rows'][0]]['id'])
@@ -133,7 +133,7 @@ def render():
             with tab2:
                 st.markdown("##### 房間列表")
                 rooms_df = dormitory_model.get_rooms_for_dorm_as_df(dorm_id)
-                st.dataframe(rooms_df, use_container_width=True, hide_index=True)
+                st.dataframe(rooms_df, width="stretch", hide_index=True)
 
                 st.markdown("---")
                 st.subheader("新增、編輯或刪除房間")

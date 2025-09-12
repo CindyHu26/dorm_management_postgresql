@@ -72,7 +72,7 @@ def render():
     if workers_df.empty:
         st.info("在您選擇的篩選條件下，目前沒有找到任何在住人員。")
     else:
-        st.dataframe(workers_df, use_container_width=True, hide_index=True)
+        st.dataframe(workers_df, width="stretch", hide_index=True)
 
     # --- 3. 批次更新 ---
     st.subheader("步驟三：批次更新房租 (可選)")

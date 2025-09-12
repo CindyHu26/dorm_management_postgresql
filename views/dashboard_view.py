@@ -46,13 +46,13 @@ def render():
             if status_df is None or status_df.empty:
                 st.info("目前沒有任何註記特殊狀況的在住人員。")
             else:
-                st.dataframe(status_df, use_container_width=True, hide_index=True)
+                st.dataframe(status_df, width="stretch", hide_index=True)
             
             st.markdown("---")
             st.subheader("各宿舍詳細統計")
             st.dataframe(
                 overview_df, 
-                use_container_width=True, 
+                width="stretch", 
                 hide_index=True,
                 column_config={
                     "總人數": st.column_config.NumberColumn(format="%d 人"),
@@ -135,7 +135,7 @@ def render():
             
             st.dataframe(
                 finance_df.style.apply(lambda x: x.map(lambda y: style_profit(y) if x.name == '預估損益' else None)),
-                use_container_width=True, 
+                width="stretch", 
                 hide_index=True,
                 column_config={
                     "預計總收入": st.column_config.NumberColumn(format="NT$ %d"),

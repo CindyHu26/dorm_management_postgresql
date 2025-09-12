@@ -49,6 +49,6 @@ def render():
             st.info(f"找到 {len(results_df)} 間有合適空床位的房間，已按空床位數排序：")
             st.dataframe(
                 results_df.sort_values(by="空床位數", ascending=False),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
