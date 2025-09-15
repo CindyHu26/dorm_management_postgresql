@@ -84,7 +84,7 @@ def get_employer_financial_summary(employer_names: list, year_month: str):
             ActiveWorkersInMonth AS (
                 SELECT DISTINCT ON (ah.worker_unique_id)
                     ah.worker_unique_id, w.employer_name, r.dorm_id,
-                    (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0)) as total_monthly_fee
+                    (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0) + COALESCE(w.restoration_fee, 0) + COALESCE(w.charging_cleaning_fee, 0)) as total_monthly_fee
                 FROM "AccommodationHistory" ah
                 JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
                 JOIN "Rooms" r ON ah.room_id = r.id
@@ -184,7 +184,7 @@ def get_employer_financial_summary_annual(employer_names: list, year: int):
                     r.dorm_id,
                     w.employer_name,
                     w.unique_id,
-                    (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0)) as total_monthly_fee
+                    (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0) + COALESCE(w.restoration_fee, 0) + COALESCE(w.charging_cleaning_fee, 0)) as total_monthly_fee
                 FROM "AccommodationHistory" ah
                 JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
                 JOIN "Rooms" r ON ah.room_id = r.id
@@ -314,9 +314,9 @@ def get_employer_financial_details_for_dorm(employer_names: list, dorm_id: int, 
         income_query = """
             WITH DateParams AS (SELECT %(start_date)s::date as start_date, %(end_date)s::date as end_date)
             SELECT
-                '月費 ' || (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0))::text || ' 元' as "項目",
+                '月費 ' || (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0) + COALESCE(w.restoration_fee, 0) + COALESCE(w.charging_cleaning_fee, 0))::text || ' 元' as "項目",
                 COUNT(DISTINCT w.unique_id) AS "人數",
-                (SUM(COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0)))::int AS "金額"
+                (SUM(COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0) + COALESCE(w.restoration_fee, 0) + COALESCE(w.charging_cleaning_fee, 0)))::int AS "金額"
             FROM "AccommodationHistory" ah
             JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
             JOIN "Rooms" r ON ah.room_id = r.id
@@ -324,7 +324,7 @@ def get_employer_financial_details_for_dorm(employer_names: list, dorm_id: int, 
               AND ah.start_date <= (SELECT end_date FROM DateParams)
               AND (ah.end_date IS NULL OR ah.end_date >= (SELECT start_date FROM DateParams))
               AND (w.special_status IS NULL OR w.special_status NOT ILIKE '%%掛宿外住%%')
-            GROUP BY (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0))
+            GROUP BY (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0) + COALESCE(w.restoration_fee, 0) + COALESCE(w.charging_cleaning_fee, 0))
             
             UNION ALL
             

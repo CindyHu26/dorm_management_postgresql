@@ -40,7 +40,7 @@ def get_loss_making_dorms(period: str):
                     SELECT
                         r.dorm_id,
                         SUM(
-                            (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0))
+                            (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0) + COALESCE(w.restoration_fee, 0) + COALESCE(w.charging_cleaning_fee, 0))
                             * -- 計算在指定期間內住了幾個月 (天數 / 30.4375)
                             (
                                 (
@@ -107,7 +107,7 @@ def get_loss_making_dorms(period: str):
                 DormIncome AS (
                     SELECT 
                         r.dorm_id,
-                        SUM(COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0)) / {divisor} as "總收入"
+                        SUM(COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0) + COALESCE(w.restoration_fee, 0) + COALESCE(w.charging_cleaning_fee, 0)) / {divisor} as "總收入"
                     FROM "Workers" w
                     JOIN "Rooms" r ON w.room_id = r.id
                     WHERE 1=1 {date_filter_clause_workers}

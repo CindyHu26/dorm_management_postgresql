@@ -191,7 +191,7 @@ def get_income_summary(dorm_id: int, year_month: str):
                 )
                 SELECT 
                     SUM(
-                        (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0)) *
+                        (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0) + COALESCE(w.restoration_fee, 0) + COALESCE(w.charging_cleaning_fee, 0)) *
                         ((LEAST(COALESCE(ah.end_date, (SELECT last_day_of_month FROM DateParams)), (SELECT last_day_of_month FROM DateParams))::date - GREATEST(ah.start_date, (SELECT first_day_of_month FROM DateParams))::date + 1)
                          / EXTRACT(DAY FROM (SELECT last_day_of_month FROM DateParams))::decimal)
                     ) as total_income

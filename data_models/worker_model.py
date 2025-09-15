@@ -178,10 +178,16 @@ def get_single_worker_details(unique_id: str):
 
 def _log_fee_change(cursor, worker_id, details, old_details, effective_date):
     """
-    【升級版】內部函式：比較新舊費用資料，並將變動寫入 FeeHistory。
-    現在使用傳入的 effective_date。
+    【v2.1 修改版】內部函式：比較新舊費用資料，並將變動寫入 FeeHistory。
+    新增對「宿舍復歸費」和「充電清潔費」的支援。
     """
-    fee_map = {'monthly_fee': '房租', 'utilities_fee': '水電費', 'cleaning_fee': '清潔費'}
+    fee_map = {
+        'monthly_fee': '房租', 
+        'utilities_fee': '水電費', 
+        'cleaning_fee': '清潔費',
+        'restoration_fee': '宿舍復歸費',
+        'charging_cleaning_fee': '充電清潔費'
+    }
 
     for key, fee_type_name in fee_map.items():
         if key not in details:
@@ -194,10 +200,9 @@ def _log_fee_change(cursor, worker_id, details, old_details, effective_date):
         old_amount = int(old_value) if old_value is not None else 0
         
         if new_amount != old_amount:
-            # 【核心修改】: 使用傳入的 effective_date
             sql = 'INSERT INTO "FeeHistory" (worker_unique_id, fee_type, amount, effective_date) VALUES (%s, %s, %s, %s)'
             cursor.execute(sql, (worker_id, fee_type_name, new_amount, effective_date))
-
+            
 def update_worker_details(unique_id: str, details: dict, effective_date: date = None):
     """
     【升級版】更新移工的核心資料。現在可以接收一個 effective_date 用於記錄費用歷史。

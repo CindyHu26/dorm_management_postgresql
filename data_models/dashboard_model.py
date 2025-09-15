@@ -31,7 +31,7 @@ def get_dormitory_dashboard_data():
                     ah.room_id,
                     w.unique_id,
                     w.gender,
-                    (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0)) as total_fee
+                    (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0) + COALESCE(w.restoration_fee, 0) + COALESCE(w.charging_cleaning_fee, 0)) as total_fee
                 FROM "AccommodationHistory" ah
                 JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
                 WHERE ah.end_date IS NULL OR ah.end_date > CURRENT_DATE
@@ -75,7 +75,7 @@ def get_financial_dashboard_data(year_month: str):
                 SELECT 
                     r.dorm_id, 
                     SUM(
-                        (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0)) *
+                        (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0) + COALESCE(w.restoration_fee, 0) + COALESCE(w.charging_cleaning_fee, 0)) *
                         ((LEAST(COALESCE(ah.end_date, (SELECT last_day_of_month FROM DateParams)), (SELECT last_day_of_month FROM DateParams))::date - GREATEST(ah.start_date, (SELECT first_day_of_month FROM DateParams))::date + 1)
                          / EXTRACT(DAY FROM (SELECT last_day_of_month FROM DateParams))::decimal)
                     ) as total_income

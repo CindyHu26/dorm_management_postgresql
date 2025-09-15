@@ -191,8 +191,8 @@ def get_compliance_records_for_dorm(dorm_id: int, record_type: str):
 # --- 房租管理 (已升級為通用費用管理) ---
 def get_workers_for_fee_management(filters: dict):
     """
-    【v2.0 修改版】根據提供的多重篩選條件(宿舍、雇主)，查詢在住移工的費用資訊。
-    新增回傳「特殊狀況」與「個人備註」。
+    【v2.1 修改版】根據提供的多重篩選條件(宿舍、雇主)，查詢在住移工的費用資訊。
+    新增「宿舍復歸費」和「充電清潔費」。
     """
     dorm_ids = filters.get("dorm_ids")
     employer_names = filters.get("employer_names")
@@ -208,6 +208,7 @@ def get_workers_for_fee_management(filters: dict):
                 w.unique_id, d.original_address AS "宿舍地址", r.room_number AS "房號",
                 w.employer_name AS "雇主", w.worker_name AS "姓名", 
                 w.monthly_fee AS "月費(房租)", w.utilities_fee as "水電費", w.cleaning_fee as "清潔費",
+                w.restoration_fee as "宿舍復歸費", w.charging_cleaning_fee as "充電清潔費",
                 w.special_status AS "特殊狀況", w.worker_notes AS "個人備註",
                 w.accommodation_start_date AS "入住日"
             FROM "Workers" w
@@ -218,7 +219,6 @@ def get_workers_for_fee_management(filters: dict):
         where_clauses = []
         params = []
         
-        # 動態建立 WHERE 條件
         if dorm_ids:
             where_clauses.append(f"d.id IN ({', '.join(['%s'] * len(dorm_ids))})")
             params.extend(dorm_ids)

@@ -143,13 +143,14 @@ def create_all_tables_and_indexes():
                 "monthly_fee" INTEGER, 
                 "utilities_fee" INTEGER,
                 "cleaning_fee" INTEGER,
+                "restoration_fee" INTEGER, -- 宿舍復歸費
+                "charging_cleaning_fee" INTEGER, -- 充電清潔費
                 "fee_notes" TEXT, "payment_method" VARCHAR(50), "data_source" VARCHAR(50) NOT NULL,
                 "worker_notes" TEXT, 
                 "special_status" VARCHAR(100),
                 FOREIGN KEY ("room_id") REFERENCES "Rooms" ("id") ON DELETE SET NULL
             );
             """
-
             # --- 【核心新增】建立住宿歷史紀錄表 ---
             TABLES['AccommodationHistory'] = """
             CREATE TABLE IF NOT EXISTS "AccommodationHistory" (

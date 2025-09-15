@@ -269,7 +269,7 @@ def get_annual_financial_summary_report(year: int):
             -- 5. 計算年度總收入
             TotalIncome AS (
                 SELECT dorm_id, SUM(total_monthly_fee) as income FROM (
-                    SELECT DISTINCT ON (r.dorm_id, w.unique_id, date_trunc('month', s.month_in_service)) r.dorm_id, (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0)) as total_monthly_fee
+                    SELECT DISTINCT ON (r.dorm_id, w.unique_id, date_trunc('month', s.month_in_service)) r.dorm_id, (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0) + COALESCE(w.restoration_fee, 0) + COALESCE(w.charging_cleaning_fee, 0)) as total_monthly_fee
                     FROM "AccommodationHistory" ah JOIN "Workers" w ON ah.worker_unique_id = w.unique_id JOIN "Rooms" r ON ah.room_id = r.id CROSS JOIN DateParams dp
                     CROSS JOIN LATERAL generate_series(GREATEST(ah.start_date, dp.start_date), LEAST(COALESCE(ah.end_date, dp.end_date), dp.end_date), '1 month'::interval) as s(month_in_service)
                     WHERE ah.start_date <= dp.end_date AND (ah.end_date IS NULL OR ah.end_date >= dp.start_date) AND (w.special_status IS NULL OR w.special_status NOT ILIKE '%%掛宿外住%%')

@@ -29,6 +29,9 @@ def render():
             monthly_fee = f1.number_input("月費(房租)", min_value=0, step=100)
             utilities_fee = f2.number_input("水電費", min_value=0, step=100)
             cleaning_fee = f3.number_input("清潔費", min_value=0, step=100)
+            f4, f5 = st.columns(2)
+            restoration_fee = f4.number_input("宿舍復歸費", min_value=0, step=100)
+            charging_cleaning_fee = f5.number_input("充電清潔費", min_value=0, step=100)
             ff1, ff2 = st.columns(2)
             payment_method = ff1.selectbox("付款方", ["", "員工自付", "雇主支付"])
             accommodation_start_date = ff2.date_input("起住日期", value=date.today())
@@ -55,6 +58,7 @@ def render():
                         'gender': gender, 'nationality': nationality, 'arc_number': arc_number,
                         'room_id': selected_room_id_new, 'monthly_fee': monthly_fee, 
                         'utilities_fee': utilities_fee, 'cleaning_fee': cleaning_fee,
+                        'restoration_fee': restoration_fee, 'charging_cleaning_fee': charging_cleaning_fee,
                         'payment_method': payment_method,
                         'accommodation_start_date': str(accommodation_start_date) if accommodation_start_date else None,
                         'worker_notes': worker_notes
@@ -128,6 +132,9 @@ def render():
                         monthly_fee = fc1.number_input("月費(房租)", value=int(worker_details.get('monthly_fee') or 0))
                         utilities_fee = fc2.number_input("水電費", value=int(worker_details.get('utilities_fee') or 0))
                         cleaning_fee = fc3.number_input("清潔費", value=int(worker_details.get('cleaning_fee') or 0))
+                        fc4, fc5 = st.columns(2)
+                        restoration_fee = fc4.number_input("宿舍復歸費", value=int(worker_details.get('restoration_fee') or 0))
+                        charging_cleaning_fee = fc5.number_input("充電清潔費", value=int(worker_details.get('charging_cleaning_fee') or 0))
                         fcc1, fcc2 = st.columns(2)
                         payment_method_options = ["", "員工自付", "雇主支付"]
                         payment_method = fcc1.selectbox("付款方", payment_method_options, index=payment_method_options.index(worker_details.get('payment_method')) if worker_details.get('payment_method') in payment_method_options else 0)
@@ -138,6 +145,7 @@ def render():
                         if submitted:
                             update_data = {
                                 'monthly_fee': monthly_fee, 'utilities_fee': utilities_fee, 'cleaning_fee': cleaning_fee,
+                                'restoration_fee': restoration_fee, 'charging_cleaning_fee': charging_cleaning_fee,
                                 'payment_method': payment_method,
                                 'accommodation_end_date': str(accommodation_end_date) if accommodation_end_date else None,
                                 'worker_notes': worker_notes

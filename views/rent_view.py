@@ -59,7 +59,7 @@ def render():
         st.info("在您選擇的篩選條件下，目前沒有找到任何在住人員。")
         return # 如果沒有資料，後續的元件也不需要渲染
 
-    # --- 【核心修改點 1】將總覽和排除選項並排 ---
+    # --- 將總覽和排除選項並排 ---
     view_col, exclude_col = st.columns([3, 1])
 
     with view_col:
@@ -79,8 +79,13 @@ def render():
     st.subheader("步驟三：批次更新費用")
     with st.form("batch_update_fee_form"):
         st.warning("注意：此操作將會修改所有上方列表顯示的人員的費用 (已排除的人員除外)，請謹慎操作。")
-        
-        fee_type_options = {"月費(房租)": "monthly_fee", "水電費": "utilities_fee", "清潔費": "cleaning_fee"}
+        fee_type_options = {
+            "月費(房租)": "monthly_fee", 
+            "水電費": "utilities_fee", 
+            "清潔費": "cleaning_fee",
+            "宿舍復歸費": "restoration_fee",
+            "充電清潔費": "charging_cleaning_fee"
+        }
         fee_type_display = st.selectbox("選擇要更新的費用類型", options=list(fee_type_options.keys()))
         fee_type_db_col = fee_type_options[fee_type_display]
 
