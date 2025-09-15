@@ -1,3 +1,5 @@
+# in cindyhu26/dorm_management_postgresql/dorm_management_postgresql-9d360666d3904b108b5d17042586141e3f8171a2/views/rent_view.py
+
 import streamlit as st
 import pandas as pd
 from datetime import date
@@ -15,12 +17,11 @@ def render():
     def get_all_employers():
         return employer_dashboard_model.get_all_employers()
 
-    # --- : 移除 st.radio，改為並列篩選 ---
+    # --- 步驟一：設定篩選條件 ---
     st.subheader("步驟一：設定篩選條件")
     
     col1, col2 = st.columns(2)
     
-    # 宿舍篩選
     my_dorms = get_my_dorms()
     if not my_dorms:
         st.warning("目前資料庫中沒有主要管理人為「我司」的宿舍。")
@@ -32,7 +33,6 @@ def render():
         format_func=lambda x: dorm_options[x]
     )
 
-    # 雇主篩選
     my_employers = get_all_employers()
     if not my_employers:
         st.warning("目前資料庫中沒有任何雇主資料可供篩選。")
@@ -42,7 +42,6 @@ def render():
         options=my_employers
     )
 
-    # 組合篩選條件
     filters = {
         "dorm_ids": selected_dorm_ids,
         "employer_names": selected_employers
@@ -51,21 +50,35 @@ def render():
     if not selected_dorm_ids and not selected_employers:
         st.info("請至少選擇一個「宿舍地址」或「雇主」來載入人員資料。")
         return
-    # --- 修改結束 ---
 
-    # --- 2. 人員費用總覽 ---
+    # --- 步驟二：人員費用總覽 ---
     st.subheader("步驟二：檢視人員費用")
     workers_df = finance_model.get_workers_for_fee_management(filters)
 
     if workers_df.empty:
         st.info("在您選擇的篩選條件下，目前沒有找到任何在住人員。")
-    else:
+        return # 如果沒有資料，後續的元件也不需要渲染
+
+    # --- 【核心修改點 1】將總覽和排除選項並排 ---
+    view_col, exclude_col = st.columns([3, 1])
+
+    with view_col:
         st.dataframe(workers_df, width='stretch', hide_index=True)
 
-    # --- 3. 批次更新 ---
-    st.subheader("步驟三：批次更新費用 (可選)")
+    with exclude_col:
+        # 建立可供選擇的排除列表
+        worker_options_for_exclude = pd.Series(workers_df.unique_id.values, index=workers_df.姓名).to_dict()
+        excluded_names = st.multiselect(
+            "排除以下人員 (可多選)",
+            options=list(worker_options_for_exclude.keys())
+        )
+        excluded_ids = [worker_options_for_exclude[name] for name in excluded_names]
+
+
+    # --- 步驟三：批次更新 ---
+    st.subheader("步驟三：批次更新費用")
     with st.form("batch_update_fee_form"):
-        st.warning("注意：此操作將會修改所有上方列表顯示的人員的費用，請謹慎操作。")
+        st.warning("注意：此操作將會修改所有上方列表顯示的人員的費用 (已排除的人員除外)，請謹慎操作。")
         
         fee_type_options = {"月費(房租)": "monthly_fee", "水電費": "utilities_fee", "清潔費": "cleaning_fee"}
         fee_type_display = st.selectbox("選擇要更新的費用類型", options=list(fee_type_options.keys()))
@@ -89,6 +102,7 @@ def render():
                 st.error(f"新舊{fee_type_display}金額相同，無需更新。")
             else:
                 with st.spinner("正在更新中..."):
+                    # --- 將排除 ID 列表傳入後端函式 ---
                     success, message = finance_model.batch_update_worker_fees(
                         filters, 
                         fee_type_db_col,
@@ -96,7 +110,8 @@ def render():
                         effective_old_fee, 
                         new_fee,
                         change_date,
-                        update_nulls=update_nulls_only
+                        update_nulls=update_nulls_only,
+                        excluded_ids=excluded_ids
                     )
                     if success:
                         st.success(message)

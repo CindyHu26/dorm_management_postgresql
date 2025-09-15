@@ -191,7 +191,8 @@ def get_compliance_records_for_dorm(dorm_id: int, record_type: str):
 # --- 房租管理 (已升級為通用費用管理) ---
 def get_workers_for_fee_management(filters: dict):
     """
-    【最終修正版】根據提供的多重篩選條件(宿舍、雇主)，查詢在住移工的費用資訊。
+    【v2.0 修改版】根據提供的多重篩選條件(宿舍、雇主)，查詢在住移工的費用資訊。
+    新增回傳「特殊狀況」與「個人備註」。
     """
     dorm_ids = filters.get("dorm_ids")
     employer_names = filters.get("employer_names")
@@ -207,6 +208,7 @@ def get_workers_for_fee_management(filters: dict):
                 w.unique_id, d.original_address AS "宿舍地址", r.room_number AS "房號",
                 w.employer_name AS "雇主", w.worker_name AS "姓名", 
                 w.monthly_fee AS "月費(房租)", w.utilities_fee as "水電費", w.cleaning_fee as "清潔費",
+                w.special_status AS "特殊狀況", w.worker_notes AS "個人備註",
                 w.accommodation_start_date AS "入住日"
             FROM "Workers" w
             JOIN "Rooms" r ON w.room_id = r.id
@@ -233,13 +235,17 @@ def get_workers_for_fee_management(filters: dict):
     finally:
         if conn: conn.close()
 
-def batch_update_worker_fees(filters: dict, fee_type: str, fee_type_display: str, old_fee: int, new_fee: int, change_date: date, update_nulls: bool = False):
+def batch_update_worker_fees(filters: dict, fee_type: str, fee_type_display: str, old_fee: int, new_fee: int, change_date: date, update_nulls: bool = False, excluded_ids: list = None):
     """
-    【最終版】批次更新指定費用，並可指定生效日期。
+    【v2.0 修改版】批次更新指定費用，並可指定生效日期與排除特定員工。
     """
     all_workers_df = get_workers_for_fee_management(filters)
     if all_workers_df.empty:
         return False, "在選定條件中，找不到任何在住人員。"
+
+    # --- 如果提供了排除列表，就先過濾掉 ---
+    if excluded_ids:
+        all_workers_df = all_workers_df[~all_workers_df['unique_id'].isin(excluded_ids)]
 
     if update_nulls:
         target_df = all_workers_df[all_workers_df[fee_type_display].isnull()]
@@ -249,7 +255,7 @@ def batch_update_worker_fees(filters: dict, fee_type: str, fee_type_display: str
         target_description = f"目前{fee_type_display}為 {old_fee}"
     
     if target_df.empty:
-        return False, f"在選定條件中，找不到{target_description}的在住人員。"
+        return False, f"在選定條件中，找不到{target_description}的在住人員 (或他們已被排除)。"
 
     updated_count = 0
     failed_ids = []
