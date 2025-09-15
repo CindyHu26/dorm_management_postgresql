@@ -92,6 +92,65 @@ def render():
                 )
 
     with st.container(border=True):
+        st.subheader("雇主月度損益報表")
+        st.info("選擇月份與一位或多位雇主，系統將以『人天數』為基礎，分攤宿舍的各項收支，計算出該雇主在每個宿舍的損益情況。")
+
+        all_employers_list = employer_dashboard_model.get_all_employers()
+        
+        if not all_employers_list:
+            st.warning("目前資料庫中沒有任何雇主資料可供選擇。")
+        else:
+            pl_c1, pl_c2, pl_c3 = st.columns(3)
+            
+            with pl_c1:
+                today_pl = datetime.now()
+                selected_year_pl = st.selectbox("選擇年份", options=range(today_pl.year - 2, today_pl.year + 2), index=2, key="pl_year")
+                selected_month_pl = st.selectbox("選擇月份", options=range(1, 13), index=today_pl.month - 1, key="pl_month")
+                year_month_str_pl = f"{selected_year_pl}-{selected_month_pl:02d}"
+
+            with pl_c2:
+                selected_employers_pl = st.multiselect("選擇雇主 (可多選)", options=all_employers_list)
+
+            with pl_c3:
+                st.write("") # 佔位
+                st.write("") # 佔位
+                if st.button("🚀 產生雇主損益報表", key="generate_pl_report"):
+                    if not selected_employers_pl:
+                        st.error("請至少選擇一位雇主！")
+                    else:
+                        with st.spinner(f"正在為您計算 {year_month_str_pl} 的損益報表..."):
+                            report_df = report_model.get_employer_profit_loss_report(selected_employers_pl, year_month_str_pl)
+                        
+                        if report_df.empty:
+                            st.warning("在指定月份中，找不到與所選雇主相關的任何住宿或財務紀錄。")
+                        else:
+                            # 建立合計列
+                            total_row = report_df.sum(numeric_only=True)
+                            total_row['宿舍地址'] = '---- 合計 ----'
+                            total_df = pd.DataFrame(total_row).T
+                            
+                            final_df = pd.concat([report_df, total_df], ignore_index=True)
+                            
+                            # 準備 Excel 標題
+                            roc_year = selected_year_pl - 1911
+                            employers_str = "、".join(selected_employers_pl)
+                            excel_title = f"{employers_str} 民國{roc_year}年{selected_month_pl}月"
+
+                            excel_file_data = {
+                                "雇主損益報表": [
+                                    {"dataframe": final_df, "title": excel_title}
+                                ]
+                            }
+                            excel_file = to_excel(excel_file_data)
+                            
+                            st.success("報表已成功產生！請點擊下方按鈕下載。")
+                            st.download_button(
+                                label="📥 點此下載 Excel 報表",
+                                data=excel_file,
+                                file_name=f"雇主損益報表_{year_month_str_pl}.xlsx"
+                            )
+    st.markdown("---")
+    with st.container(border=True):
         st.subheader("月份異動人員報表")
         st.info("選擇一個月份，系統將匯出該月份所有「離住」以及「有特殊狀況」的人員清單。")
         today = datetime.now()

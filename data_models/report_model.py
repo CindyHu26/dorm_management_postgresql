@@ -359,3 +359,116 @@ def get_annual_financial_summary_report(year: int):
         return pd.DataFrame()
     finally:
         if conn: conn.close()
+
+def get_employer_profit_loss_report(employer_names: list, year_month: str):
+    """
+    【v2.3 修正版】為指定的多位雇主和月份，產生詳細的損益分析報表。
+    確保所有支出項目僅計算「我司支付」的部分。
+    """
+    if not employer_names:
+        return pd.DataFrame()
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    
+    params = {"employer_names": employer_names, "year_month": year_month}
+    
+    try:
+        query = """
+            WITH DateParams AS (
+                SELECT 
+                    TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
+                    (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
+            ),
+            -- 1. 計算每間宿舍中，目標雇主住了多少人天，以及所有雇主總共住了多少人天
+            DormOccupancyDays AS (
+                SELECT
+                    r.dorm_id,
+                    SUM(CASE WHEN w.employer_name = ANY(%(employer_names)s) THEN (LEAST(COALESCE(ah.end_date, dp.last_day_of_month), dp.last_day_of_month)::date - GREATEST(ah.start_date, dp.first_day_of_month)::date + 1) ELSE 0 END) as employer_days,
+                    SUM((LEAST(COALESCE(ah.end_date, dp.last_day_of_month), dp.last_day_of_month)::date - GREATEST(ah.start_date, dp.first_day_of_month)::date + 1)) as total_days
+                FROM "AccommodationHistory" ah
+                JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+                JOIN "Rooms" r ON ah.room_id = r.id
+                CROSS JOIN DateParams dp
+                WHERE ah.start_date <= dp.last_day_of_month AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
+                GROUP BY r.dorm_id
+            ),
+            -- 2. 計算目標雇主貢獻的收入
+            EmployerIncome AS (
+                SELECT
+                    r.dorm_id,
+                    SUM((COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0) + COALESCE(w.restoration_fee, 0) + COALESCE(w.charging_cleaning_fee, 0))) as worker_income
+                FROM "AccommodationHistory" ah
+                JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+                JOIN "Rooms" r ON ah.room_id = r.id
+                CROSS JOIN DateParams dp
+                WHERE w.employer_name = ANY(%(employer_names)s)
+                  AND ah.start_date <= dp.last_day_of_month AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
+                GROUP BY r.dorm_id
+            ),
+            -- 3. 計算宿舍的各項支出 (限定為我司支付)
+            DormExpenses AS (
+                SELECT
+                    d.id as dorm_id,
+                    COALESCE(l.monthly_rent, 0) AS landlord_rent,
+                    COALESCE(u.utility_costs, 0) AS utility_costs,
+                    COALESCE(a.management_costs, 0) AS management_costs
+                FROM "Dormitories" d
+                LEFT JOIN (
+                    SELECT dorm_id, monthly_rent FROM (
+                        SELECT l.dorm_id, l.monthly_rent, ROW_NUMBER() OVER(PARTITION BY l.dorm_id ORDER BY l.lease_start_date DESC) as rn
+                        FROM "Leases" l
+                        JOIN "Dormitories" d_filter ON l.dorm_id = d_filter.id
+                        CROSS JOIN DateParams dp 
+                        WHERE l.lease_start_date <= dp.last_day_of_month AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month)
+                          AND d_filter.rent_payer = '我司' -- 【核心修改點 1】
+                    ) as sub_leases WHERE rn = 1
+                ) l ON d.id = l.dorm_id
+                LEFT JOIN (
+                    SELECT dorm_id, SUM(amount::decimal * (LEAST(bill_end_date, (SELECT last_day_of_month FROM DateParams))::date - GREATEST(bill_start_date, (SELECT first_day_of_month FROM DateParams))::date + 1) / NULLIF((bill_end_date - bill_start_date + 1), 0)) as utility_costs
+                    FROM "UtilityBills" CROSS JOIN DateParams dp 
+                    WHERE bill_start_date <= dp.last_day_of_month AND bill_end_date >= dp.first_day_of_month
+                      AND payer = '我司' -- 【核心修改點 2】
+                    GROUP BY dorm_id
+                ) u ON d.id = u.dorm_id
+                LEFT JOIN (
+                    SELECT dorm_id, SUM(ROUND(total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0))) as management_costs
+                    FROM "AnnualExpenses" CROSS JOIN DateParams dp WHERE TO_DATE(amortization_start_month, 'YYYY-MM') <= dp.last_day_of_month AND TO_DATE(amortization_end_month, 'YYYY-MM') >= dp.first_day_of_month GROUP BY dorm_id
+                ) a ON d.id = a.dorm_id
+            ),
+            -- 4. 計算宿舍的其他收入
+            OtherDormIncome AS (
+                 SELECT dorm_id, SUM(amount) as other_income
+                 FROM "OtherIncome" CROSS JOIN DateParams dp
+                 WHERE transaction_date BETWEEN dp.first_day_of_month AND dp.last_day_of_month
+                 GROUP BY dorm_id
+            )
+            -- 5. 最終匯總與計算
+            SELECT
+                d.original_address AS "宿舍地址",
+                COALESCE(ei.worker_income, 0)::int AS "移工每月扣款收入",
+                ROUND(COALESCE(odi.other_income, 0) * (dod.employer_days / NULLIF(dod.total_days, 0)))::int AS "其他收入",
+                ROUND(de.landlord_rent * (dod.employer_days / NULLIF(dod.total_days, 0)))::int AS "房東租金",
+                ROUND(de.utility_costs * (dod.employer_days / NULLIF(dod.total_days, 0)))::int AS "雜費(水電等)",
+                ROUND(de.management_costs * (dod.employer_days / NULLIF(dod.total_days, 0)))::int AS "管理費用(保險等)"
+            FROM DormOccupancyDays dod
+            JOIN "Dormitories" d ON dod.dorm_id = d.id
+            LEFT JOIN EmployerIncome ei ON dod.dorm_id = ei.dorm_id
+            LEFT JOIN DormExpenses de ON dod.dorm_id = de.dorm_id
+            LEFT JOIN OtherDormIncome odi ON dod.dorm_id = odi.dorm_id
+            WHERE dod.employer_days > 0
+            ORDER BY d.original_address;
+        """
+        
+        df = _execute_query_to_dataframe(conn, query, params)
+        
+        if not df.empty:
+            df["損益"] = (df["移工每月扣款收入"] + df["其他收入"]) - (df["房東租金"] + df["雜費(水電等)"] + df["管理費用(保險等)"])
+            df = df[["宿舍地址", "損益", "移工每月扣款收入", "其他收入", "房東租金", "雜費(水電等)", "管理費用(保險等)"]]
+            
+        return df
+
+    except Exception as e:
+        print(f"產生雇主損益報表時發生錯誤: {e}")
+        return pd.DataFrame()
+    finally:
+        if conn: conn.close()
