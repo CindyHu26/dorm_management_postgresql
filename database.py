@@ -4,6 +4,56 @@ import configparser
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
+import pandas as pd
+# 建立一個全域變數來存放資料庫引擎。
+# 初始為 None，表示尚未連線。
+# 使用底線 _ 開頭是 Python 的一種慣例，代表這是模組內部使用的變數。
+_engine: Engine | None = None
+
+def setup_connection(host, port, dbname, user, password):
+    """
+    初始化資料庫連線引擎。
+    這個函式會由 main.py 在程式一開始時呼叫一次，
+    建立一個共用的連線引擎供整個專案使用。
+    """
+    global _engine
+    
+    # 如果已經連線，就不要再重複建立
+    if _engine is not None:
+        print("資料庫引擎已存在，無需重複初始化。")
+        return
+
+    try:
+        # 建立 PostgreSQL 的連線 URL
+        # 格式為：postgresql://使用者名稱:密碼@主機IP:埠號/資料庫名稱
+        db_url = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
+        
+        # 建立引擎，並設定 pool_pre_ping=True 可以在每次使用前檢查連線是否有效，增加穩定性
+        _engine = create_engine(db_url, pool_pre_ping=True)
+        
+        # 執行一個簡單的查詢來驗證連線是否成功
+        with _engine.connect() as connection:
+            print("資料庫連線成功！引擎已準備就緒。")
+            
+    except Exception as e:
+        # 如果連線失敗，印出錯誤訊息並將引擎設回 None
+        print(f"CRITICAL: 資料庫連線設定失敗: {e}")
+        _engine = None
+        # 拋出異常，讓主程式知道發生嚴重錯誤
+        raise
+
+def get_engine() -> Engine:
+    """
+    提供給其他模組 (updater.py, export_model.py) 呼叫的函式，
+    用來取得已經建立好的資料庫引擎。
+    """
+    if _engine is None:
+        # 如果引擎尚未初始化就試圖使用，拋出錯誤
+        raise ConnectionError("資料庫連線尚未初始化。請確保主程式已執行 setup_connection。")
+    return _engine
+
 def get_base_path():
     """獲取資源的基礎路徑。"""
     if getattr(sys, 'frozen', False):
