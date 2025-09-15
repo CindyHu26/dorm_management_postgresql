@@ -57,8 +57,8 @@ def get_dormitory_dashboard_data():
         
 def get_financial_dashboard_data(year_month: str):
     """
-    【v2.1 修改版】執行一個複雜的聚合查詢，為指定的月份計算收支與損益。
-    修正因多筆合約導致地址重複的問題。
+    【v2.2 修正版】執行一個複雜的聚合查詢，為指定的月份計算收支與損益。
+    新增回傳宿舍 ID 以供其他模組使用。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -97,7 +97,6 @@ def get_financial_dashboard_data(year_month: str):
                   AND b.bill_end_date >= dp.first_day_of_month
                 GROUP BY b.dorm_id
             ),
-            -- 【核心修改點】確保每月只抓取一筆最新的租賃合約
             MonthlyRent AS (
                 SELECT dorm_id, monthly_rent FROM (
                     SELECT dorm_id, monthly_rent, ROW_NUMBER() OVER(PARTITION BY dorm_id ORDER BY lease_start_date DESC) as rn
@@ -126,6 +125,7 @@ def get_financial_dashboard_data(year_month: str):
                 GROUP BY dorm_id
             )
             SELECT
+                d.id,
                 d.original_address AS "宿舍地址",
                 (COALESCE(wi.total_income, 0) + COALESCE(pti.total_pass_through_income, 0))::int AS "預計總收入",
                 COALESCE(mr.monthly_rent, 0)::int AS "宿舍月租",
@@ -145,7 +145,7 @@ def get_financial_dashboard_data(year_month: str):
         return _execute_query_to_dataframe(conn, query, params)
     finally:
         if conn: conn.close()
-        
+
 def get_special_status_summary():
     """統計所有「在住」人員中，各種不同「特殊狀況」的人數。"""
     conn = database.get_db_connection()
