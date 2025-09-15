@@ -1,3 +1,5 @@
+# in cindyhu26/dorm_management_postgresql/dorm_management_postgresql-9d360666d3904b108b5d17042586141e3f8171a2/data_models/employer_dashboard_model.py
+
 import pandas as pd
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
@@ -28,11 +30,11 @@ def get_all_employers():
     finally:
         if conn: conn.close()
 
-def get_employer_resident_details(employer_name: str):
+def get_employer_resident_details(employer_names: list):
     """
-    根據指定的雇主名稱，查詢其所有在住員工的詳細住宿報告。
+    根據指定的雇主名稱列表，查詢其所有在住員工的詳細住宿報告。
     """
-    if not employer_name:
+    if not employer_names:
         return pd.DataFrame()
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -42,6 +44,7 @@ def get_employer_resident_details(employer_name: str):
                 d.primary_manager AS "主要管理人",
                 d.original_address AS "宿舍地址",
                 r.room_number AS "房號",
+                w.employer_name AS "雇主",
                 w.worker_name AS "姓名",
                 w.gender AS "性別",
                 w.nationality AS "國籍",
@@ -51,23 +54,25 @@ def get_employer_resident_details(employer_name: str):
             JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
             JOIN "Rooms" r ON ah.room_id = r.id
             JOIN "Dormitories" d ON r.dorm_id = d.id
-            WHERE w.employer_name = %(employer_name)s
+            WHERE w.employer_name = ANY(%(employer_names)s)
             AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)
             AND (ah.end_date IS NULL OR ah.end_date > CURRENT_DATE)
             ORDER BY d.original_address, r.room_number, w.worker_name
         """
-        return _execute_query_to_dataframe(conn, query, {"employer_name": employer_name})
+        return _execute_query_to_dataframe(conn, query, {"employer_names": employer_names})
     finally:
         if conn: conn.close()
 
-def get_employer_financial_summary(employer_name: str, year_month: str):
+def get_employer_financial_summary(employer_names: list, year_month: str):
     """
-    為指定雇主和月份，計算收支與損益。
+    為指定雇主列表和月份，計算收支與損益。
     """
+    if not employer_names:
+        return pd.DataFrame()
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     
-    params = {"employer_name": employer_name, "year_month": year_month}
+    params = {"employer_names": employer_names, "year_month": year_month}
     
     try:
         query = """
@@ -92,8 +97,8 @@ def get_employer_financial_summary(employer_name: str, year_month: str):
                 SELECT
                     dorm_id,
                     COUNT(worker_unique_id) AS total_residents,
-                    COUNT(CASE WHEN employer_name = %(employer_name)s THEN worker_unique_id END) AS employer_residents,
-                    SUM(CASE WHEN employer_name = %(employer_name)s THEN total_monthly_fee ELSE 0 END) as employer_income
+                    COUNT(CASE WHEN employer_name = ANY(%(employer_names)s) THEN worker_unique_id END) AS employer_residents,
+                    SUM(CASE WHEN employer_name = ANY(%(employer_names)s) THEN total_monthly_fee ELSE 0 END) as employer_income
                 FROM ActiveWorkersInMonth
                 GROUP BY dorm_id
             ),
@@ -156,14 +161,16 @@ def get_employer_financial_summary(employer_name: str, year_month: str):
     finally:
         if conn: conn.close()
 
-def get_employer_financial_summary_annual(employer_name: str, year: int):
+def get_employer_financial_summary_annual(employer_names: list, year: int):
     """
-    為指定雇主和「年份」，計算整年度的收支與損益。
+    為指定雇主列表和「年份」，計算整年度的收支與損益。
     """
+    if not employer_names:
+        return pd.DataFrame()
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     
-    params = {"employer_name": employer_name, "year": str(year)}
+    params = {"employer_names": employer_names, "year": str(year)}
     
     try:
         query = """
@@ -203,8 +210,8 @@ def get_employer_financial_summary_annual(employer_name: str, year: int):
                  SELECT
                     dorm_id,
                     COUNT(DISTINCT unique_id) as total_workers,
-                    COUNT(DISTINCT CASE WHEN employer_name = %(employer_name)s THEN unique_id END) as employer_workers,
-                    SUM(CASE WHEN employer_name = %(employer_name)s THEN annual_fee_contribution ELSE 0 END) as employer_annual_income
+                    COUNT(DISTINCT CASE WHEN employer_name = ANY(%(employer_names)s) THEN unique_id END) as employer_workers,
+                    SUM(CASE WHEN employer_name = ANY(%(employer_names)s) THEN annual_fee_contribution ELSE 0 END) as employer_annual_income
                 FROM WorkerContribution
                 GROUP BY dorm_id
             ),
@@ -264,11 +271,13 @@ def get_employer_financial_summary_annual(employer_name: str, year: int):
     finally:
         if conn: conn.close()
 
-def get_employer_financial_details_for_dorm(employer_name: str, dorm_id: int, period: str):
+def get_employer_financial_details_for_dorm(employer_names: list, dorm_id: int, period: str):
     """
     【v2.6 最終修正版】獲取詳細收支項目。
     修正了 decimal 和 float 型別不相容的錯誤。
     """
+    if not employer_names:
+        return pd.DataFrame(), pd.DataFrame()
     conn = database.get_db_connection()
     if not conn: return None, None
     
@@ -279,7 +288,7 @@ def get_employer_financial_details_for_dorm(employer_name: str, dorm_id: int, pe
         start_date = f"{period}-01-01"
         end_date = f"{period}-12-31"
         
-    params = { "employer_name": employer_name, "dorm_id": dorm_id, "start_date": start_date, "end_date": end_date }
+    params = { "employer_names": employer_names, "dorm_id": dorm_id, "start_date": start_date, "end_date": end_date }
 
     try:
         proration_query = """
@@ -294,7 +303,7 @@ def get_employer_financial_details_for_dorm(employer_name: str, dorm_id: int, pe
                 GROUP BY w.employer_name
             )
             SELECT
-                (SELECT SUM(days) FROM ActiveDays WHERE employer_name = %(employer_name)s)::decimal /
+                (SELECT SUM(days) FROM ActiveDays WHERE employer_name = ANY(%(employer_names)s))::decimal /
                 NULLIF((SELECT SUM(days) FROM ActiveDays), 0) as ratio
         """
         cursor = conn.cursor()
@@ -311,7 +320,7 @@ def get_employer_financial_details_for_dorm(employer_name: str, dorm_id: int, pe
             FROM "AccommodationHistory" ah
             JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
             JOIN "Rooms" r ON ah.room_id = r.id
-            WHERE r.dorm_id = %(dorm_id)s AND w.employer_name = %(employer_name)s
+            WHERE r.dorm_id = %(dorm_id)s AND w.employer_name = ANY(%(employer_names)s)
               AND ah.start_date <= (SELECT end_date FROM DateParams)
               AND (ah.end_date IS NULL OR ah.end_date >= (SELECT start_date FROM DateParams))
               AND (w.special_status IS NULL OR w.special_status NOT ILIKE '%%掛宿外住%%')
@@ -367,7 +376,7 @@ def get_employer_financial_details_for_dorm(employer_name: str, dorm_id: int, pe
         
         if not expense_df.empty:
             expense_df = expense_df[expense_df['支付方'] == '我司'].copy()
-            # --- 【核心修正點】: 將 proration_ratio 轉為 float 後再進行運算 ---
+            # 將 proration_ratio 轉為 float 後再進行運算 ---
             expense_df['分攤後金額'] = (pd.to_numeric(expense_df['原始總額'], errors='coerce').fillna(0) * proration_ratio).round().astype(int)
             expense_df.drop(columns=['原始總額', '支付方'], inplace=True)
 

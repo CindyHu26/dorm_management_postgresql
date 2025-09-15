@@ -6,7 +6,7 @@ from data_models import employer_dashboard_model, dormitory_model
 def render():
     """渲染「雇主儀表板」頁面"""
     st.header("雇主視角儀表板")
-    st.info("請從下方選擇一位雇主，以檢視其所有在住員工的詳細住宿分佈與財務貢獻情況。")
+    st.info("請從下方選擇一位或多位雇主，以檢視其所有在住員工的詳細住宿分佈與財務貢獻情況。")
 
     @st.cache_data
     def get_employers_list():
@@ -18,10 +18,10 @@ def render():
         st.warning("目前資料庫中沒有任何員工資料可供查詢。")
         return
 
-    selected_employer = st.selectbox(
-        "請選擇要分析的雇主：",
-        options=[""] + employers_list,
-        format_func=lambda x: "請選擇..." if x == "" else x
+    # --- 【核心修改點 1】selectbox 改為 multiselect ---
+    selected_employers = st.multiselect(
+        "請選擇要分析的雇主 (可多選)：",
+        options=employers_list
     )
 
     if st.button("🔄 重新整理所有數據"):
@@ -29,7 +29,8 @@ def render():
 
     st.markdown("---")
 
-    if selected_employer:
+    # --- 【核心修改點 2】判斷 selected_employers 是否為空 ---
+    if selected_employers:
         
         @st.cache_data
         def get_dorm_id_map():
@@ -49,13 +50,14 @@ def render():
             year_month_str = f"{selected_year_month}-{selected_month_month:02d}"
 
             @st.cache_data
-            def get_finance_summary(employer, period):
-                return employer_dashboard_model.get_employer_financial_summary(employer, period)
+            def get_finance_summary(employers, period):
+                # --- 【核心修改點 3】傳遞整個列表 ---
+                return employer_dashboard_model.get_employer_financial_summary(employers, period)
 
-            finance_df_month = get_finance_summary(selected_employer, year_month_str)
+            finance_df_month = get_finance_summary(selected_employers, year_month_str)
 
             if finance_df_month.empty:
-                st.warning(f"在 {year_month_str} 中，找不到與此雇主相關的任何收支紀錄。")
+                st.warning(f"在 {year_month_str} 中，找不到與所選雇主相關的任何收支紀錄。")
             else:
                 st.markdown(f"#### {year_month_str} 財務總覽")
                 finance_df_month['總收入'] = finance_df_month['收入(員工月費)'] + finance_df_month['分攤其他收入']
@@ -68,7 +70,7 @@ def render():
                 f_col2.metric("預估我司分攤總支出", f"NT$ {total_expense_by_us:,.0f}")
                 f_col3.metric("預估淨貢獻", f"NT$ {profit_loss:,.0f}", delta=f"{profit_loss:,.0f}")
 
-                st.markdown("##### 各宿舍收支詳情 (此雇主)")
+                st.markdown("##### 各宿舍收支詳情 (所選雇主)")
                 display_df = finance_df_month.copy()
                 display_df['淨損益'] = (display_df['收入(員工月費)'] + display_df['分攤其他收入']) - \
                                     (display_df['我司分攤月租'] + display_df['我司分攤雜費'] + display_df['我司分攤攤銷'])
@@ -90,7 +92,7 @@ def render():
                     if selected_dorm_id:
                         with st.spinner(f"正在查詢 {selected_dorm_address} 的詳細資料..."):
                             income_details, expense_details = employer_dashboard_model.get_employer_financial_details_for_dorm(
-                                selected_employer, selected_dorm_id, year_month_str
+                                selected_employers, selected_dorm_id, year_month_str
                             )
                         
                         st.markdown(f"**收入明細**")
@@ -112,13 +114,13 @@ def render():
             selected_year_annual = st.selectbox("選擇年份", options=range(today.year - 2, today.year + 2), index=2, key="annual_year")
 
             @st.cache_data
-            def get_finance_summary_annual(employer, year):
-                return employer_dashboard_model.get_employer_financial_summary_annual(employer, year)
+            def get_finance_summary_annual(employers, year):
+                return employer_dashboard_model.get_employer_financial_summary_annual(employers, year)
 
-            finance_df_annual = get_finance_summary_annual(selected_employer, selected_year_annual)
+            finance_df_annual = get_finance_summary_annual(selected_employers, selected_year_annual)
 
             if finance_df_annual.empty:
-                st.warning(f"在 {selected_year_annual} 年中，找不到與此雇主相關的任何收支紀錄。")
+                st.warning(f"在 {selected_year_annual} 年中，找不到與所選雇主相關的任何收支紀錄。")
             else:
                 st.markdown(f"#### {selected_year_annual} 年度財務總覽")
                 finance_df_annual['總收入'] = finance_df_annual['收入(員工月費)'] + finance_df_annual['分攤其他收入']
@@ -131,7 +133,7 @@ def render():
                 fa_col2.metric("年度我司分攤總支出", f"NT$ {total_expense_by_us_annual:,.0f}")
                 fa_col3.metric("年度淨貢獻", f"NT$ {profit_loss_annual:,.0f}", delta=f"{profit_loss_annual:,.0f}")
 
-                st.markdown("##### 各宿舍年度收支詳情 (此雇主)")
+                st.markdown("##### 各宿舍年度收支詳情 (所選雇主)")
                 display_df_annual = finance_df_annual.copy()
                 display_df_annual['淨損益'] = (display_df_annual['收入(員工月費)'] + display_df_annual['分攤其他收入']) - \
                                             (display_df_annual['我司分攤月租'] + display_df_annual['我司分攤雜費'] + display_df_annual['我司分攤攤銷'])
@@ -157,7 +159,7 @@ def render():
                     if selected_dorm_id_annual:
                         with st.spinner(f"正在查詢 {selected_dorm_address_annual} 的詳細資料..."):
                              income_details_annual, expense_details_annual = employer_dashboard_model.get_employer_financial_details_for_dorm(
-                                selected_employer, selected_dorm_id_annual, str(selected_year_annual)
+                                selected_employers, selected_dorm_id_annual, str(selected_year_annual)
                             )
                         
                         st.markdown(f"**年度收入明細**")
@@ -175,18 +177,18 @@ def render():
         st.markdown("---")
         st.subheader("各宿舍即時住宿分佈")
         @st.cache_data
-        def get_details(employer):
-            return employer_dashboard_model.get_employer_resident_details(employer)
+        def get_details(employers):
+            return employer_dashboard_model.get_employer_resident_details(employers)
 
-        report_df = get_details(selected_employer)
+        report_df = get_details(selected_employers)
         if report_df.empty:
-            st.info("這位雇主目前沒有任何在住員工的住宿紀錄。")
+            st.info("所選雇主目前沒有任何在住員工的住宿紀錄。")
         else:
             total_workers = len(report_df)
             my_company_managed_count = len(report_df[report_df['主要管理人'] == '我司'])
             
             s_col1, s_col2 = st.columns(2)
-            s_col1.metric("該雇主總在住員工數", f"{total_workers} 人")
+            s_col1.metric("所選雇主總在住員工數", f"{total_workers} 人")
             s_col2.metric("住在我司管理宿舍人數", f"{my_company_managed_count} 人")
 
             grouped = report_df.groupby(['宿舍地址', '主要管理人'])

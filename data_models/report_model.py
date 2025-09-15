@@ -209,6 +209,7 @@ def get_annual_financial_summary_report(year: int):
     """
     產生指定年度的宿舍財務總覽報表。
     計算區間為該年 1/1 至執行當日。
+    【v2.0 修改版】僅計算「我司」管理且由「我司」支付的收支。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -218,7 +219,7 @@ def get_annual_financial_summary_report(year: int):
     try:
         query = """
             WITH DateParams AS (
-                SELECT 
+                SELECT
                     TO_DATE(%(year)s || '-01-01', 'YYYY-MM-DD') as start_date,
                     CURRENT_DATE as end_date
             ),
@@ -234,7 +235,7 @@ def get_annual_financial_summary_report(year: int):
                 WHERE ah.start_date <= dp.end_date AND (ah.end_date IS NULL OR ah.end_date >= dp.start_date)
                 GROUP BY r.dorm_id
             ),
-            -- 2. 計算年度總收入
+            -- 2. 計算年度總收入 (我司管理宿舍)
             TotalIncome AS (
                 -- 2a. 員工月費收入 (按月加總)
                 SELECT dorm_id, SUM(total_monthly_fee) as income
@@ -258,15 +259,21 @@ def get_annual_financial_summary_report(year: int):
                 WHERE transaction_date BETWEEN dp.start_date AND dp.end_date
                 GROUP BY dorm_id
             ),
-            -- 3. 計算年度總支出
+            -- 3. 計算年度總支出 (我司支付)
             TotalExpense AS (
-                -- 3a. 租金支出 (按天攤)
-                SELECT dorm_id, SUM(COALESCE(monthly_rent, 0) * ((LEAST(COALESCE(lease_end_date, dp.end_date), dp.end_date)::date - GREATEST(lease_start_date, dp.start_date)::date + 1) / 30.4375)) as expense
-                FROM "Leases" CROSS JOIN DateParams dp WHERE lease_start_date <= dp.end_date AND (lease_end_date IS NULL OR lease_end_date >= dp.start_date) GROUP BY dorm_id
+                -- 3a. 租金支出 (按天攤, 我司支付)
+                SELECT l.dorm_id, SUM(COALESCE(l.monthly_rent, 0) * ((LEAST(COALESCE(l.lease_end_date, dp.end_date), dp.end_date)::date - GREATEST(l.lease_start_date, dp.start_date)::date + 1) / 30.4375)) as expense
+                FROM "Leases" l
+                JOIN "Dormitories" d ON l.dorm_id = d.id
+                CROSS JOIN DateParams dp
+                WHERE l.lease_start_date <= dp.end_date AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.start_date) AND d.rent_payer = '我司'
+                GROUP BY l.dorm_id
                 UNION ALL
-                -- 3b. 雜費支出 (按天攤)
+                -- 3b. 雜費支出 (按天攤, 我司支付)
                 SELECT dorm_id, SUM(COALESCE(amount, 0) * (LEAST(bill_end_date, dp.end_date)::date - GREATEST(bill_start_date, dp.start_date)::date + 1) / NULLIF((bill_end_date - bill_start_date + 1), 0))
-                FROM "UtilityBills" CROSS JOIN DateParams dp WHERE bill_start_date <= dp.end_date AND bill_end_date >= dp.start_date GROUP BY dorm_id
+                FROM "UtilityBills" CROSS JOIN DateParams dp
+                WHERE bill_start_date <= dp.end_date AND bill_end_date >= dp.start_date AND payer = '我司'
+                GROUP BY dorm_id
                 UNION ALL
                 -- 3c. 長期攤銷支出 (按天攤)
                 SELECT dorm_id, SUM(
@@ -274,7 +281,8 @@ def get_annual_financial_summary_report(year: int):
                     * (LEAST(TO_DATE(amortization_end_month, 'YYYY-MM'), dp.end_date)::date - GREATEST(TO_DATE(amortization_start_month, 'YYYY-MM'), dp.start_date)::date + 1) / 30.4375
                 ) as expense
                 FROM "AnnualExpenses" CROSS JOIN DateParams dp
-                WHERE TO_DATE(amortization_start_month, 'YYYY-MM') <= dp.end_date AND TO_DATE(amortization_end_month, 'YYYY-MM') >= dp.start_date GROUP BY dorm_id
+                WHERE TO_DATE(amortization_start_month, 'YYYY-MM') <= dp.end_date AND TO_DATE(amortization_end_month, 'YYYY-MM') >= dp.start_date
+                GROUP BY dorm_id
             )
             -- 4. 最終匯總
             SELECT
@@ -282,12 +290,13 @@ def get_annual_financial_summary_report(year: int):
                 d.is_self_owned AS "是否自購",
                 rc.resident_companies AS "居住公司",
                 COALESCE(ti.total_income, 0)::int AS "年度總收入",
-                COALESCE(te.total_expense, 0)::int AS "年度總支出",
-                (COALESCE(ti.total_income, 0) - COALESCE(te.total_expense, 0))::int AS "淨損益"
+                COALESCE(te.total_expense, 0)::int AS "年度總支出 (我司)",
+                (COALESCE(ti.total_income, 0) - COALESCE(te.total_expense, 0))::int AS "淨損益 (我司)"
             FROM "Dormitories" d
             LEFT JOIN ResidentCompanies rc ON d.id = rc.dorm_id
             LEFT JOIN (SELECT dorm_id, SUM(income) as total_income FROM TotalIncome GROUP BY dorm_id) ti ON d.id = ti.dorm_id
             LEFT JOIN (SELECT dorm_id, SUM(expense) as total_expense FROM TotalExpense GROUP BY dorm_id) te ON d.id = te.dorm_id
+            WHERE d.primary_manager = '我司'
             ORDER BY d.original_address;
         """
         return _execute_query_to_dataframe(conn, query, params)
