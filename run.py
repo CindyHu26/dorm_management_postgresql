@@ -27,6 +27,7 @@ if __name__ == "__main__":
         app_path,
         "--global.developmentMode=false",
         "--server.headless=true",
+        "--server.fileWatcherType=none",
         # 您可以自訂 port，或移除這兩行讓 Streamlit 自動尋找可用 port
         "--server.port", "8501" 
     ]
