@@ -114,6 +114,72 @@ def render():
                     file_name=f"住宿特例_{year_month_str}.xlsx"
                 )
 
+    with st.container(border=True):
+            st.subheader("單一宿舍深度分析報表")
+            st.info("選擇一個我司管理的宿舍，產生一份包含人數、國籍、性別統計與人員詳情的完整報告。")
+
+            my_dorms = dormitory_model.get_my_company_dorms_for_selection()
+            if not my_dorms:
+                st.warning("目前沒有「我司管理」的宿舍可供選擇。")
+            else:
+                dorm_options = {d['id']: d['original_address'] for d in my_dorms}
+                selected_dorm_id = st.selectbox(
+                    "請選擇要匯出報表的宿舍：", 
+                    options=list(dorm_options.keys()), 
+                    format_func=lambda x: dorm_options.get(x),
+                    key="deep_report_dorm_select"
+                )
+
+                if st.button("🚀 產生並下載宿舍報表", key="download_dorm_report"):
+                    if not selected_dorm_id:
+                        st.error("請先選擇一個宿舍。")
+                    else:
+                        with st.spinner("正在產生報表..."):
+                            # 呼叫後端函式獲取資料
+                            report_df = report_model.get_dorm_report_data(selected_dorm_id)
+                            
+                            if report_df.empty:
+                                st.warning("此宿舍目前沒有在住人員可供匯出。")
+                            else:
+                                # 1. 產生摘要 DataFrame
+                                nationality_counts = report_df['nationality'].dropna().value_counts().to_dict()
+                                summary_items = ["總人數", "男性人數", "女性人數"] + [f"{nat}籍人數" for nat in nationality_counts.keys()]
+                                summary_values = [
+                                    len(report_df), 
+                                    len(report_df[report_df['gender'] == '男']), 
+                                    len(report_df[report_df['gender'] == '女'])
+                                ] + list(nationality_counts.values())
+                                summary_df = pd.DataFrame({"統計項目": summary_items, "數值": summary_values})
+
+                                # 2. 產生明細 DataFrame 並重新命名欄位
+                                details_df = report_df.rename(columns={
+                                    'room_number': '房號', 
+                                    'worker_name': '姓名', 
+                                    'employer_name': '雇主', 
+                                    'gender': '性別', 
+                                    'nationality': '國籍', 
+                                    'monthly_fee': '房租', 
+                                    'special_status': '特殊狀況', 
+                                    'worker_notes': '備註'
+                                })
+
+                                # 3. 準備寫入 Excel 的資料結構
+                                excel_file_data = {
+                                    "宿舍報表": [
+                                        {"dataframe": summary_df, "title": "宿舍人數摘要"},
+                                        {"dataframe": details_df, "title": "在住人員明細"}
+                                    ]
+                                }
+                                excel_file = to_excel(excel_file_data)
+                                
+                                # 4. 提供下載按鈕
+                                dorm_name_for_file = dorm_options.get(selected_dorm_id, "export").replace(" ", "_").replace("/", "_")
+                                st.download_button(
+                                    label="✅ 報表已產生！點此下載",
+                                    data=excel_file,
+                                    file_name=f"宿舍報表_{dorm_name_for_file}.xlsx"
+                                )
+
     st.markdown("---")
     with st.container(border=True):
         st.subheader("慶豐富專用-水電費分攤報表")
