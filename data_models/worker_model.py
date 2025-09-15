@@ -238,13 +238,13 @@ def update_worker_details(unique_id: str, details: dict, effective_date: date = 
     finally:
         if conn: conn.close()
 
-def add_manual_worker(details: dict, initial_status: dict):
+def add_manual_worker(details: dict, initial_status: dict, bed_number: str = None):
     """
-    【v2.0 修改版】新增手動管理的移工資料，並為其建立初始住宿和狀態紀錄。
+    【v2.1 修改版】新增手動管理的移工資料，並為其建立初始住宿和狀態紀錄，包含床位編號。
     """
     details['data_source'] = '手動管理(他仲)'
     details['special_status'] = initial_status.get('status')
-    room_id = details.get('room_id') # 先將 room_id 取出
+    room_id = details.get('room_id') 
 
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed.", None
@@ -254,19 +254,16 @@ def add_manual_worker(details: dict, initial_status: dict):
             if cursor.fetchone():
                 return False, f"新增失敗：員工ID '{details['unique_id']}' 已存在。", None
             
-            # 插入 Workers 表
             columns = ', '.join(f'"{k}"' for k in details.keys())
             placeholders = ', '.join(['%s'] * len(details))
             sql = f'INSERT INTO "Workers" ({columns}) VALUES ({placeholders})'
             cursor.execute(sql, tuple(details.values()))
             
-            # 如果有分配房間，則新增第一筆住宿歷史
             if room_id:
-                accom_sql = 'INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date) VALUES (%s, %s, %s)'
+                accom_sql = 'INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, bed_number) VALUES (%s, %s, %s, %s)'
                 start_date = details.get('accommodation_start_date', date.today())
-                cursor.execute(accom_sql, (details['unique_id'], room_id, start_date))
+                cursor.execute(accom_sql, (details['unique_id'], room_id, start_date, bed_number))
             
-            # 新增初始狀態歷史
             if initial_status and initial_status.get('status'):
                 initial_status['worker_unique_id'] = details['unique_id']
                 status_cols = ', '.join(f'"{k}"' for k in initial_status.keys())
@@ -336,13 +333,14 @@ def get_workers_for_editor_selection():
         if conn: conn.close()
 
 def get_accommodation_history_for_worker(worker_id: str):
-    """查詢單一工人的完整住宿歷史。"""
+    """查詢單一工人的完整住宿歷史，並包含床位編號。"""
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
         query = """
             SELECT
                 ah.id, d.original_address AS "宿舍地址", r.room_number AS "房號",
+                ah.bed_number AS "床位編號",
                 ah.start_date AS "起始日", ah.end_date AS "結束日", ah.notes AS "備註"
             FROM "AccommodationHistory" ah
             JOIN "Rooms" r ON ah.room_id = r.id
@@ -354,9 +352,9 @@ def get_accommodation_history_for_worker(worker_id: str):
     finally:
         if conn: conn.close()
 
-def change_worker_accommodation(worker_id: str, new_room_id: int, change_date: date):
+def change_worker_accommodation(worker_id: str, new_room_id: int, change_date: date, bed_number: str = None):
     """
-    【v2.0 新增】處理工人換宿的核心業務邏輯。
+    【v2.3 修改版】處理工人換宿的核心業務邏輯，新增床位編號。
     """
     conn = database.get_db_connection()
     if not conn: return False, "資料庫連線失敗"
@@ -383,12 +381,15 @@ def change_worker_accommodation(worker_id: str, new_room_id: int, change_date: d
             # 步驟 3: 新增一筆新的住宿紀錄
             if new_room_id is not None:
                 cursor.execute(
-                    'INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date) VALUES (%s, %s, %s)',
-                    (worker_id, new_room_id, change_date)
+                    'INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, bed_number) VALUES (%s, %s, %s, %s)',
+                    (worker_id, new_room_id, change_date, bed_number)
                 )
 
-            # 步驟 4: 更新 Workers 表中的 room_id 快取欄位
-            cursor.execute('UPDATE "Workers" SET room_id = %s WHERE unique_id = %s', (new_room_id, worker_id))
+            # 步驟 4: 更新 Workers 表中的 data_source 標記
+            cursor.execute(
+                'UPDATE "Workers" SET data_source = %s WHERE unique_id = %s',
+                ('手動調整', worker_id)
+            )
 
         conn.commit()
         return True, "工人住宿資料更新成功！"
@@ -397,9 +398,6 @@ def change_worker_accommodation(worker_id: str, new_room_id: int, change_date: d
         return False, f"變更住宿時發生錯誤: {e}"
     finally:
         if conn: conn.close()
-
-
-# --- 【以下函式與 WorkerStatusHistory, FeeHistory 相關，維持不變】 ---
 
 def get_worker_status_history(unique_id: str):
     """查詢單一移工的所有歷史狀態紀錄。"""
@@ -570,13 +568,12 @@ def get_single_accommodation_details(history_id: int):
 
 def update_accommodation_history(history_id: int, details: dict):
     """
-    【v2.2 新增】更新一筆已存在的住宿歷史紀錄。
+    【v2.3 修改版】更新一筆已存在的住宿歷史紀錄，新增床位編號。
     """
     conn = database.get_db_connection()
     if not conn: return False, "資料庫連線失敗"
     try:
         with conn.cursor() as cursor:
-            # 安全性檢查：不允許透過此函式修改 room_id
             details.pop('room_id', None)
             
             fields = ', '.join([f'"{key}" = %s' for key in details.keys()])

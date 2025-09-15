@@ -3,6 +3,7 @@ import database
 import json
 from data_processor import normalize_taiwan_address
 import numpy as np
+from datetime import date
 from dateutil.relativedelta import relativedelta
 
 def _execute_query_to_dataframe(conn, query, params=None):
@@ -331,8 +332,8 @@ def batch_import_building_permits(df: pd.DataFrame):
 
 def batch_import_accommodation(df: pd.DataFrame):
     """
-    【v1.4 修改版】批次匯入【住宿分配/異動】的核心邏輯。
-    修正日期運算錯誤。
+    【v1.5 修改版】批次匯入【住宿分配/異動】的核心邏輯。
+    新增對「床位編號」的支援。
     """
     success_count = 0
     failed_records = []
@@ -344,7 +345,6 @@ def batch_import_accommodation(df: pd.DataFrame):
         
     try:
         with conn.cursor() as cursor:
-            # 預先載入所有宿舍和房間資料，提高效率
             dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, original_address, normalized_address FROM "Dormitories"')
             original_addr_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
             normalized_addr_map = {d['normalized_address']: d['id'] for _, d in dorms_df.iterrows()}
@@ -354,7 +354,6 @@ def batch_import_accommodation(df: pd.DataFrame):
 
             for index, row in df.iterrows():
                 try:
-                    # --- 1. 智慧識別工人 ---
                     employer = str(row.get('雇主', '')).strip()
                     name = str(row.get('姓名', '')).strip()
                     passport = str(row.get('護照號碼 (選填)', '')).strip()
@@ -386,7 +385,6 @@ def batch_import_accommodation(df: pd.DataFrame):
                     if not worker_id:
                         raise ValueError("無法確定唯一的工人紀錄")
 
-                    # --- 2. 識別或建立宿舍與房間 ---
                     address = row.get('實際住宿地址')
                     room_number_str = str(row.get('房號')).strip()
                     if not address or pd.isna(address) or not room_number_str:
@@ -404,8 +402,11 @@ def batch_import_accommodation(df: pd.DataFrame):
                         cursor.execute(f'INSERT INTO "Rooms" ({cols}) VALUES ({vals}) RETURNING id', tuple(room_details.values()))
                         new_room_id = cursor.fetchone()['id']
                         room_map[room_key] = new_room_id
+                    
+                    # --- 【核心修改點】讀取床位編號 ---
+                    bed_number_val = row.get('床位編號 (選填)')
+                    bed_number = str(bed_number_val).strip() if pd.notna(bed_number_val) and str(bed_number_val).strip() else None
 
-                    # --- 3. 執行智慧判斷與更新邏輯 ---
                     move_in_date_input = row.get('入住日 (換宿/指定日期時填寫)')
                     cursor.execute("""
                         SELECT ah.id, r.room_number, ah.room_id, ah.start_date
@@ -414,20 +415,24 @@ def batch_import_accommodation(df: pd.DataFrame):
                         ORDER BY ah.start_date DESC, ah.id DESC LIMIT 1
                     """, (worker_id,))
                     latest_history = cursor.fetchone()
+                    
                     if latest_history and latest_history['room_id'] == new_room_id:
                         continue
+                        
                     if latest_history and latest_history['room_number'] == '[未分配房間]' and (pd.isna(move_in_date_input) or not move_in_date_input):
-                        cursor.execute('UPDATE "AccommodationHistory" SET room_id = %s WHERE id = %s', (new_room_id, latest_history['id']))
+                        cursor.execute('UPDATE "AccommodationHistory" SET room_id = %s, bed_number = %s WHERE id = %s', (new_room_id, bed_number, latest_history['id']))
                     else:
                         effective_date = pd.to_datetime(move_in_date_input).date() if pd.notna(move_in_date_input) and move_in_date_input else date.today()
                         if latest_history:
-                            # --- 改用 timedelta 計算，並移除多餘的 .date() ---
-                            end_date = effective_date - timedelta(days=1)
+                            end_date = effective_date - pd.Timedelta(days=1)
                             cursor.execute('UPDATE "AccommodationHistory" SET end_date = %s WHERE id = %s', (end_date, latest_history['id']))
-                        cursor.execute('INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date) VALUES (%s, %s, %s)', (worker_id, new_room_id, effective_date))
+                        
+                        cursor.execute(
+                            'INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, bed_number) VALUES (%s, %s, %s, %s)',
+                            (worker_id, new_room_id, effective_date, bed_number)
+                        )
                     
-                    # --- 4. 更新 Workers 表的快取和標記 ---
-                    cursor.execute('UPDATE "Workers" SET room_id = %s, data_source = %s WHERE unique_id = %s', (new_room_id, '手動調整', worker_id))
+                    cursor.execute('UPDATE "Workers" SET data_source = %s WHERE unique_id = %s', ('手動調整', worker_id))
                     success_count += 1
                 
                 except Exception as row_error:

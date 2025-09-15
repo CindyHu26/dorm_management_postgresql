@@ -22,7 +22,7 @@ def render():
         st.subheader("💧 變動費用匯入 (水電、網路等)")
         st.info("用於匯入水電、網路等每月變動的費用帳單。")
         
-        # 【核心修改】在範本中加入「用量(度/噸)」
+        # 在範本中加入「用量(度/噸)」
         expense_template_df = pd.DataFrame({
             "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號"],
             "費用類型": ["電費"],
@@ -193,7 +193,7 @@ def render():
     # --- 區塊四：住宿分配匯入 ---
     with st.container(border=True):
         st.subheader("🏠 住宿分配/異動匯入")
-        st.info("用於批次分配或更新人員的實際住宿房間。")
+        st.info("用於批次分配或更新人員的實際住宿房間與床位。")
         
         # --- 核心修改點：更新範本欄位名稱 ---
         accommodation_template_df = pd.DataFrame({
@@ -202,6 +202,7 @@ def render():
             "護照號碼 (選填)": ["C1234567"],
             "實際住宿地址": ["範例：彰化縣鹿港鎮中山路100號"],
             "房號": ["A01"],
+            "床位編號 (選填)": ["A-01上"],
             "入住日 (換宿/指定日期時填寫)": [date.today().strftime('%Y-%m-%d')]
         })
         st.download_button(

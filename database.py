@@ -151,7 +151,7 @@ def create_all_tables_and_indexes():
                 FOREIGN KEY ("room_id") REFERENCES "Rooms" ("id") ON DELETE SET NULL
             );
             """
-            # --- 【核心新增】建立住宿歷史紀錄表 ---
+            # --- 建立住宿歷史紀錄表 ---
             TABLES['AccommodationHistory'] = """
             CREATE TABLE IF NOT EXISTS "AccommodationHistory" (
                 "id" SERIAL PRIMARY KEY,
@@ -159,6 +159,7 @@ def create_all_tables_and_indexes():
                 "room_id" INTEGER NOT NULL,
                 "start_date" DATE NOT NULL,
                 "end_date" DATE,
+                "bed_number" VARCHAR(20),
                 "notes" TEXT,
                 FOREIGN KEY ("worker_unique_id") REFERENCES "Workers" ("unique_id") ON DELETE CASCADE,
                 FOREIGN KEY ("room_id") REFERENCES "Rooms" ("id") ON DELETE CASCADE
