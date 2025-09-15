@@ -59,6 +59,7 @@ def normalize_taiwan_address(address: str) -> Dict[str, str]:
     full_width_nums = "０１２３４５６７８９"
     half_width_nums = "0123456789"
     addr = addr.translate(str.maketrans(full_width_nums, half_width_nums))
+    addr = addr.replace('鎭', '鎮')
     addr = addr.replace('F', '樓')
     addr = re.sub(r'[\(（].*?[\)）]', '', addr)
     addr = re.sub(r'(\d+)鄰', '', addr)

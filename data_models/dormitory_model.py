@@ -15,7 +15,7 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_all_dorms_for_view(search_term: str = None):
     """
-    取得所有宿舍的基本資料，用於UI列表顯示 (已為 PostgreSQL 優化)。
+    【升級版】取得所有宿舍的基本資料，新增 "是否自購" 欄位。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -25,6 +25,7 @@ def get_all_dorms_for_view(search_term: str = None):
                 id, 
                 legacy_dorm_code AS "舊編號", 
                 primary_manager AS "主要管理人",
+                is_self_owned AS "是否自購",
                 rent_payer AS "租金支付方",
                 utilities_payer AS "水電支付方",
                 original_address AS "原始地址", 
@@ -43,7 +44,6 @@ def get_all_dorms_for_view(search_term: str = None):
     finally:
         if conn: conn.close()
 
-
 def get_dorm_details_by_id(dorm_id: int):
     """取得單一宿舍的詳細資料。"""
     conn = database.get_db_connection()
@@ -57,7 +57,7 @@ def get_dorm_details_by_id(dorm_id: int):
         if conn: conn.close()
 
 def add_new_dormitory(details: dict):
-    """新增宿舍的業務邏輯：1. 新增宿舍本身。 2. 自動建立預設房間。"""
+    """【升級版】新增宿舍的業務邏輯，包含 is_self_owned 欄位。"""
     conn = database.get_db_connection()
     if not conn: return False, "無法連接到資料庫"
     try:
@@ -81,7 +81,7 @@ def add_new_dormitory(details: dict):
         if conn: conn.close()
 
 def update_dormitory_details(dorm_id: int, details: dict):
-    """更新宿舍的詳細資料。"""
+    """【升級版】更新宿舍的詳細資料，包含 is_self_owned 欄位。"""
     conn = database.get_db_connection()
     if not conn: return False, "無法連接到資料庫"
     try:

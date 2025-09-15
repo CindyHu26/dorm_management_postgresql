@@ -68,7 +68,7 @@ def create_all_tables_and_indexes():
                 "utilities_payer" VARCHAR(50) DEFAULT '雇主', "insurance_fee" INTEGER,
                 "insurance_start_date" DATE, "insurance_end_date" DATE, "fire_safety_fee" INTEGER,
                 "fire_safety_start_date" DATE, "fire_safety_end_date" DATE,
-                "management_notes" TEXT, "dorm_notes" TEXT
+                "management_notes" TEXT, "dorm_notes" TEXT, "is_self_owned" BOOLEAN DEFAULT FALSE
             );
             """
             
