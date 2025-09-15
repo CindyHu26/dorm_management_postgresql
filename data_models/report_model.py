@@ -49,21 +49,22 @@ def get_dorm_report_data(dorm_id: int):
             ORDER BY r.room_number, w.worker_name
         """
         df = _execute_query_to_dataframe(conn, query, (dorm_id,))
+        
         # 為了讓匯出的 Excel 欄位名稱是中文，在這裡重新命名
         if not df.empty:
             df.rename(columns={
-                'room_number': '房號',
-                'worker_name': '姓名',
-                'employer_name': '雇主',
-                'gender': '性別',
-                'nationality': '國籍',
-                'monthly_fee': '月費(房租)',
+                'room_number': '房號', 
+                'worker_name': '姓名', 
+                'employer_name': '雇主', 
+                'gender': '性別', 
+                'nationality': '國籍', 
+                'monthly_fee': '月費(房租)', 
                 'utilities_fee': '水電費',
                 'cleaning_fee': '清潔費',
                 'restoration_fee': '宿舍復歸費',
                 'charging_cleaning_fee': '充電清潔費',
-                'special_status': '特殊狀況',
-                'worker_notes': '個人備註'
+                'special_status': '特殊狀況', 
+                'worker_notes': '備註'
             }, inplace=True)
         return df
         
