@@ -43,8 +43,53 @@ def render():
         gsheet_name_to_update = "宿舍外部儀表板數據"
         st.info(f"點擊下方按鈕，系統將會查詢最新的「人員清冊」與「設備清單」，並將其上傳至 Google Sheet: **{gsheet_name_to_update}**。")
         if st.button("🚀 開始上傳", type="primary"):
-            pass
+            with st.spinner("正在查詢並上傳最新數據至雲端..."):
+                worker_data = export_model.get_data_for_export()
+                equipment_data = export_model.get_equipment_for_export()
+                
+                data_package = {}
+                if not worker_data.empty:
+                    data_package["人員清冊"] = worker_data
+                if not equipment_data.empty:
+                    data_package["設備清冊"] = equipment_data
+
+                if not data_package:
+                    st.warning("目前沒有任何人員或設備資料可供上傳。")
+                else:
+                    # 將 gsheet_name_to_update 作為參數傳遞
+                    success, message = export_model.update_google_sheet(gsheet_name_to_update, data_package)
+                    if success:
+                        st.success(message)
+                    else:
+                        st.error(message)
     st.markdown("---")
+
+    with st.container(border=True):
+        st.subheader("年度宿舍財務總覽報表")
+        st.info("選擇一個年份，系統將匯出該年度從 1月1日 至今日的各宿舍實際收支彙總表。")
+
+        today = datetime.now()
+        report_year = st.selectbox(
+            "選擇報表年份", 
+            options=range(today.year - 3, today.year + 1), 
+            index=3,
+            key="annual_financial_report_year"
+        )
+
+        if st.button("🚀 產生年度財務報表", key="generate_annual_financial_report"):
+            with st.spinner(f"正在計算 {report_year} 年度的財務數據..."):
+                report_df = report_model.get_annual_financial_summary_report(report_year)
+            
+            if report_df.empty:
+                st.warning(f"在 {report_year} 年度中，找不到任何可供計算的財務數據。")
+            else:
+                st.success(f"報表已產生！共計算 {len(report_df)} 間宿舍的數據。請點擊下方按鈕下載。")
+                excel_file = to_excel({"年度財務總覽": [{"dataframe": report_df}]})
+                st.download_button(
+                    label="📥 點此下載 Excel 報表",
+                    data=excel_file,
+                    file_name=f"年度宿舍財務總覽_{report_year}.xlsx"
+                )
 
     with st.container(border=True):
         st.subheader("月份異動人員報表")
@@ -56,23 +101,23 @@ def render():
         year_month_str = f"{selected_year}-{selected_month:02d}"
         download_placeholder = st.empty()
         if c3.button("🚀 產生異動報表", key="generate_exception_report"):
-            pass
-            
-    with st.container(border=True):
-        st.subheader("單一宿舍深度分析報表")
-        st.info("選擇一個我司管理的宿舍，產生一份包含人數、國籍、性別統計與人員詳情的完整報告。")
-        my_dorms_all = dormitory_model.get_dorms_for_selection()
-        if not my_dorms_all:
-            st.warning("目前沒有任何宿舍可供選擇。")
-        else:
-            dorm_options_all = {d['id']: d['original_address'] for d in my_dorms_all}
-            selected_dorm_id_deep = st.selectbox("請選擇要匯出報表的宿舍：", options=list(dorm_options_all.keys()), format_func=lambda x: dorm_options_all.get(x), key="deep_report_dorm_select")
-            if st.button("🚀 產生並下載宿舍報表", key="download_dorm_report"):
-                 pass
+            with st.spinner(f"正在查詢 {year_month_str} 的異動人員資料..."):
+                report_df = report_model.get_monthly_exception_report(year_month_str)
+            if report_df.empty:
+                st.warning("在您選擇的月份中，找不到任何離住或有特殊狀況的人員。")
+            else:
+                st.success(f"報表已產生！共找到 {len(report_df)} 筆紀錄。請點擊下方按鈕下載。")
+                excel_file = to_excel({"異動人員清單": [{"dataframe": report_df}]})
+                download_placeholder.download_button(
+                    label="📥 點此下載 Excel 報表",
+                    data=excel_file,
+                    file_name=f"住宿特例_{year_month_str}.xlsx"
+                )
 
+    st.markdown("---")
     with st.container(border=True):
         st.subheader("慶豐富專用-水電費分攤報表")
-        st.info("請選擇宿舍、雇主與月份，系統將產生如附件361.pdf格式的水電費分攤明細。")
+        st.info("請選擇宿舍、雇主與月份，產生指定格式的水電費分攤明細。")
 
         all_dorms = dormitory_model.get_dorms_for_selection()
         all_employers = employer_dashboard_model.get_all_employers()
@@ -125,7 +170,7 @@ def render():
                             'bill_type': '帳單', 'bill_start_date': '起日', 'bill_end_date': '迄日', 'amount': '費用'
                         }, inplace=True)
                         
-                        # --- 【核心修正點】: 統一天數計算方式 ---
+                        # --- : 統一天數計算方式 ---
                         bill_summary_df['天數'] = (pd.to_datetime(bill_summary_df['迄日']) - pd.to_datetime(bill_summary_df['起日'])).dt.days + 1
                         
                         final_details_df = details_df[['離住日期', '姓名', '入住日期', '母語姓名']].copy()

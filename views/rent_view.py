@@ -15,7 +15,7 @@ def render():
     def get_all_employers():
         return employer_dashboard_model.get_all_employers()
 
-    # --- 【核心修改點】: 移除 st.radio，改為並列篩選 ---
+    # --- : 移除 st.radio，改為並列篩選 ---
     st.subheader("步驟一：設定篩選條件")
     
     col1, col2 = st.columns(2)
