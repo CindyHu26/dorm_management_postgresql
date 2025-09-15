@@ -229,7 +229,8 @@ def get_income_summary(dorm_id: int, year_month: str):
 
 def get_resident_details_as_df(dorm_id: int, year_month: str):
     """
-    【v2.0 修改版】為指定的單一宿舍和月份，查詢所有在住人員的詳細資料。
+    【v2.1 修改版】為指定的單一宿舍和月份，查詢所有在住人員的詳細資料。
+    新增宿舍復歸費與充電清潔費。
     """
     if not dorm_id: return pd.DataFrame()
     conn = database.get_db_connection()
@@ -248,6 +249,7 @@ def get_resident_details_as_df(dorm_id: int, year_month: str):
                 w.gender AS "性別", w.nationality AS "國籍", ah.start_date AS "入住此房日",
                 ah.end_date AS "離開此房日", w.work_permit_expiry_date AS "工作期限",
                 w.monthly_fee AS "房租", w.utilities_fee AS "水電費", w.cleaning_fee AS "清潔費",
+                w.restoration_fee AS "宿舍復歸費", w.charging_cleaning_fee AS "充電清潔費",
                 w.special_status AS "特殊狀況", w.worker_notes AS "備註"
             FROM "AccommodationHistory" ah
             JOIN "Workers" w ON ah.worker_unique_id = w.unique_id

@@ -16,7 +16,8 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_dorm_report_data(dorm_id: int):
     """
-    【v2.0 修改版】為指定的單一宿舍，查詢產生深度分析報告所需的所有在住人員詳細資料。
+    【v2.1 修改版】為指定的單一宿舍，查詢產生深度分析報告所需的所有在住人員詳細資料。
+    新增宿舍復歸費與充電清潔費。
     """
     if not dorm_id:
         return pd.DataFrame()
@@ -34,6 +35,10 @@ def get_dorm_report_data(dorm_id: int):
                 w.gender,
                 w.nationality,
                 w.monthly_fee,
+                w.utilities_fee,
+                w.cleaning_fee,
+                w.restoration_fee,
+                w.charging_cleaning_fee,
                 w.special_status,
                 w.worker_notes
             FROM "AccommodationHistory" ah
@@ -43,7 +48,24 @@ def get_dorm_report_data(dorm_id: int):
             AND (ah.end_date IS NULL OR ah.end_date > CURRENT_DATE)
             ORDER BY r.room_number, w.worker_name
         """
-        return _execute_query_to_dataframe(conn, query, (dorm_id,))
+        df = _execute_query_to_dataframe(conn, query, (dorm_id,))
+        # 為了讓匯出的 Excel 欄位名稱是中文，在這裡重新命名
+        if not df.empty:
+            df.rename(columns={
+                'room_number': '房號',
+                'worker_name': '姓名',
+                'employer_name': '雇主',
+                'gender': '性別',
+                'nationality': '國籍',
+                'monthly_fee': '月費(房租)',
+                'utilities_fee': '水電費',
+                'cleaning_fee': '清潔費',
+                'restoration_fee': '宿舍復歸費',
+                'charging_cleaning_fee': '充電清潔費',
+                'special_status': '特殊狀況',
+                'worker_notes': '個人備註'
+            }, inplace=True)
+        return df
         
     except Exception as e:
         print(f"查詢宿舍報表資料時發生錯誤: {e}")
