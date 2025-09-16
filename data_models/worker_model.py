@@ -84,7 +84,7 @@ def get_workers_for_view(filters: dict):
 def get_workers_for_view(filters: dict):
     """
     【v2.2 修改版】根據篩選條件，查詢移工的詳細住宿資訊。
-    新增「實際房號」欄位以便在總覽中顯示。
+    新增回傳「床位編號」。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -92,12 +92,12 @@ def get_workers_for_view(filters: dict):
     current_date_func = "CURRENT_DATE"
     
     try:
-        # 使用子查詢找到每位工人的最新住宿紀錄
         base_query = f"""
             WITH CurrentAccommodation AS (
                 SELECT 
                     worker_unique_id,
                     room_id,
+                    bed_number,
                     ROW_NUMBER() OVER(PARTITION BY worker_unique_id ORDER BY start_date DESC, id DESC) as rn
                 FROM "AccommodationHistory"
                 WHERE start_date <= {current_date_func} AND (end_date IS NULL OR end_date >= {current_date_func})
@@ -106,14 +106,15 @@ def get_workers_for_view(filters: dict):
                 w.employer_name AS "雇主", 
                 w.worker_name AS "姓名", 
                 d_actual.original_address AS "實際地址",
-                r_actual.room_number AS "實際房號", -- 【核心修改點】確保房號欄位被選取
+                r_actual.room_number AS "實際房號",
+                ca.bed_number AS "床位編號", -- 【核心修改點 2】在最終結果中顯示床位編號
                 d_system.original_address AS "系統地址",
                 d_actual.primary_manager AS "主要管理人", 
                 w.gender AS "性別",
                 w.nationality AS "國籍", 
                 w.accommodation_start_date AS "入住日期", 
                 w.accommodation_end_date AS "離住日期",
-                w.work_permit_expiry_date AS "工作限期",
+                w.work_permit_expiry_date AS "工作期限",
                 w.special_status as "特殊狀況",
                 CASE 
                     WHEN w.accommodation_end_date IS NOT NULL AND w.accommodation_end_date <= {current_date_func}
@@ -124,11 +125,9 @@ def get_workers_for_view(filters: dict):
                 w.passport_number AS "護照號碼", w.arc_number AS "居留證號碼", 
                 w.data_source as "資料來源"
             FROM "Workers" w
-            -- 第一次 JOIN：用於取得「實際地址」
             LEFT JOIN (SELECT * FROM CurrentAccommodation WHERE rn = 1) ca ON w.unique_id = ca.worker_unique_id
             LEFT JOIN "Rooms" r_actual ON ca.room_id = r_actual.id
             LEFT JOIN "Dormitories" d_actual ON r_actual.dorm_id = d_actual.id
-            -- 第二次 JOIN：用於取得「系統地址」
             LEFT JOIN "Rooms" r_system ON w.room_id = r_system.id
             LEFT JOIN "Dormitories" d_system ON r_system.dorm_id = d_system.id
         """
