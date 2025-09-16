@@ -332,8 +332,8 @@ def batch_import_building_permits(df: pd.DataFrame):
 
 def batch_import_accommodation(df: pd.DataFrame):
     """
-    【v1.5 修改版】批次匯入【住宿分配/異動】的核心邏輯。
-    新增對「床位編號」的支援。
+    【v1.6 修正版】批次匯入【住宿分配/異動】的核心邏輯。
+    修正日期計算的 TypeError。
     """
     success_count = 0
     failed_records = []
@@ -344,6 +344,8 @@ def batch_import_accommodation(df: pd.DataFrame):
         return 0, error_df
         
     try:
+        from datetime import date, timedelta # 匯入標準時間差函式庫
+
         with conn.cursor() as cursor:
             dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, original_address, normalized_address FROM "Dormitories"')
             original_addr_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
@@ -403,7 +405,6 @@ def batch_import_accommodation(df: pd.DataFrame):
                         new_room_id = cursor.fetchone()['id']
                         room_map[room_key] = new_room_id
                     
-                    # --- 【核心修改點】讀取床位編號 ---
                     bed_number_val = row.get('床位編號 (選填)')
                     bed_number = str(bed_number_val).strip() if pd.notna(bed_number_val) and str(bed_number_val).strip() else None
 
@@ -424,7 +425,8 @@ def batch_import_accommodation(df: pd.DataFrame):
                     else:
                         effective_date = pd.to_datetime(move_in_date_input).date() if pd.notna(move_in_date_input) and move_in_date_input else date.today()
                         if latest_history:
-                            end_date = effective_date - pd.Timedelta(days=1)
+                            # 【核心修改】使用 timedelta 計算
+                            end_date = effective_date - timedelta(days=1)
                             cursor.execute('UPDATE "AccommodationHistory" SET end_date = %s WHERE id = %s', (end_date, latest_history['id']))
                         
                         cursor.execute(

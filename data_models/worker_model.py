@@ -83,8 +83,8 @@ def get_workers_for_view(filters: dict):
 
 def get_workers_for_view(filters: dict):
     """
-    【v2.1 修改版】根據篩選條件，查詢移工的詳細住宿資訊。
-    現在會同時顯示「系統地址」與「實際地址」。
+    【v2.2 修改版】根據篩選條件，查詢移工的詳細住宿資訊。
+    新增「實際房號」欄位以便在總覽中顯示。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -105,9 +105,8 @@ def get_workers_for_view(filters: dict):
             SELECT
                 w.employer_name AS "雇主", 
                 w.worker_name AS "姓名", 
-                -- 【核心修改點】同時查詢兩種地址
                 d_actual.original_address AS "實際地址",
-                r_actual.room_number AS "實際房號",
+                r_actual.room_number AS "實際房號", -- 【核心修改點】確保房號欄位被選取
                 d_system.original_address AS "系統地址",
                 d_actual.primary_manager AS "主要管理人", 
                 w.gender AS "性別",
@@ -139,12 +138,10 @@ def get_workers_for_view(filters: dict):
         
         if filters.get('name_search'):
             term = f"%{filters['name_search']}%"
-            # 讓搜尋可以同時作用於兩種地址
             where_clauses.append('(w.worker_name ILIKE %s OR w.employer_name ILIKE %s OR d_actual.original_address ILIKE %s OR d_system.original_address ILIKE %s)')
             params.extend([term, term, term, term])
             
         if filters.get('dorm_id'):
-            # 篩選時，以實際地址為準
             where_clauses.append("d_actual.id = %s")
             params.append(filters['dorm_id'])
 
@@ -486,14 +483,15 @@ def get_fee_history_for_worker(unique_id: str):
     finally:
         if conn: conn.close()
 
-def change_worker_accommodation(worker_id: str, new_room_id: int, change_date: date):
+def change_worker_accommodation(worker_id: str, new_room_id: int, change_date: date, bed_number: str = None):
     """
-    【v2.2 最終版】處理工人換宿的核心業務邏輯。
-    只更新住宿歷史與 data_source，不更動 Workers.room_id (系統地址)。
+    【v2.4 修正版】處理工人換宿的核心業務邏輯，修正日期計算錯誤。
     """
     conn = database.get_db_connection()
     if not conn: return False, "資料庫連線失敗"
     try:
+        from datetime import timedelta # 匯入標準時間差函式庫
+
         with conn.cursor() as cursor:
             cursor.execute(
                 'SELECT id, room_id FROM "AccommodationHistory" WHERE worker_unique_id = %s AND end_date IS NULL ORDER BY start_date DESC LIMIT 1',
@@ -505,19 +503,19 @@ def change_worker_accommodation(worker_id: str, new_room_id: int, change_date: d
                 return True, "工人已在該房間，無需變更。"
 
             if current_accommodation:
+                # 【核心修改】將舊紀錄的結束日設為新紀錄開始日的前一天
+                end_date_for_old_record = change_date - timedelta(days=1)
                 cursor.execute(
                     'UPDATE "AccommodationHistory" SET end_date = %s WHERE id = %s',
-                    (change_date, current_accommodation['id'])
+                    (end_date_for_old_record, current_accommodation['id'])
                 )
             
             if new_room_id is not None:
                 cursor.execute(
-                    'INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date) VALUES (%s, %s, %s)',
-                    (worker_id, new_room_id, change_date)
+                    'INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, bed_number) VALUES (%s, %s, %s, %s)',
+                    (worker_id, new_room_id, change_date, bed_number)
                 )
 
-            # --- 【核心修改點】 ---
-            # 只更新 data_source 標記，不再更新 Workers 表的 room_id
             cursor.execute(
                 'UPDATE "Workers" SET data_source = %s WHERE unique_id = %s',
                 ('手動調整', worker_id)
