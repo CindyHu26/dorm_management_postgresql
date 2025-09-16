@@ -194,35 +194,23 @@ def render():
                         st.error("請先選擇一個宿舍。")
                     else:
                         with st.spinner("正在產生報表..."):
-                            # 呼叫後端函式獲取資料
                             report_df = report_model.get_dorm_report_data(selected_dorm_id)
                             
                             if report_df.empty:
                                 st.warning("此宿舍目前沒有在住人員可供匯出。")
                             else:
-                                # 1. 產生摘要 DataFrame
-                                nationality_counts = report_df['nationality'].dropna().value_counts().to_dict()
+                                nationality_counts = report_df['國籍'].dropna().value_counts().to_dict()
                                 summary_items = ["總人數", "男性人數", "女性人數"] + [f"{nat}籍人數" for nat in nationality_counts.keys()]
                                 summary_values = [
                                     len(report_df), 
-                                    len(report_df[report_df['gender'] == '男']), 
-                                    len(report_df[report_df['gender'] == '女'])
+                                    len(report_df[report_df['性別'] == '男']), 
+                                    len(report_df[report_df['性別'] == '女'])
                                 ] + list(nationality_counts.values())
                                 summary_df = pd.DataFrame({"統計項目": summary_items, "數值": summary_values})
 
-                                # 2. 產生明細 DataFrame 並重新命名欄位
-                                details_df = report_df.rename(columns={
-                                    'room_number': '房號', 
-                                    'worker_name': '姓名', 
-                                    'employer_name': '雇主', 
-                                    'gender': '性別', 
-                                    'nationality': '國籍', 
-                                    'monthly_fee': '房租', 
-                                    'special_status': '特殊狀況', 
-                                    'worker_notes': '備註'
-                                })
+                                # 由於後端已經重新命名，這裡直接使用 report_df 即可
+                                details_df = report_df
 
-                                # 3. 準備寫入 Excel 的資料結構
                                 excel_file_data = {
                                     "宿舍報表": [
                                         {"dataframe": summary_df, "title": "宿舍人數摘要"},
@@ -231,7 +219,6 @@ def render():
                                 }
                                 excel_file = to_excel(excel_file_data)
                                 
-                                # 4. 提供下載按鈕
                                 dorm_name_for_file = dorm_options.get(selected_dorm_id, "export").replace(" ", "_").replace("/", "_")
                                 st.download_button(
                                     label="✅ 報表已產生！點此下載",
