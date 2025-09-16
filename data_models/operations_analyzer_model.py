@@ -107,18 +107,18 @@ def batch_update_zero_rent_workers(workers_df: pd.DataFrame):
     finally:
         if conn: conn.close()
 
-def get_loss_making_dorms_analysis():
+def get_loss_making_dorms_analysis(year_month: str):
     """
-    【v1.1 修正版】找出所有我司管理的虧損宿舍，並計算建議的費用調整。
-    修正了對 dorm_id 的依賴。
+    【v1.2 修改版】找出所有我司管理的虧損宿舍，並計算建議的費用調整。
+    可接收指定的年月進行分析。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
 
     try:
-        year_month = date.today().strftime('%Y-%m')
-        # 【核心修改點 1】從 dashboard_model 引入 get_financial_dashboard_data
+        # --- 【核心修改點 1】從 dashboard_model 引入函式 ---
         from . import dashboard_model
+        # --- 【核心修改點 2】使用傳入的 year_month 參數 ---
         df = dashboard_model.get_financial_dashboard_data(year_month)
 
         if df is None or df.empty:
@@ -128,7 +128,6 @@ def get_loss_making_dorms_analysis():
         if loss_df.empty:
             return pd.DataFrame()
 
-        # 【核心修改點 2】確保 'id' 欄位存在
         if 'id' not in loss_df.columns:
             print("ERROR: 財務數據中缺少 'id' 欄位，無法進行虧損分析。")
             return pd.DataFrame()
@@ -142,11 +141,13 @@ def get_loss_making_dorms_analysis():
             JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
             JOIN "Rooms" r ON ah.room_id = r.id
             WHERE r.dorm_id = ANY(%s)
-              AND (ah.end_date IS NULL OR ah.end_date > CURRENT_DATE)
+              AND ah.start_date <= (TO_DATE(%s, 'YYYY-MM') + '1 month'::interval - '1 day'::interval)::date
+              AND (ah.end_date IS NULL OR ah.end_date >= TO_DATE(%s, 'YYYY-MM'))
               AND (w.special_status IS NULL OR w.special_status NOT ILIKE '%%掛宿外住%%')
             GROUP BY r.dorm_id;
         """
-        headcount_df = _execute_query_to_dataframe(conn, headcount_query, (dorm_ids,))
+        first_day_of_month = f"{year_month}-01"
+        headcount_df = _execute_query_to_dataframe(conn, headcount_query, (dorm_ids, year_month, first_day_of_month))
         headcount_map = {row['dorm_id']: row['rent_payers'] for _, row in headcount_df.iterrows()}
 
         loss_df['在住人數'] = loss_df['id'].map(headcount_map).fillna(0).astype(int)
@@ -158,7 +159,7 @@ def get_loss_making_dorms_analysis():
                 return "宿舍無有效收費人員，無法計算建議漲幅。請先檢查人員收費狀態。"
             
             increase_per_person = round(deficit / payers)
-            return f"目前虧損 ${deficit:,}。建議每位工人每月總收費至少調高 ${increase_per_person:,} 以達損益兩平。"
+            return f"虧損 ${deficit:,}。建議每位工人每月總收費至少調高 ${increase_per_person:,} 以達損益兩平。"
             
         loss_df['營運建議'] = loss_df.apply(get_suggestion, axis=1)
 

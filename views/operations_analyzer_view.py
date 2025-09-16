@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+from datetime import datetime
 from data_models import operations_analyzer_model
 
 def render():
@@ -40,7 +41,6 @@ def render():
                 if updated_count > 0:
                     st.success(f"成功更新 {updated_count} 筆房租紀錄！")
 
-                # --- 【核心修改點】顯示更詳細的失敗原因 ---
                 if missing_standard_summary:
                     st.error("部分紀錄因缺少參照標準而無法自動更新。")
                     st.markdown("原因：系統在以下群體中找不到任何一位已設定非零房租的員工，因此無法決定要更新為多少金額。")
@@ -55,7 +55,6 @@ def render():
                     st.error(f"另有 {len(individual_failures)} 筆紀錄因獨立原因更新失敗：")
                     st.dataframe(pd.DataFrame(individual_failures), hide_index=True, width='stretch')
                 
-                # 如果有任何成功或失敗，都提示使用者重新整理
                 if updated_count > 0 or individual_failures or missing_standard_summary:
                     st.info("請點擊上方的「重新整理所有數據」按鈕以查看最新狀態。")
 
@@ -64,18 +63,26 @@ def render():
     # --- 區塊二：虧損宿舍營運建議 ---
     with st.container(border=True):
         st.subheader("📉 虧損宿舍營運建議")
-        st.info("此工具會分析當前月份我司管理的宿舍中，出現虧損的項目，並提供調整建議。")
+        st.info("選擇一個月份，系統將分析該月份我司管理的宿舍中，出現虧損的項目，並提供調整建議。")
 
+        # --- 【核心修改點 1】新增年月選擇器 ---
+        today = datetime.now()
+        c1, c2 = st.columns(2)
+        selected_year = c1.selectbox("選擇年份", options=range(today.year - 2, today.year + 2), index=2, key="op_loss_year")
+        selected_month = c2.selectbox("選擇月份", options=range(1, 13), index=today.month - 1, key="op_loss_month")
+        year_month_str = f"{selected_year}-{selected_month:02d}"
+        
         @st.cache_data
-        def get_loss_analysis():
-            return operations_analyzer_model.get_loss_making_dorms_analysis()
+        def get_loss_analysis(period):
+            return operations_analyzer_model.get_loss_making_dorms_analysis(period)
 
-        loss_analysis_df = get_loss_analysis()
+        # --- 【核心修改點 2】將選擇的年月傳入函式 ---
+        loss_analysis_df = get_loss_analysis(year_month_str)
 
         if loss_analysis_df.empty:
-            st.success("🎉 恭喜！本月目前所有我司管理的宿舍均處於獲利狀態。")
+            st.success(f"🎉 恭喜！在 {year_month_str}，所有我司管理的宿舍均處於獲利狀態。")
         else:
-            st.warning(f"發現 {len(loss_analysis_df)} 間虧損宿舍，詳情如下：")
+            st.warning(f"在 {year_month_str} 發現 {len(loss_analysis_df)} 間虧損宿舍，詳情如下：")
             st.dataframe(
                 loss_analysis_df,
                 hide_index=True,
