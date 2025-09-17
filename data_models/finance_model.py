@@ -120,13 +120,12 @@ def batch_delete_annual_expenses(record_ids: list):
 
 def get_all_annual_expenses_for_dorm(dorm_id: int):
     """
-    【v1.1 修正版】查詢指定宿舍的所有年度/長期攤銷費用。
-    備註欄位將直接顯示關聯紀錄的詳細資訊，使其更直觀。
+    【v1.2 修正版】查詢指定宿舍的所有年度/長期攤銷費用。
+    新增資料類型轉換，避免 ArrowTypeError。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
-        # --- 【核心修正點】修改 CASE WHEN 語句，從 JSONB 欄位中提取詳細資料 ---
         query = """
             SELECT 
                 ae.id, 
@@ -156,10 +155,18 @@ def get_all_annual_expenses_for_dorm(dorm_id: int):
             WHERE ae.dorm_id = %s
             ORDER BY ae.payment_date DESC
         """
-        return _execute_query_to_dataframe(conn, query, (dorm_id,))
+        df = _execute_query_to_dataframe(conn, query, (dorm_id,))
+        
+        # --- 強制將日期月份欄位轉為字串，並處理空值 ---
+        if not df.empty:
+            if '攤提起始月' in df.columns:
+                df['攤提起始月'] = df['攤提起始月'].astype(str).fillna('')
+            if '攤提結束月' in df.columns:
+                df['攤提結束月'] = df['攤提結束月'].astype(str).fillna('')
+
+        return df
     finally:
         if conn: conn.close()
-
 
 def get_compliance_records_for_dorm(dorm_id: int, record_type: str):
     """查詢指定宿舍下特定類型的所有合規紀錄。"""

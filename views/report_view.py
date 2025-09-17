@@ -229,7 +229,7 @@ def render():
     st.markdown("---")
     with st.container(border=True):
         st.subheader("慶豐富專用-水電費分攤報表")
-        st.info("請選擇宿舍、雇主與月份，產生指定格式的水電費分攤明細。")
+        st.info("請依序選擇宿舍、雇主與要搜尋的帳單日期範圍，系統將會列出所有符合條件的水電帳單供您勾選。")
 
         all_dorms = dormitory_model.get_dorms_for_selection()
         all_employers = employer_dashboard_model.get_all_employers()
@@ -244,33 +244,81 @@ def render():
             except ValueError:
                 chingfong_index = 0
 
-            cf_c1, cf_c2, cf_c3 = st.columns(3)
+            # --- 步驟 1: 選擇基本條件 ---
+            cf_c1, cf_c2 = st.columns(2)
             selected_dorm_id_cf = cf_c1.selectbox("選擇宿舍地址", options=list(dorm_options.keys()), format_func=lambda x: dorm_options.get(x), key="cf_dorm_select")
             selected_employer_cf = cf_c2.selectbox("選擇雇主", options=all_employers, index=chingfong_index, key="cf_employer_select")
             
-            today_cf = datetime.now()
-            year_month_str_cf = f"{today_cf.year}-{today_cf.month:02d}"
+            # --- 【核心修改點 1】將年月選擇器改為日期範圍選擇器 ---
+            st.markdown("##### 請選擇要搜尋的帳單迄日範圍")
+            range_c1, range_c2 = st.columns(2)
+            today = datetime.now().date()
+            one_year_ago = today - pd.DateOffset(years=1)
             
-            with cf_c3:
-                selected_year_cf = st.selectbox("選擇年份", options=range(today_cf.year - 2, today_cf.year + 2), index=2, key="cf_year")
-                selected_month_cf = st.selectbox("選擇月份", options=range(1, 13), index=today_cf.month - 1, key="cf_month")
-                year_month_str_cf = f"{selected_year_cf}-{selected_month_cf:02d}"
+            bill_range_start = range_c1.date_input("起始日期", value=one_year_ago)
+            bill_range_end = range_c2.date_input("結束日期", value=today)
 
+            # --- 步驟 2: 根據條件，列出可選帳單 ---
+            available_bills = []
+            if bill_range_start and bill_range_end:
+                if bill_range_start > bill_range_end:
+                    st.error("起始日期不能晚於結束日期！")
+                else:
+                    available_bills = report_model.get_utility_bills_for_selection(selected_dorm_id_cf, bill_range_start, bill_range_end)
+            
+            selected_water_bill_ids = []
+            selected_elec_bill_ids = []
+
+            if not available_bills:
+                st.warning(f"在 {bill_range_start} 至 {bill_range_end} 期間，找不到此宿舍的任何水電費帳單。")
+            else:
+                water_bills = [b for b in available_bills if b['bill_type'] == '水費']
+                elec_bills = [b for b in available_bills if b['bill_type'] == '電費']
+                
+                bill_c1, bill_c2 = st.columns(2)
+                
+                with bill_c1:
+                    if water_bills:
+                        selected_water_bill_ids = st.multiselect(
+                            "請勾選要納入計算的水費帳單：",
+                            options=[b['id'] for b in water_bills],
+                            format_func=lambda x: f"迄日:{[b['bill_end_date'] for b in water_bills if b['id'] == x][0]}, 金額:{[b['amount'] for b in water_bills if b['id'] == x][0]:,}",
+                            default=[b['id'] for b in water_bills]
+                        )
+                    else:
+                        st.info("在此日期範圍內無水費帳單。")
+                
+                with bill_c2:
+                    if elec_bills:
+                        selected_elec_bill_ids = st.multiselect(
+                            "請勾選要納入計算的電費帳單：",
+                            options=[b['id'] for b in elec_bills],
+                            format_func=lambda x: f"迄日:{[b['bill_end_date'] for b in elec_bills if b['id'] == x][0]}, 金額:{[b['amount'] for b in elec_bills if b['id'] == x][0]:,}",
+                            default=[b['id'] for b in elec_bills]
+                        )
+                    else:
+                        st.info("在此日期範圍內無電費帳單。")
+
+            # --- 步驟 3: 產生報表 ---
             if st.button("🚀 產生慶豐富水電報表", key="generate_cf_report"):
+                selected_bill_ids = selected_water_bill_ids + selected_elec_bill_ids
+
                 if not selected_dorm_id_cf or not selected_employer_cf:
                     st.error("請務必選擇宿舍和雇主！")
+                elif not selected_bill_ids:
+                    st.error("請至少勾選一筆水費或電費帳單！")
                 else:
-                    with st.spinner(f"正在為 {selected_employer_cf} 產生 {year_month_str_cf} 的報表..."):
+                    with st.spinner(f"正在為 {selected_employer_cf} 產生報表..."):
                         dorm_details, bills_df, details_df = report_model.get_custom_utility_report_data(
-                            selected_dorm_id_cf, selected_employer_cf, year_month_str_cf
+                            selected_dorm_id_cf, selected_employer_cf, selected_bill_ids
                         )
 
                     if bills_df is None or details_df is None:
                         st.error("產生報表時發生錯誤，請檢查後台日誌。")
                     elif bills_df.empty:
-                        st.warning("在指定月份中，找不到此宿舍的任何水電費帳單。")
+                        st.warning("在您勾選的帳單中，找不到資料可供計算。")
                     elif details_df.empty:
-                        st.warning("在指定帳單期間內，找不到此雇主的任何在住人員。")
+                        st.warning("在您勾選的帳單期間內，找不到此雇主的任何在住人員。")
                     else:
                         summary_header_df = pd.DataFrame({
                             "宿舍名稱": [dorm_details['dorm_name'] or dorm_details['original_address']],
@@ -282,7 +330,6 @@ def render():
                             'bill_type': '帳單', 'bill_start_date': '起日', 'bill_end_date': '迄日', 'amount': '費用'
                         }, inplace=True)
                         
-                        # --- : 統一天數計算方式 ---
                         bill_summary_df['天數'] = (pd.to_datetime(bill_summary_df['迄日']) - pd.to_datetime(bill_summary_df['起日'])).dt.days + 1
                         
                         final_details_df = details_df[['離住日期', '姓名', '入住日期', '母語姓名']].copy()
@@ -325,5 +372,5 @@ def render():
                         st.download_button(
                             label="📥 點此下載 Excel 報表",
                             data=excel_file,
-                            file_name=f"{selected_employer_cf}_水電費報表_{year_month_str_cf}.xlsx"
+                            file_name=f"{selected_employer_cf}_水電費報表_{bill_range_end}.xlsx"
                         )

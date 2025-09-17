@@ -1,6 +1,6 @@
 import pandas as pd
 import database
-from datetime import datetime
+from datetime import datetime, date
 
 def _execute_query_to_dataframe(conn, query, params=None):
     """一個輔助函式，用來手動執行查詢並回傳 DataFrame。"""
@@ -133,26 +133,48 @@ def get_monthly_exception_report(year_month: str):
         if conn: 
             conn.close()
 
-def get_custom_utility_report_data(dorm_id: int, employer_name: str, year_month: str):
+def get_utility_bills_for_selection(dorm_id: int, start_date: date, end_date: date):
     """
-    【最終修正版】產生客製化水電費分攤報表。
-    修正了工人居住天數可能超過帳單總天數的問題。
+    【v1.1 修改版】查詢指定宿舍和「日期範圍」內的所有水費與電費帳單。
     """
     conn = database.get_db_connection()
-    if not conn:
+    if not conn: return []
+    try:
+        query = """
+            SELECT id, bill_type, bill_start_date, bill_end_date, amount
+            FROM "UtilityBills"
+            WHERE dorm_id = %s 
+              AND (bill_type = '水費' OR bill_type = '電費')
+              AND bill_end_date BETWEEN %s AND %s
+            ORDER BY bill_type, bill_start_date;
+        """
+        records = _execute_query_to_dataframe(conn, query, (dorm_id, start_date, end_date))
+        if records.empty:
+            return []
+        return records.to_dict('records')
+    finally:
+        if conn: conn.close()
+
+def get_custom_utility_report_data(dorm_id: int, employer_name: str, selected_bill_ids: list):
+    """
+    【v2.0 修改版】根據使用者選擇的帳單 ID，產生客製化水電費分攤報表。
+    """
+    conn = database.get_db_connection()
+    if not conn or not selected_bill_ids:
         return None, None, None
 
     try:
         dorm_details = _execute_query_to_dataframe(conn, 'SELECT original_address, dorm_name FROM "Dormitories" WHERE id = %s', (dorm_id,)).iloc[0]
 
+        # 查詢邏輯從年月改成根據傳入的 bill_ids
         bills_query = """
             SELECT id as bill_id, bill_type, bill_start_date, bill_end_date, amount
             FROM "UtilityBills"
-            WHERE dorm_id = %s AND (bill_type = '水費' OR bill_type = '電費')
-              AND TO_CHAR(bill_end_date, 'YYYY-MM') = %s
-            ORDER BY bill_type, bill_start_date
+            WHERE id = ANY(%s)
+            ORDER BY bill_type, bill_start_date;
         """
-        bills_df = _execute_query_to_dataframe(conn, bills_query, (dorm_id, year_month))
+        bills_df = _execute_query_to_dataframe(conn, bills_query, (selected_bill_ids,))
+        
         if bills_df.empty:
             return dorm_details, pd.DataFrame(), pd.DataFrame()
 
@@ -189,9 +211,7 @@ def get_custom_utility_report_data(dorm_id: int, employer_name: str, year_month:
                 bill_start = pd.to_datetime(bill['bill_start_date'])
                 bill_end = pd.to_datetime(bill['bill_end_date'])
                 
-                # --- 【核心修正點】: 計算帳單總天數並設定上限 ---
                 bill_duration = (bill_end - bill_start).days + 1
-
                 overlap_start = max(bill_start, worker_start_overall)
                 overlap_end = min(bill_end, worker_end_overall)
                 
@@ -199,7 +219,6 @@ def get_custom_utility_report_data(dorm_id: int, employer_name: str, year_month:
                 if overlap_start <= overlap_end:
                     days_in_period = (overlap_end - overlap_start).days + 1
                 
-                # 確保工人的居住天數不會超過帳單本身的總天數
                 final_days = min(days_in_period, bill_duration)
                 
                 bill_col_name = f"{bill['bill_type']}_{bill['bill_id']}"
