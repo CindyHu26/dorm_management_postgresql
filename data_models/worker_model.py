@@ -107,9 +107,7 @@ def get_workers_for_view(filters: dict):
                 w.worker_name AS "姓名", 
                 d_actual.original_address AS "實際地址",
                 r_actual.room_number AS "實際房號",
-                ca.bed_number AS "床位編號", -- 【核心修改點 2】在最終結果中顯示床位編號
-                d_system.original_address AS "系統地址",
-                d_actual.primary_manager AS "主要管理人", 
+                ca.bed_number AS "床位編號",
                 w.gender AS "性別",
                 w.nationality AS "國籍", 
                 w.accommodation_start_date AS "入住日期", 
@@ -121,8 +119,12 @@ def get_workers_for_view(filters: dict):
                     THEN '已離住' ELSE '在住'
                 END as "在住狀態",
                 w.monthly_fee AS "月費(房租)", w.utilities_fee AS "水電費", w.cleaning_fee AS "清潔費",
+                w.restoration_fee AS "宿舍復歸費",
+                w.charging_cleaning_fee AS "充電清潔費",
                 w.worker_notes AS "個人備註", 
-                w.passport_number AS "護照號碼", w.arc_number AS "居留證號碼", 
+                w.passport_number AS "護照號碼", w.arc_number AS "居留證號碼",
+                d_actual.primary_manager AS "主要管理人", 
+                d_system.original_address AS "系統地址",
                 w.data_source as "資料來源"
             FROM "Workers" w
             LEFT JOIN (SELECT * FROM CurrentAccommodation WHERE rn = 1) ca ON w.unique_id = ca.worker_unique_id
