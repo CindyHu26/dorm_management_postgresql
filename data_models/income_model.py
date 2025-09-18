@@ -66,3 +66,33 @@ def delete_income_record(record_id: int):
         return False, f"刪除收入紀錄時發生錯誤: {e}"
     finally:
         if conn: conn.close()
+
+def get_single_income_details(record_id: int):
+    """查詢單筆其他收入的詳細資料，用於編輯表單。"""
+    conn = database.get_db_connection()
+    if not conn: return None
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute('SELECT * FROM "OtherIncome" WHERE id = %s', (record_id,))
+            record = cursor.fetchone()
+            return dict(record) if record else None
+    finally:
+        if conn: conn.close()
+
+def update_income_record(record_id: int, details: dict):
+    """更新一筆已存在的其他收入紀錄。"""
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗。"
+    try:
+        with conn.cursor() as cursor:
+            fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
+            values = list(details.values()) + [record_id]
+            sql = f'UPDATE "OtherIncome" SET {fields} WHERE id = %s'
+            cursor.execute(sql, tuple(values))
+        conn.commit()
+        return True, "收入紀錄更新成功！"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"更新收入紀錄時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
