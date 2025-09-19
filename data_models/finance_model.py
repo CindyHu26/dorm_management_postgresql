@@ -316,7 +316,7 @@ def get_bill_records_for_dorm_as_df(dorm_id: int):
 
         # --- 強制將「對應錶號」欄位轉為文字，並處理空值 ---
         if not df.empty and '對應錶號' in df.columns:
-            df['對應錶號'] = df['對應錶號'].astype(str).fillna('')
+            df['對應錶號'] = df['對應錶號'].fillna('').astype(str)
 
         return df
     finally:
