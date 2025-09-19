@@ -293,7 +293,7 @@ def batch_update_worker_fees(filters: dict, fee_type: str, fee_type_display: str
 
 # --- 費用管理 (帳單式) ---
 def get_bill_records_for_dorm_as_df(dorm_id: int):
-    """【v1.1 修改版】查詢指定宿舍的所有獨立帳單紀錄，新增用量欄位。"""
+    """【v1.2 修正版】查詢指定宿舍的所有獨立帳單紀錄，修正 ArrowInvalid 錯誤。"""
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
@@ -312,7 +312,13 @@ def get_bill_records_for_dorm_as_df(dorm_id: int):
             WHERE b.dorm_id = %s
             ORDER BY b.bill_end_date DESC
         """
-        return _execute_query_to_dataframe(conn, query, (dorm_id,))
+        df = _execute_query_to_dataframe(conn, query, (dorm_id,))
+
+        # --- 強制將「對應錶號」欄位轉為文字，並處理空值 ---
+        if not df.empty and '對應錶號' in df.columns:
+            df['對應錶號'] = df['對應錶號'].astype(str).fillna('')
+
+        return df
     finally:
         if conn: conn.close()
 

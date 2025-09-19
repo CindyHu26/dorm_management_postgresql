@@ -624,3 +624,87 @@ def batch_import_fire_safety(df: pd.DataFrame):
         if conn: conn.close()
 
     return success_count, pd.DataFrame(failed_records), pd.DataFrame(skipped_records)
+
+def batch_import_other_income(df: pd.DataFrame):
+    """
+    批次匯入【其他收入】的核心邏輯。
+    採用「有就更新，沒有就新增」的模式。
+    """
+    success_count = 0
+    failed_records = []
+    conn = database.get_db_connection()
+    if not conn:
+        error_df = df.copy()
+        error_df['錯誤原因'] = "無法連接到資料庫"
+        return 0, error_df
+
+    try:
+        with conn.cursor() as cursor:
+            dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, original_address, normalized_address FROM "Dormitories"')
+            original_addr_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
+            normalized_addr_map = {d['normalized_address']: d['id'] for _, d in dorms_df.iterrows()}
+            
+            for index, row in df.iterrows():
+                try:
+                    original_address = row.get('宿舍地址')
+                    if not original_address or pd.isna(original_address):
+                        raise ValueError("宿舍地址為空")
+                        
+                    dorm_id = None
+                    addr_stripped = str(original_address).strip()
+                    if addr_stripped in original_addr_map:
+                        dorm_id = original_addr_map[addr_stripped]
+                    elif addr_stripped in normalized_addr_map:
+                        dorm_id = normalized_addr_map[addr_stripped]
+                    else:
+                        normalized_input = normalize_taiwan_address(addr_stripped)['full']
+                        if normalized_input in normalized_addr_map:
+                            dorm_id = normalized_addr_map[normalized_input]
+
+                    if not dorm_id:
+                        raise ValueError(f"在資料庫中找不到對應的宿舍地址: {original_address}")
+                        
+                    income_item = row.get('收入項目')
+                    amount = pd.to_numeric(row.get('收入金額'), errors='coerce')
+                    transaction_date = pd.to_datetime(row.get('收入日期'), errors='coerce')
+
+                    if not all([income_item, pd.notna(amount), pd.notna(transaction_date)]):
+                        raise ValueError("必填欄位(收入項目, 收入金額, 收入日期)有缺漏或格式錯誤")
+                        
+                    details = {
+                        "dorm_id": dorm_id,
+                        "income_item": str(income_item).strip(),
+                        "transaction_date": transaction_date.strftime('%Y-%m-%d'),
+                        "amount": int(amount),
+                        "notes": str(row.get('備註', ''))
+                    }
+                    
+                    # 檢查重複：如果同一宿舍、同一天、同項目的紀錄已存在，就用更新的
+                    query = 'SELECT id FROM "OtherIncome" WHERE dorm_id = %s AND income_item = %s AND transaction_date = %s'
+                    cursor.execute(query, (dorm_id, details['income_item'], details['transaction_date']))
+                    existing = cursor.fetchone()
+                    
+                    if existing:
+                        fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
+                        values = list(details.values()) + [existing['id']]
+                        update_sql = f'UPDATE "OtherIncome" SET {fields} WHERE id = %s'
+                        cursor.execute(update_sql, tuple(values))
+                    else:
+                        columns = ', '.join(f'"{k}"' for k in details.keys())
+                        placeholders = ', '.join(['%s'] * len(details))
+                        insert_sql = f'INSERT INTO "OtherIncome" ({columns}) VALUES ({placeholders})'
+                        cursor.execute(insert_sql, tuple(details.values()))
+
+                    success_count += 1
+                except Exception as row_error:
+                    row['錯誤原因'] = str(row_error)
+                    failed_records.append(row)
+        
+        conn.commit()
+    except Exception as e:
+        if conn: conn.rollback()
+        print(f"批次匯入其他收入時發生嚴重錯誤: {e}")
+    finally:
+        if conn: conn.close()
+            
+    return success_count, pd.DataFrame(failed_records)

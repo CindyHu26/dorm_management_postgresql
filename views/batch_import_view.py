@@ -285,3 +285,38 @@ def render():
                         )
             except Exception as e:
                 st.error(f"處理檔案時發生錯誤：{e}")
+
+    st.markdown("---")
+    with st.container(border=True):
+        st.subheader("💰 其他收入匯入")
+        st.info("用於匯入冷氣卡儲值、販賣機等非房租的零星收入。")
+        
+        other_income_template_df = pd.DataFrame({
+            "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號"],
+            "收入項目": ["冷氣卡儲值"],
+            "收入金額": [500],
+            "收入日期": [date.today().strftime('%Y-%m-%d')],
+            "備註": ["A01房-阮文雄"]
+        })
+        st.download_button(
+            label="📥 下載其他收入匯入範本",
+            data=to_excel(other_income_template_df),
+            file_name="other_income_import_template.xlsx"
+        )
+
+        uploaded_income_file = st.file_uploader("上傳【其他收入】Excel 檔案", type=["xlsx"], key="income_uploader")
+
+        if uploaded_income_file:
+            try:
+                df_income = pd.read_excel(uploaded_income_file)
+                st.markdown("##### 檔案內容預覽：")
+                st.dataframe(df_income.head())
+                if st.button("🚀 開始匯入其他收入", type="primary", key="income_import_btn"):
+                    with st.spinner("正在處理與匯入資料..."):
+                        success, failed_df = importer_model.batch_import_other_income(df_income)
+                    st.success(f"匯入完成！成功 {success} 筆。")
+                    if not failed_df.empty:
+                        st.error(f"有 {len(failed_df)} 筆資料匯入失敗：")
+                        st.dataframe(failed_df)
+            except Exception as e:
+                st.error(f"處理檔案時發生錯誤：{e}")
