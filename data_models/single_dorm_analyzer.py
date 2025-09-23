@@ -106,7 +106,7 @@ def get_resident_summary(dorm_id: int, year_month: str):
 
 def get_expense_summary(dorm_id: int, year_month: str):
     """
-    【最終修正版】計算指定月份宿舍的總支出細項，並明確標示支付方。
+    【v1.2 支付方精準修正版】計算指定月份宿舍的總支出細項，並嚴格根據宿舍設定標示支付方。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -119,7 +119,7 @@ def get_expense_summary(dorm_id: int, year_month: str):
                     TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
                     (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
             )
-            -- 1. 月租金支出，明確標示支付方
+            -- 1. 月租金支出，支付方來自 Dormitories.rent_payer
             SELECT 
                 '月租金 (' || d.rent_payer || '支付)' AS "費用項目", 
                 l.monthly_rent AS "金額"
@@ -134,18 +134,24 @@ def get_expense_summary(dorm_id: int, year_month: str):
             
             UNION ALL
             
-            -- 2. 變動雜費，明確標示支付方
+            -- 2. 變動雜費，根據類型決定支付方
             SELECT 
-                bill_type || ' (' || COALESCE(payer, '未指定') || '支付)' AS "費用項目",
+                b.bill_type || ' (' || 
+                    CASE
+                        WHEN b.bill_type IN ('水費', '電費') THEN d.utilities_payer
+                        ELSE b.payer
+                    END
+                || '支付)' AS "費用項目",
                 SUM(b.amount::decimal * (LEAST(b.bill_end_date, (SELECT last_day_of_month FROM DateParams))::date - GREATEST(b.bill_start_date, (SELECT first_day_of_month FROM DateParams))::date + 1)
                     / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)
                 ) as "金額"
             FROM "UtilityBills" b
+            JOIN "Dormitories" d ON b.dorm_id = d.id
             CROSS JOIN DateParams dp
             WHERE b.dorm_id = %(dorm_id)s
               AND b.bill_start_date <= dp.last_day_of_month 
               AND b.bill_end_date >= dp.first_day_of_month
-            GROUP BY b.bill_type, b.payer
+            GROUP BY b.bill_type, d.utilities_payer, b.payer
 
             UNION ALL
 

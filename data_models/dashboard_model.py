@@ -24,7 +24,7 @@ def get_dormitory_dashboard_data():
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
-        # --- 核心修改點：JOIN AccommodationHistory 來計算實際在住人數 ---
+        # --- JOIN AccommodationHistory 來計算實際在住人數 ---
         query = """
             WITH CurrentResidents AS (
                 SELECT
@@ -57,8 +57,8 @@ def get_dormitory_dashboard_data():
         
 def get_financial_dashboard_data(year_month: str):
     """
-    【v2.2 修正版】執行一個複雜的聚合查詢，為指定的月份計算收支與損益。
-    新增回傳宿舍 ID 以供其他模組使用。
+    【v2.4 支付方精準修正版】執行一個複雜的聚合查詢，為指定的月份計算收支與損益。
+    確保所有支出項目都嚴格遵守宿舍設定的支付方，並區分水電費與其他雜費。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -99,10 +99,13 @@ def get_financial_dashboard_data(year_month: str):
             ),
             MonthlyRent AS (
                 SELECT dorm_id, monthly_rent FROM (
-                    SELECT dorm_id, monthly_rent, ROW_NUMBER() OVER(PARTITION BY dorm_id ORDER BY lease_start_date DESC) as rn
-                    FROM "Leases" CROSS JOIN DateParams dp
-                    WHERE lease_start_date <= dp.last_day_of_month
-                      AND (lease_end_date IS NULL OR lease_end_date >= dp.first_day_of_month)
+                    SELECT l.dorm_id, l.monthly_rent, ROW_NUMBER() OVER(PARTITION BY l.dorm_id ORDER BY l.lease_start_date DESC) as rn
+                    FROM "Leases" l
+                    JOIN "Dormitories" d ON l.dorm_id = d.id
+                    CROSS JOIN DateParams dp
+                    WHERE d.rent_payer = '我司' -- 【核心修正 1】只計算我司支付的租金
+                      AND l.lease_start_date <= dp.last_day_of_month
+                      AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month)
                 ) as sub_leases WHERE rn = 1
             ),
             ProratedUtilities AS (
@@ -110,8 +113,18 @@ def get_financial_dashboard_data(year_month: str):
                        SUM(b.amount::decimal * (LEAST(b.bill_end_date, (SELECT last_day_of_month FROM DateParams))::date - GREATEST(b.bill_start_date, (SELECT first_day_of_month FROM DateParams))::date + 1)
                            / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)
                        ) as total_utilities
-                FROM "UtilityBills" b CROSS JOIN DateParams dp
-                WHERE b.payer = '我司'
+                FROM "UtilityBills" b
+                JOIN "Dormitories" d ON b.dorm_id = d.id
+                CROSS JOIN DateParams dp
+                WHERE 
+                  -- 【核心修正 2】複雜條件判斷
+                  (
+                    -- 如果是水電費，則遵循宿舍的水電支付方設定
+                    (b.bill_type IN ('水費', '電費') AND d.utilities_payer = '我司')
+                    OR
+                    -- 如果是其他雜費，則遵循該筆帳單自己的支付方設定
+                    (b.bill_type NOT IN ('水費', '電費') AND b.payer = '我司')
+                  )
                   AND b.bill_start_date <= dp.last_day_of_month 
                   AND b.bill_end_date >= dp.first_day_of_month
                 GROUP BY b.dorm_id
