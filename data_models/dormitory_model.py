@@ -1,5 +1,6 @@
 import pandas as pd
 import database
+from data_processor import normalize_taiwan_address
 
 def _execute_query_to_dataframe(conn, query, params=None):
     """一個輔助函式，用來手動執行查詢並回傳 DataFrame。"""
@@ -15,7 +16,7 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_all_dorms_for_view(search_term: str = None):
     """
-    【升級版】取得所有宿舍的基本資料，新增 "是否自購" 欄位。
+    【v2.0 修改版】取得所有宿舍的基本資料，新增縣市、區域、負責人欄位。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -24,6 +25,9 @@ def get_all_dorms_for_view(search_term: str = None):
             SELECT 
                 id, 
                 legacy_dorm_code AS "舊編號", 
+                city AS "縣市",
+                district AS "區域",
+                person_in_charge AS "負責人",
                 primary_manager AS "主要管理人",
                 is_self_owned AS "是否自購",
                 rent_payer AS "租金支付方",
@@ -35,9 +39,9 @@ def get_all_dorms_for_view(search_term: str = None):
         """
         params = []
         if search_term:
-            query += ' WHERE original_address ILIKE %s OR normalized_address ILIKE %s OR dorm_name ILIKE %s OR legacy_dorm_code ILIKE %s'
+            query += ' WHERE original_address ILIKE %s OR normalized_address ILIKE %s OR dorm_name ILIKE %s OR legacy_dorm_code ILIKE %s OR city ILIKE %s OR district ILIKE %s OR person_in_charge ILIKE %s'
             term = f"%{search_term}%"
-            params.extend([term, term, term, term])
+            params.extend([term, term, term, term, term, term, term])
 
         query += " ORDER BY legacy_dorm_code"
         return _execute_query_to_dataframe(conn, query, params)
@@ -57,10 +61,16 @@ def get_dorm_details_by_id(dorm_id: int):
         if conn: conn.close()
 
 def add_new_dormitory(details: dict):
-    """【升級版】新增宿舍的業務邏輯，包含 is_self_owned 欄位。"""
+    """【v2.0 修改版】新增宿舍的業務邏輯，自動拆分縣市區域並寫入負責人。"""
     conn = database.get_db_connection()
     if not conn: return False, "無法連接到資料庫"
     try:
+        # 自動從正規化地址中提取縣市和區域
+        addr_info = normalize_taiwan_address(details.get('original_address', ''))
+        details['normalized_address'] = addr_info['full']
+        details['city'] = addr_info['city']
+        details['district'] = addr_info['district']
+
         with conn.cursor() as cursor:
             columns = ', '.join(f'"{k}"' for k in details.keys())
             placeholders = ', '.join(['%s'] * len(details))
@@ -81,10 +91,17 @@ def add_new_dormitory(details: dict):
         if conn: conn.close()
 
 def update_dormitory_details(dorm_id: int, details: dict):
-    """【升級版】更新宿舍的詳細資料，包含 is_self_owned 欄位。"""
+    """【v2.0 修改版】更新宿舍的詳細資料，自動更新縣市區域。"""
     conn = database.get_db_connection()
     if not conn: return False, "無法連接到資料庫"
     try:
+        # 如果原始地址被修改，就重新正規化並更新縣市區域
+        if 'original_address' in details:
+            addr_info = normalize_taiwan_address(details['original_address'])
+            details['normalized_address'] = addr_info['full']
+            details['city'] = addr_info['city']
+            details['district'] = addr_info['district']
+
         with conn.cursor() as cursor:
             fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
             values = list(details.values()) + [dorm_id]
@@ -97,6 +114,7 @@ def update_dormitory_details(dorm_id: int, details: dict):
         return False, f"更新宿舍時發生錯誤: {e}"
     finally:
         if conn: conn.close()
+
 
 def delete_dormitory_by_id(dorm_id: int):
     """

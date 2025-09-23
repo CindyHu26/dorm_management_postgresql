@@ -38,10 +38,11 @@ def render():
     with st.expander("➕ 新增宿舍地址", expanded=False):
         with st.form("new_dorm_form", clear_on_submit=True):
             st.subheader("宿舍基本資料")
-            c1, c2 = st.columns(2)
+            c1, c2, c3 = st.columns(3)
             legacy_code = c1.text_input("舊系統編號 (選填)")
             original_address = c1.text_input("原始地址 (必填)")
             dorm_name = c2.text_input("宿舍自訂名稱 (例如: 中山A棟)")
+            person_in_charge = c3.text_input("負責人") # 【新增】
             is_self_owned = st.checkbox("✅ 此為公司自購宿舍", key="new_self_owned")
 
             st.subheader("責任歸屬")
@@ -59,7 +60,7 @@ def render():
                 else:
                     dorm_details = {
                         'legacy_dorm_code': legacy_code, 'original_address': original_address,
-                        'normalized_address': norm_addr_preview, 'dorm_name': dorm_name,
+                        'dorm_name': dorm_name, 'person_in_charge': person_in_charge, # 【新增】
                         'primary_manager': primary_manager,
                         'rent_payer': rent_payer, 'utilities_payer': utilities_payer,
                         'management_notes': management_notes,
@@ -68,7 +69,7 @@ def render():
                     success, message = dormitory_model.add_new_dormitory(dorm_details)
                     if success:
                         st.success(message)
-                        get_dorms_df.clear() # 清除快取以重新載入
+                        get_dorms_df.clear() 
                         st.rerun()
                     else:
                         st.error(message)
@@ -78,7 +79,7 @@ def render():
     # --- 現有宿舍總覽與編輯 ---
     st.subheader("現有宿舍總覽")
     
-    search_term = st.text_input("搜尋宿舍 (可輸入舊編號、名稱、原始或正規化地址)")
+    search_term = st.text_input("搜尋宿舍 (可輸入舊編號、名稱、地址、縣市、區域或負責人)")
     
     dorms_df = get_dorms_df(search_term)
     
@@ -120,6 +121,11 @@ def render():
                         original_address = edit_c1.text_input("原始地址", value=dorm_details.get('original_address', ''))
                         dorm_name = edit_c2.text_input("宿舍自訂名稱", value=dorm_details.get('dorm_name', ''))
                         
+                        edit_c3, edit_c4, edit_c5 = st.columns(3)
+                        city = edit_c3.text_input("縣市", value=dorm_details.get('city', ''))
+                        district = edit_c4.text_input("區域", value=dorm_details.get('district', ''))
+                        person_in_charge = edit_c5.text_input("負責人", value=dorm_details.get('person_in_charge', ''))
+
                         edit_is_self_owned = st.checkbox("✅ 此為公司自購宿舍", value=dorm_details.get('is_self_owned', False), key="edit_self_owned")
 
                         st.markdown("##### 責任歸屬")
@@ -133,7 +139,9 @@ def render():
                         if edit_submitted:
                             updated_details = {
                                 'legacy_dorm_code': legacy_code, 'original_address': original_address,
-                                'dorm_name': dorm_name, 'primary_manager': primary_manager,
+                                'dorm_name': dorm_name, 
+                                'city': city, 'district': district, 'person_in_charge': person_in_charge, # 【新增】
+                                'primary_manager': primary_manager,
                                 'rent_payer': rent_payer, 'utilities_payer': utilities_payer,
                                 'management_notes': management_notes,
                                 'is_self_owned': edit_is_self_owned

@@ -114,6 +114,9 @@ def create_all_tables_and_indexes():
             CREATE TABLE IF NOT EXISTS "Dormitories" (
                 "id" SERIAL PRIMARY KEY, "legacy_dorm_code" VARCHAR(50), "original_address" VARCHAR(255),
                 "normalized_address" VARCHAR(255) NOT NULL UNIQUE, "dorm_name" VARCHAR(100),
+                "city" VARCHAR(50),
+                "district" VARCHAR(50),
+                "person_in_charge" VARCHAR(50),
                 "primary_manager" VARCHAR(50) DEFAULT '雇主', "rent_payer" VARCHAR(50) DEFAULT '雇主',
                 "utilities_payer" VARCHAR(50) DEFAULT '雇主', "insurance_fee" INTEGER,
                 "insurance_start_date" DATE, "insurance_end_date" DATE, "fire_safety_fee" INTEGER,
