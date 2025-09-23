@@ -390,8 +390,7 @@ def get_annual_financial_summary_report(year: int):
 
 def get_employer_profit_loss_report(employer_names: list, year_month: str):
     """
-    【v2.3 修正版】為指定的多位雇主和月份，產生詳細的損益分析報表。
-    確保所有支出項目僅計算「我司支付」的部分。
+    【v2.4 租約期限修正版】為指定的多位雇主和月份，產生詳細的損益分析報表。
     """
     if not employer_names:
         return pd.DataFrame()
@@ -407,7 +406,6 @@ def get_employer_profit_loss_report(employer_names: list, year_month: str):
                     TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
                     (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
             ),
-            -- 1. 計算每間宿舍中，目標雇主住了多少人天，以及所有雇主總共住了多少人天
             DormOccupancyDays AS (
                 SELECT
                     r.dorm_id,
@@ -420,7 +418,6 @@ def get_employer_profit_loss_report(employer_names: list, year_month: str):
                 WHERE ah.start_date <= dp.last_day_of_month AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
                 GROUP BY r.dorm_id
             ),
-            -- 2. 計算目標雇主貢獻的收入
             EmployerIncome AS (
                 SELECT
                     r.dorm_id,
@@ -433,7 +430,6 @@ def get_employer_profit_loss_report(employer_names: list, year_month: str):
                   AND ah.start_date <= dp.last_day_of_month AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
                 GROUP BY r.dorm_id
             ),
-            -- 3. 計算宿舍的各項支出 (限定為我司支付)
             DormExpenses AS (
                 SELECT
                     d.id as dorm_id,
@@ -447,15 +443,17 @@ def get_employer_profit_loss_report(employer_names: list, year_month: str):
                         FROM "Leases" l
                         JOIN "Dormitories" d_filter ON l.dorm_id = d_filter.id
                         CROSS JOIN DateParams dp 
-                        WHERE l.lease_start_date <= dp.last_day_of_month AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month)
-                          AND d_filter.rent_payer = '我司' -- 【核心修改點 1】
+                        WHERE l.lease_start_date <= dp.last_day_of_month 
+                          -- 【核心修正】確保無截止日的合約也能被納入計算
+                          AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month)
+                          AND d_filter.rent_payer = '我司'
                     ) as sub_leases WHERE rn = 1
                 ) l ON d.id = l.dorm_id
                 LEFT JOIN (
                     SELECT dorm_id, SUM(amount::decimal * (LEAST(bill_end_date, (SELECT last_day_of_month FROM DateParams))::date - GREATEST(bill_start_date, (SELECT first_day_of_month FROM DateParams))::date + 1) / NULLIF((bill_end_date - bill_start_date + 1), 0)) as utility_costs
                     FROM "UtilityBills" CROSS JOIN DateParams dp 
                     WHERE bill_start_date <= dp.last_day_of_month AND bill_end_date >= dp.first_day_of_month
-                      AND payer = '我司' -- 【核心修改點 2】
+                      AND payer = '我司'
                     GROUP BY dorm_id
                 ) u ON d.id = u.dorm_id
                 LEFT JOIN (
@@ -463,14 +461,12 @@ def get_employer_profit_loss_report(employer_names: list, year_month: str):
                     FROM "AnnualExpenses" CROSS JOIN DateParams dp WHERE TO_DATE(amortization_start_month, 'YYYY-MM') <= dp.last_day_of_month AND TO_DATE(amortization_end_month, 'YYYY-MM') >= dp.first_day_of_month GROUP BY dorm_id
                 ) a ON d.id = a.dorm_id
             ),
-            -- 4. 計算宿舍的其他收入
             OtherDormIncome AS (
                  SELECT dorm_id, SUM(amount) as other_income
                  FROM "OtherIncome" CROSS JOIN DateParams dp
                  WHERE transaction_date BETWEEN dp.first_day_of_month AND dp.last_day_of_month
                  GROUP BY dorm_id
             )
-            -- 5. 最終匯總與計算
             SELECT
                 d.original_address AS "宿舍地址",
                 COALESCE(ei.worker_income, 0)::int AS "移工每月扣款收入",
