@@ -157,3 +157,88 @@ def get_loss_making_dorms(period: str):
 
     finally:
         if conn: conn.close()
+
+def get_daily_loss_making_dorms(period: str):
+    """
+    查詢在指定期間內虧損的宿舍，但只計算日常營運收支。
+    【排除】長期攤銷費用 (AnnualExpenses) 不納入計算。
+    period can be 'annual' or a 'YYYY-MM' string.
+    """
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+
+    try:
+        if period == 'annual':
+            today = date.today()
+            start_date = (pd.to_datetime(today.replace(day=1)) - pd.DateOffset(years=1)).date()
+            end_date = today
+
+            query = """
+                WITH DateRange AS (
+                    SELECT %(start_date)s::date as start_date, %(end_date)s::date as end_date
+                ),
+                WorkerContribution AS (
+                    SELECT r.dorm_id, SUM((COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0) + COALESCE(w.restoration_fee, 0) + COALESCE(w.charging_cleaning_fee, 0)) * ((LEAST(COALESCE(w.accommodation_end_date, (SELECT end_date FROM DateRange)), (SELECT end_date FROM DateRange))::date - GREATEST(w.accommodation_start_date, (SELECT start_date FROM DateRange))::date) / 30.4375)) as total_income
+                    FROM "Workers" w JOIN "Rooms" r ON w.room_id = r.id CROSS JOIN DateRange dr
+                    WHERE w.accommodation_start_date <= dr.end_date AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date >= dr.start_date)
+                    GROUP BY r.dorm_id
+                ),
+                DailyExpenses AS (
+                    SELECT dorm_id, SUM(monthly_rent * ((LEAST(COALESCE(lease_end_date, (SELECT end_date FROM DateRange)), (SELECT end_date FROM DateRange))::date - GREATEST(lease_start_date, (SELECT start_date FROM DateRange))::date) / 30.4375)) as total_expense
+                    FROM "Leases" CROSS JOIN DateRange dr WHERE lease_start_date <= dr.end_date AND (lease_end_date IS NULL OR lease_end_date >= dr.start_date) GROUP BY dorm_id
+                    UNION ALL
+                    SELECT dorm_id, SUM(amount::decimal * ((LEAST(bill_end_date, (SELECT end_date FROM DateRange))::date - GREATEST(bill_start_date, (SELECT start_date FROM DateRange))::date + 1) / NULLIF((bill_end_date - bill_start_date + 1), 0)::decimal))
+                    FROM "UtilityBills" CROSS JOIN DateRange dr WHERE payer = '我司' AND is_pass_through = FALSE AND bill_start_date <= dr.end_date AND bill_end_date >= dr.start_date GROUP BY dorm_id
+                ),
+                FinalSummary AS (
+                    SELECT d.id as dorm_id, d.original_address, COALESCE(wc.total_income, 0) as "總收入",
+                           (SELECT SUM(total_expense) FROM DailyExpenses de WHERE de.dorm_id = d.id) as "總支出"
+                    FROM "Dormitories" d
+                    LEFT JOIN WorkerContribution wc ON d.id = wc.dorm_id
+                    WHERE d.primary_manager = '我司'
+                )
+                SELECT
+                    original_address AS "宿舍地址", "總收入"::int AS "年度總收入",
+                    COALESCE("總支出", 0)::int AS "年度總支出",
+                    (COALESCE("總收入", 0) - COALESCE("總支出", 0))::int AS "淨損益"
+                FROM FinalSummary
+                WHERE (COALESCE("總收入", 0) - COALESCE("總支出", 0)) < 0
+                ORDER BY "淨損益" ASC;
+            """
+            params = { "start_date": start_date.strftime('%Y-%m-%d'), "end_date": end_date.strftime('%Y-%m-%d') }
+            return _execute_query_to_dataframe(conn, query, params)
+
+        else: # 單月查詢
+            query = f"""
+                WITH 
+                DormIncome AS (
+                    SELECT r.dorm_id, SUM(COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0) + COALESCE(w.restoration_fee, 0) + COALESCE(w.charging_cleaning_fee, 0)) as "總收入"
+                    FROM "Workers" w JOIN "Rooms" r ON w.room_id = r.id
+                    WHERE TO_CHAR(w.accommodation_start_date, 'YYYY-MM') <= '{period}' AND (w.accommodation_end_date IS NULL OR TO_CHAR(w.accommodation_end_date, 'YYYY-MM') >= '{period}')
+                    GROUP BY r.dorm_id
+                ),
+                DormRent AS (
+                    SELECT dorm_id, AVG(monthly_rent) as "月租金支出" FROM "Leases"
+                    WHERE lease_start_date <= CURRENT_DATE AND (lease_end_date IS NULL OR lease_end_date >= CURRENT_DATE) GROUP BY dorm_id
+                ),
+                DormUtilities AS (
+                    SELECT dorm_id, SUM(amount) as "雜費支出" FROM "UtilityBills" b
+                    WHERE b.payer = '我司' AND b.is_pass_through = FALSE AND TO_CHAR(b.bill_end_date, 'YYYY-MM') = '{period}' GROUP BY dorm_id
+                )
+                SELECT
+                    d.original_address AS "宿舍地址", COALESCE(di."總收入", 0)::int AS "總收入",
+                    COALESCE(dr."月租金支出", 0)::int AS "月租金支出", COALESCE(du."雜費支出", 0)::int AS "雜費支出",
+                    (COALESCE(dr."月租金支出", 0) + COALESCE(du."雜費支出", 0))::int AS "總支出",
+                    (COALESCE(di."總收入", 0) - (COALESCE(dr."月租金支出", 0) + COALESCE(du."雜費支出", 0)))::int AS "淨損益"
+                FROM "Dormitories" d
+                LEFT JOIN DormIncome di ON d.id = di.dorm_id LEFT JOIN DormRent dr ON d.id = dr.dorm_id
+                LEFT JOIN DormUtilities du ON d.id = du.dorm_id
+                WHERE d.primary_manager = '我司'
+                GROUP BY d.original_address, di."總收入", dr."月租金支出", du."雜費支出"
+                HAVING (COALESCE(di."總收入", 0) - (COALESCE(dr."月租金支出", 0) + COALESCE(du."雜費支出", 0))) < 0
+                ORDER BY "淨損益" ASC;
+            """
+            return _execute_query_to_dataframe(conn, query)
+
+    finally:
+        if conn: conn.close()
