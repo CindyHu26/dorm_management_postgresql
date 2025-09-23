@@ -603,3 +603,24 @@ def delete_accommodation_history(history_id: int):
         return False, f"刪除住宿歷史時發生錯誤: {e}"
     finally:
         if conn: conn.close()
+
+def set_worker_as_fully_manual(worker_id: str):
+    """
+    將工人的 data_source 設為'手動管理(他仲)'，
+    使其完全不受每日自動同步影響 (包含離住日)。
+    """
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗"
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                'UPDATE "Workers" SET data_source = %s WHERE unique_id = %s',
+                ('手動管理(他仲)', worker_id)
+            )
+        conn.commit()
+        return True, "成功將此人員完全鎖定！系統將不再自動更新其任何資料。"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"完全鎖定時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()

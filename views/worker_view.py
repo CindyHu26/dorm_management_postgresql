@@ -164,9 +164,16 @@ def render():
                                 st.error(message)
                     st.markdown("---")
                     st.markdown("##### 危險操作區")
-                    if worker_details.get('data_source') == '手動調整':
-                        st.warning("此工人的住宿位置目前為手動鎖定狀態，不受每日自動同步影響。")
-                        if st.button("🔓 解除鎖定，恢復自動同步"):
+                    current_data_source = worker_details.get('data_source')
+
+                    # --- 解除鎖定邏輯 (適用於兩種鎖定狀態) ---
+                    if current_data_source in ['手動調整', '手動管理(他仲)']:
+                        if current_data_source == '手動調整':
+                            st.warning("此工人的「住宿位置」為手動鎖定，不受自動同步影響，但「離住日」仍會更新。")
+                        else: # 手動管理(他仲)
+                            st.error("此工人已被「完全鎖定」，系統不會更新其住宿位置和離住日。")
+                        
+                        if st.button("🔓 解除鎖定，恢復系統自動同步"):
                             success, message = worker_model.reset_worker_data_source(selected_worker_id)
                             if success:
                                 st.success(message)
@@ -174,6 +181,22 @@ def render():
                                 st.rerun()
                             else:
                                 st.error(message)
+                    
+                    # --- 新增的「完全鎖定」按鈕 ---
+                    if current_data_source != '手動管理(他仲)':
+                        st.markdown("---")
+                        st.write("若希望暫時保護此人員的**離住日**不被系統自動更新，請使用下方按鈕。")
+                        if st.button("🔒 完全鎖定此人員 (保護住宿與離住日)", type="primary"):
+                            # 呼叫我們剛剛在 worker_model 中新增的函式
+                            success, message = worker_model.set_worker_as_fully_manual(selected_worker_id)
+                            if success:
+                                st.success(message)
+                                st.cache_data.clear()
+                                st.rerun()
+                            else:
+                                st.error(message)
+
+                    st.markdown("---")
                     confirm_delete = st.checkbox("我了解並確認要刪除此移工的資料")
                     if st.button("🗑️ 刪除此移工", type="primary", disabled=not confirm_delete):
                         success, message = worker_model.delete_worker_by_id(selected_worker_id)
