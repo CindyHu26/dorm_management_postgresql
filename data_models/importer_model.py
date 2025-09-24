@@ -627,8 +627,7 @@ def batch_import_fire_safety(df: pd.DataFrame):
 
 def batch_import_other_income(df: pd.DataFrame):
     """
-    批次匯入【其他收入】的核心邏輯。
-    採用「有就更新，沒有就新增」的模式。
+    【v1.2 房號報錯修正版】批次匯入【其他收入】的核心邏輯。
     """
     success_count = 0
     failed_records = []
@@ -643,6 +642,9 @@ def batch_import_other_income(df: pd.DataFrame):
             dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, original_address, normalized_address FROM "Dormitories"')
             original_addr_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
             normalized_addr_map = {d['normalized_address']: d['id'] for _, d in dorms_df.iterrows()}
+            
+            rooms_df = _execute_query_to_dataframe(conn, 'SELECT id, dorm_id, room_number FROM "Rooms"')
+            room_map = {(r['dorm_id'], str(r['room_number'])): r['id'] for _, r in rooms_df.iterrows()}
             
             for index, row in df.iterrows():
                 try:
@@ -664,6 +666,17 @@ def batch_import_other_income(df: pd.DataFrame):
                     if not dorm_id:
                         raise ValueError(f"在資料庫中找不到對應的宿舍地址: {original_address}")
                         
+                    room_id = None
+                    room_number_val = row.get('房號 (選填)')
+                    if pd.notna(room_number_val) and str(room_number_val).strip():
+                        room_number_str = str(room_number_val).strip()
+                        room_key = (dorm_id, room_number_str)
+                        if room_key in room_map:
+                            room_id = room_map[room_key]
+                        else:
+                            # --- 【核心修改】如果找不到房號，就直接拋出錯誤 ---
+                            raise ValueError(f"在宿舍 '{original_address}' 中找不到房號 '{room_number_str}'")
+                            
                     income_item = row.get('收入項目')
                     amount = pd.to_numeric(row.get('收入金額'), errors='coerce')
                     transaction_date = pd.to_datetime(row.get('收入日期'), errors='coerce')
@@ -673,13 +686,13 @@ def batch_import_other_income(df: pd.DataFrame):
                         
                     details = {
                         "dorm_id": dorm_id,
+                        "room_id": room_id,
                         "income_item": str(income_item).strip(),
                         "transaction_date": transaction_date.strftime('%Y-%m-%d'),
                         "amount": int(amount),
                         "notes": str(row.get('備註', ''))
                     }
                     
-                    # 檢查重複：如果同一宿舍、同一天、同項目的紀錄已存在，就用更新的
                     query = 'SELECT id FROM "OtherIncome" WHERE dorm_id = %s AND income_item = %s AND transaction_date = %s'
                     cursor.execute(query, (dorm_id, details['income_item'], details['transaction_date']))
                     existing = cursor.fetchone()

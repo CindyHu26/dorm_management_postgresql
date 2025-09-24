@@ -154,7 +154,7 @@ def create_all_tables_and_indexes():
                 FOREIGN KEY ("room_id") REFERENCES "Rooms" ("id") ON DELETE SET NULL
             );
             """
-            # --- 建立住宿歷史紀錄表 ---
+
             TABLES['AccommodationHistory'] = """
             CREATE TABLE IF NOT EXISTS "AccommodationHistory" (
                 "id" SERIAL PRIMARY KEY,
@@ -237,9 +237,15 @@ def create_all_tables_and_indexes():
             
             TABLES['OtherIncome'] = """
             CREATE TABLE IF NOT EXISTS "OtherIncome" (
-                "id" SERIAL PRIMARY KEY, "dorm_id" INTEGER NOT NULL, "income_item" VARCHAR(100) NOT NULL,
-                "transaction_date" DATE NOT NULL, "amount" INTEGER NOT NULL, "notes" TEXT,
-                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE
+                "id" SERIAL PRIMARY KEY, 
+                "dorm_id" INTEGER NOT NULL, 
+                "room_id" INTEGER,
+                "income_item" VARCHAR(100) NOT NULL,
+                "transaction_date" DATE NOT NULL, 
+                "amount" INTEGER NOT NULL, 
+                "notes" TEXT,
+                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE,
+                FOREIGN KEY ("room_id") REFERENCES "Rooms" ("id") ON DELETE SET NULL
             );
             """
 

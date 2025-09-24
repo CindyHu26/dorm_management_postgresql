@@ -14,24 +14,27 @@ def _execute_query_to_dataframe(conn, query, params=None):
         return pd.DataFrame(records, columns=columns)
 
 def get_income_for_dorm_as_df(dorm_id: int):
-    """查詢指定宿舍的所有其他收入紀錄 (已為 PostgreSQL 優化)。"""
+    """【v1.1 房號修正版】查詢指定宿舍的所有其他收入紀錄，並顯示關聯的房號。"""
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
         query = """
             SELECT
-                id,
-                transaction_date AS "收入日期",
-                income_item AS "收入項目",
-                amount AS "金額",
-                notes AS "備註"
-            FROM "OtherIncome"
-            WHERE dorm_id = %s
-            ORDER BY transaction_date DESC
+                i.id,
+                i.transaction_date AS "收入日期",
+                i.income_item AS "收入項目",
+                r.room_number AS "房號", -- 【核心修改】從 Rooms 表取得房號
+                i.amount AS "金額",
+                i.notes AS "備註"
+            FROM "OtherIncome" i
+            LEFT JOIN "Rooms" r ON i.room_id = r.id -- 【核心修改】JOIN Rooms 表
+            WHERE i.dorm_id = %s
+            ORDER BY i.transaction_date DESC
         """
         return _execute_query_to_dataframe(conn, query, (dorm_id,))
     finally:
         if conn: conn.close()
+
 
 def add_income_record(details: dict):
     """新增一筆其他收入紀錄 (已為 PostgreSQL 優化)。"""

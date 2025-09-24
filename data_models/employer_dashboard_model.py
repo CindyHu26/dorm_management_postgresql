@@ -65,7 +65,7 @@ def get_employer_resident_details(employer_names: list):
 
 def get_employer_financial_summary(employer_names: list, year_month: str):
     """
-    為指定雇主列表和月份，計算收支與損益。
+    【v2.2 語法修正版】為指定雇主列表和月份，計算收支與損益。
     """
     if not employer_names:
         return pd.DataFrame()
@@ -117,7 +117,7 @@ def get_employer_financial_summary(employer_names: list, year_month: str):
             ),
             DormMonthlyExpenses AS (
                  SELECT
-                    d.id as dorm_id, d.original_address, d.rent_payer, d.utilities_payer,
+                    d.id as dorm_id, d.original_address,
                     COALESCE(l.monthly_rent, 0) AS rent_expense,
                     COALESCE(pu.pass_through_expense, 0) as pass_through_expense,
                     COALESCE(pu.company_expense, 0) as company_expense,
@@ -125,18 +125,27 @@ def get_employer_financial_summary(employer_names: list, year_month: str):
                     COALESCE(oi.total_other_income, 0) AS other_income
                 FROM "Dormitories" d
                 LEFT JOIN (
+                    -- 【核心修正】將 l.dorm_id 和 l.monthly_rent 移到子查詢內部
                     SELECT dorm_id, monthly_rent FROM (
-                        SELECT dorm_id, monthly_rent, ROW_NUMBER() OVER(PARTITION BY dorm_id ORDER BY lease_start_date DESC) as rn
-                        FROM "Leases" CROSS JOIN DateParams dp
-                        WHERE lease_start_date <= dp.last_day_of_month
-                          AND (lease_end_date IS NULL OR lease_end_date >= dp.first_day_of_month)
+                        SELECT l.dorm_id, l.monthly_rent, ROW_NUMBER() OVER(PARTITION BY l.dorm_id ORDER BY l.lease_start_date DESC) as rn
+                        FROM "Leases" l
+                        JOIN "Dormitories" d_filter ON l.dorm_id = d_filter.id
+                        CROSS JOIN DateParams dp
+                        WHERE d_filter.rent_payer = '我司' AND l.lease_start_date <= dp.last_day_of_month
+                          AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month)
                     ) as sub_leases WHERE rn = 1
                 ) l ON d.id = l.dorm_id
                 LEFT JOIN (
                     SELECT b.dorm_id,
                         SUM(CASE WHEN b.is_pass_through THEN (b.amount::decimal * (LEAST(b.bill_end_date, (SELECT last_day_of_month FROM DateParams))::date - GREATEST(b.bill_start_date, (SELECT first_day_of_month FROM DateParams))::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)) ELSE 0 END) as pass_through_expense,
-                        SUM(CASE WHEN b.payer = '我司' THEN (b.amount::decimal * (LEAST(b.bill_end_date, (SELECT last_day_of_month FROM DateParams))::date - GREATEST(b.bill_start_date, (SELECT first_day_of_month FROM DateParams))::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)) ELSE 0 END) as company_expense
-                    FROM "UtilityBills" b CROSS JOIN DateParams dp WHERE b.bill_start_date <= dp.last_day_of_month AND b.bill_end_date >= dp.first_day_of_month GROUP BY b.dorm_id
+                        SUM(CASE 
+                                WHEN (b.bill_type IN ('水費', '電費') AND d_filter.utilities_payer = '我司') OR (b.bill_type NOT IN ('水費', '電費') AND b.payer = '我司')
+                                THEN (b.amount::decimal * (LEAST(b.bill_end_date, (SELECT last_day_of_month FROM DateParams))::date - GREATEST(b.bill_start_date, (SELECT first_day_of_month FROM DateParams))::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)) 
+                                ELSE 0 
+                            END) as company_expense
+                    FROM "UtilityBills" b 
+                    JOIN "Dormitories" d_filter ON b.dorm_id = d_filter.id
+                    CROSS JOIN DateParams dp WHERE b.bill_start_date <= dp.last_day_of_month AND b.bill_end_date >= dp.first_day_of_month GROUP BY b.dorm_id
                 ) pu ON d.id = pu.dorm_id
                 LEFT JOIN (
                     SELECT dorm_id, SUM(ROUND(total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0))) as total_amortized
@@ -149,8 +158,8 @@ def get_employer_financial_summary(employer_names: list, year_month: str):
                 dme.original_address AS "宿舍地址",
                 dp.employer_income::int AS "收入(員工月費)",
                 ROUND(dme.other_income * dp.proration_ratio)::int AS "分攤其他收入",
-                ROUND(CASE WHEN dme.rent_payer = '我司' THEN dme.rent_expense * dp.proration_ratio ELSE 0 END)::int AS "我司分攤月租",
-                ROUND(CASE WHEN dme.utilities_payer = '我司' THEN (dme.company_expense + dme.pass_through_expense) * dp.proration_ratio ELSE 0 END)::int AS "我司分攤雜費",
+                ROUND(dme.rent_expense * dp.proration_ratio)::int AS "我司分攤月租",
+                ROUND((dme.company_expense + dme.pass_through_expense) * dp.proration_ratio)::int AS "我司分攤雜費",
                 ROUND(dme.amortized_expense * dp.proration_ratio)::int AS "我司分攤攤銷"
             FROM DormProration dp
             JOIN DormMonthlyExpenses dme ON dp.dorm_id = dme.dorm_id
@@ -163,7 +172,7 @@ def get_employer_financial_summary(employer_names: list, year_month: str):
 
 def get_employer_financial_summary_annual(employer_names: list, year: int):
     """
-    為指定雇主列表和「年份」，計算整年度的收支與損益。
+    【v2.1 支付方精準修正版】為指定雇主列表和「年份」，計算整年度的收支與損益。
     """
     if not employer_names:
         return pd.DataFrame()
@@ -223,16 +232,22 @@ def get_employer_financial_summary_annual(employer_names: list, year: int):
                 WHERE employer_workers > 0
             ),
             AnnualRent AS (
-                SELECT dorm_id, SUM(COALESCE(monthly_rent, 0) * ((LEAST(COALESCE(lease_end_date, dp.last_day_of_year), dp.last_day_of_year)::date - GREATEST(lease_start_date, dp.first_day_of_year)::date + 1) / 30.4375)) as total_rent
-                FROM "Leases" CROSS JOIN DateParams dp
-                WHERE lease_start_date <= dp.last_day_of_year AND (lease_end_date IS NULL OR lease_end_date >= dp.first_day_of_year)
-                GROUP BY dorm_id
+                SELECT l.dorm_id, SUM(COALESCE(l.monthly_rent, 0) * ((LEAST(COALESCE(l.lease_end_date, dp.last_day_of_year), dp.last_day_of_year)::date - GREATEST(l.lease_start_date, dp.first_day_of_year)::date + 1) / 30.4375)) as total_rent
+                FROM "Leases" l
+                JOIN "Dormitories" d ON l.dorm_id = d.id
+                CROSS JOIN DateParams dp
+                WHERE d.rent_payer = '我司' 
+                  AND l.lease_start_date <= dp.last_day_of_year AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_year)
+                GROUP BY l.dorm_id
             ),
             AnnualUtilities AS (
-                SELECT dorm_id, SUM(COALESCE(amount, 0) * (LEAST(bill_end_date, dp.last_day_of_year)::date - GREATEST(bill_start_date, dp.first_day_of_year)::date + 1) / NULLIF((bill_end_date - bill_start_date + 1), 0)) as total_utils
-                FROM "UtilityBills" CROSS JOIN DateParams dp
-                WHERE payer = '我司' AND bill_start_date <= dp.last_day_of_year AND bill_end_date >= dp.first_day_of_year
-                GROUP BY dorm_id
+                SELECT b.dorm_id, SUM(COALESCE(b.amount, 0) * (LEAST(b.bill_end_date, dp.last_day_of_year)::date - GREATEST(b.bill_start_date, dp.first_day_of_year)::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)) as total_utils
+                FROM "UtilityBills" b
+                JOIN "Dormitories" d ON b.dorm_id = d.id
+                CROSS JOIN DateParams dp
+                WHERE ( (b.bill_type IN ('水費', '電費') AND d.utilities_payer = '我司') OR (b.bill_type NOT IN ('水費', '電費') AND b.payer = '我司') )
+                  AND b.bill_start_date <= dp.last_day_of_year AND b.bill_end_date >= dp.first_day_of_year
+                GROUP BY b.dorm_id
             ),
             AnnualAmortized AS (
                 SELECT dorm_id, SUM(
@@ -255,8 +270,8 @@ def get_employer_financial_summary_annual(employer_names: list, year: int):
                 d.original_address AS "宿舍地址",
                 dap.employer_annual_income::int AS "收入(員工月費)",
                 COALESCE(ROUND(aoi.total_income * dap.proration_ratio), 0)::int AS "分攤其他收入",
-                COALESCE(ROUND(CASE WHEN d.rent_payer = '我司' THEN ar.total_rent * dap.proration_ratio ELSE 0 END), 0)::int AS "我司分攤月租",
-                COALESCE(ROUND(CASE WHEN d.utilities_payer = '我司' THEN au.total_utils * dap.proration_ratio ELSE 0 END), 0)::int AS "我司分攤雜費",
+                COALESCE(ROUND(ar.total_rent * dap.proration_ratio), 0)::int AS "我司分攤月租",
+                COALESCE(ROUND(au.total_utils * dap.proration_ratio), 0)::int AS "我司分攤雜費",
                 COALESCE(ROUND(aa.total_amort * dap.proration_ratio), 0)::int AS "我司分攤攤銷"
             FROM DormAnnualProration dap
             JOIN "Dormitories" d ON dap.dorm_id = d.id
@@ -273,8 +288,7 @@ def get_employer_financial_summary_annual(employer_names: list, year: int):
 
 def get_employer_financial_details_for_dorm(employer_names: list, dorm_id: int, period: str):
     """
-    【v2.6 最終修正版】獲取詳細收支項目。
-    修正了 decimal 和 float 型別不相容的錯誤。
+    【v2.7 支付方精準修正版】獲取詳細收支項目。
     """
     if not employer_names:
         return pd.DataFrame(), pd.DataFrame()
@@ -309,7 +323,7 @@ def get_employer_financial_details_for_dorm(employer_names: list, dorm_id: int, 
         cursor = conn.cursor()
         cursor.execute(proration_query, params)
         proration_ratio_decimal = cursor.fetchone()['ratio'] or 0
-        proration_ratio = float(proration_ratio_decimal) # 將 Decimal 轉為 float
+        proration_ratio = float(proration_ratio_decimal)
 
         income_query = """
             WITH DateParams AS (SELECT %(start_date)s::date as start_date, %(end_date)s::date as end_date)
@@ -354,12 +368,17 @@ def get_employer_financial_details_for_dorm(employer_names: list, dorm_id: int, 
             UNION ALL
             
             SELECT
-                bill_type,
-                ROUND(amount::decimal * (LEAST(bill_end_date, dp.end_date)::date - GREATEST(bill_start_date, dp.start_date)::date + 1) / NULLIF((bill_end_date - bill_start_date + 1), 0))::numeric,
-                payer
-            FROM "UtilityBills" CROSS JOIN DateParams dp
-            WHERE dorm_id = %(dorm_id)s
-              AND bill_start_date <= dp.end_date AND bill_end_date >= dp.start_date
+                b.bill_type,
+                ROUND(b.amount::decimal * (LEAST(b.bill_end_date, dp.end_date)::date - GREATEST(b.bill_start_date, dp.start_date)::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0))::numeric,
+                CASE
+                    WHEN b.bill_type IN ('水費', '電費') THEN d.utilities_payer
+                    ELSE b.payer
+                END as "支付方"
+            FROM "UtilityBills" b
+            JOIN "Dormitories" d ON b.dorm_id = d.id
+            CROSS JOIN DateParams dp
+            WHERE b.dorm_id = %(dorm_id)s
+              AND b.bill_start_date <= dp.end_date AND b.bill_end_date >= dp.start_date
             
             UNION ALL
             
@@ -376,7 +395,6 @@ def get_employer_financial_details_for_dorm(employer_names: list, dorm_id: int, 
         
         if not expense_df.empty:
             expense_df = expense_df[expense_df['支付方'] == '我司'].copy()
-            # 將 proration_ratio 轉為 float 後再進行運算 ---
             expense_df['分攤後金額'] = (pd.to_numeric(expense_df['原始總額'], errors='coerce').fillna(0) * proration_ratio).round().astype(int)
             expense_df.drop(columns=['原始總額', '支付方'], inplace=True)
 
