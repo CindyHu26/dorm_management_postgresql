@@ -111,7 +111,7 @@ def update_google_sheet(gsheet_name: str, data_to_upload: dict):
             df_to_upload = df.fillna('')
             
             data_list = [df_to_upload.columns.values.tolist()] + df_to_upload.values.tolist()
-            worksheet.update(data_list, value_input_option='USER_ENTERED')
+            worksheet.update(data_list, value_input_option='RAW')
             
             print(f"  > 工作表 '{sheet_name}' 已成功更新。")
         

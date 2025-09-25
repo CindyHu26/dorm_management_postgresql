@@ -50,7 +50,9 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
             address_room_df = _execute_query_to_dataframe(conn, 'SELECT d.normalized_address, r.id as room_id FROM "Rooms" r JOIN "Dormitories" d ON r.dorm_id = d.id WHERE r.room_number = %s', ("[未分配房間]",))
             address_room_map = pd.Series(address_room_df.room_id.values, index=address_room_df.normalized_address).to_dict()
             fresh_df['room_id'] = fresh_df['normalized_address'].map(address_room_map)
-
+            # .map() 操作可能會因為找不到對應值而產生 NaN，這會導致整數欄位被轉換為浮點數。
+            # 我們需要將其手動轉回整數，並將 NaN 轉換為 None，以便資料庫能正確識別為 NULL。
+            fresh_df['room_id'] = fresh_df['room_id'].apply(lambda x: int(x) if pd.notna(x) else None)
             log_callback("INFO: 步驟 3/4 - 正在取得現有工人的最新住宿與來源狀態...")
             all_workers_info_df = _execute_query_to_dataframe(conn, """
                 SELECT w.unique_id, w.data_source, ah.room_id
@@ -70,48 +72,66 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
             worker_columns = {desc[0] for desc in cursor.description}
 
             for index, fresh_worker in fresh_df.iterrows():
-                unique_id = fresh_worker['unique_id']
-                new_room_id = fresh_worker.get('room_id')
-                data_source = worker_data_sources.get(unique_id)
-                
-                cursor.execute('SELECT unique_id FROM "Workers" WHERE unique_id = %s', (unique_id,))
-                existing_worker = cursor.fetchone()
+                try:
+                    unique_id = fresh_worker['unique_id']
+                    data_source = worker_data_sources.get(unique_id)
 
-                if existing_worker:
-                    # --- 【核心修改點】: 在更新列表中加入 'native_name' ---
-                    update_cols = ['native_name', 'gender', 'nationality', 'passport_number', 'arc_number', 'arrival_date', 'departure_date', 'work_permit_expiry_date']
-                    update_details = {col: fresh_worker.get(col) for col in update_cols if col in fresh_worker}
-                    update_details['accommodation_end_date'] = None
-                    update_details['room_id'] = new_room_id
-                    
-                    fields = ', '.join([f'"{key}" = %s' for key in update_details.keys()])
-                    values = list(update_details.values()) + [unique_id]
-                    cursor.execute(f'UPDATE "Workers" SET {fields} WHERE unique_id = %s', tuple(values))
-                    updated_count += 1
-                    
-                    if data_source != '手動調整':
-                        current_room_id = current_accommodation_records.get(unique_id)
-                        if new_room_id != current_room_id:
-                            cursor.execute('UPDATE "AccommodationHistory" SET end_date = %s WHERE worker_unique_id = %s AND end_date IS NULL', (yesterday, unique_id))
-                            cursor.execute('INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date) VALUES (%s, %s, %s)', (unique_id, new_room_id, today))
-                            moved_count += 1
-                            log_callback(f"INFO: [自動] 偵測到住宿異動！工人 '{unique_id}' 已從房間 {current_room_id} 移至 {new_room_id}。")
+                    # --- 核心修正：在迴圈最開始就處理 room_id ---
+                    # 1. 從 fresh_worker 取出 room_id (可能是 float 或 nan)
+                    raw_room_id = fresh_worker.get('room_id')
+                    # 2. 進行安全的型別轉換，確保結果是 integer 或 None
+                    final_room_id = int(raw_room_id) if pd.notna(raw_room_id) else None
+
+                    cursor.execute('SELECT unique_id FROM "Workers" WHERE unique_id = %s', (unique_id,))
+                    existing_worker = cursor.fetchone()
+
+                    if existing_worker:
+                        # --- 處理更新 (UPDATE) ---
+                        update_cols = ['native_name', 'gender', 'nationality', 'passport_number', 'arc_number', 'arrival_date', 'departure_date', 'work_permit_expiry_date']
+                        update_details = {col: fresh_worker.get(col) for col in update_cols if col in fresh_worker}
+                        update_details['accommodation_end_date'] = None
+                        update_details['room_id'] = final_room_id # 使用已處理過的 final_room_id
+
+                        fields = ', '.join([f'"{key}" = %s' for key in update_details.keys()])
+                        values = list(update_details.values()) + [unique_id]
+                        cursor.execute(f'UPDATE "Workers" SET {fields} WHERE unique_id = %s', tuple(values))
+                        updated_count += 1
+
+                        if data_source != '手動調整':
+                            current_room_id = current_accommodation_records.get(unique_id)
+                            if final_room_id != current_room_id:
+                                cursor.execute('UPDATE "AccommodationHistory" SET end_date = %s WHERE worker_unique_id = %s AND end_date IS NULL', (yesterday, unique_id))
+                                if final_room_id is not None:
+                                    cursor.execute('INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date) VALUES (%s, %s, %s)', (unique_id, final_room_id, today))
+                                moved_count += 1
+                                log_callback(f"INFO: [自動] 偵測到住宿異動！工人 '{unique_id}' 已從房間 {current_room_id} 移至 {final_room_id}。")
+                        else:
+                            log_callback(f"INFO: [保護] 工人 '{unique_id}' 為手動調整狀態，跳過「實際住宿」歷史紀錄的更新。")
                     else:
-                        log_callback(f"INFO: [保護] 工人 '{unique_id}' 為手動調整狀態，跳過「實際住宿」歷史紀錄的更新。")
-                else:
-                    new_worker_details = fresh_worker.to_dict()
-                    new_worker_details['data_source'] = '系統自動更新'
-                    new_worker_details['accommodation_start_date'] = new_worker_details.get('arrival_date')
-                    new_worker_details['special_status'] = '在住'
-                    final_details = {k: v for k, v in new_worker_details.items() if k in worker_columns}
-                    columns = ', '.join(f'"{k}"' for k in final_details.keys())
-                    placeholders = ', '.join(['%s'] * len(final_details))
-                    cursor.execute(f'INSERT INTO "Workers" ({columns}) VALUES ({placeholders})', tuple(final_details.values()))
-                    added_count += 1
-                    if new_room_id:
-                        cursor.execute('INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date) VALUES (%s, %s, %s)', (unique_id, new_room_id, new_worker_details.get('accommodation_start_date', today)))
-                
-                processed_ids.add(unique_id)
+                        # --- 處理新增 (INSERT) ---
+                        new_worker_details = fresh_worker.to_dict()
+                        new_worker_details['room_id'] = final_room_id # 使用已處理過的 final_room_id
+                        new_worker_details['data_source'] = '系統自動更新'
+                        new_worker_details['accommodation_start_date'] = new_worker_details.get('arrival_date')
+                        new_worker_details['special_status'] = '在住'
+                        
+                        final_details = {k: v for k, v in new_worker_details.items() if k in worker_columns}
+
+                        columns = ', '.join(f'"{k}"' for k in final_details.keys())
+                        placeholders = ', '.join(['%s'] * len(final_details))
+                        cursor.execute(f'INSERT INTO "Workers" ({columns}) VALUES ({placeholders})', tuple(final_details.values()))
+                        added_count += 1
+                        
+                        if final_room_id is not None:
+                            cursor.execute('INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date) VALUES (%s, %s, %s)', (unique_id, final_room_id, new_worker_details.get('accommodation_start_date', today)))
+
+                    processed_ids.add(unique_id)
+
+                except Exception as loop_error:
+                    # 如果迴圈內部發生錯誤，印出是哪一筆資料造成的問題
+                    log_callback(f"ERROR: 處理工人 '{fresh_worker.get('unique_id')}' 時發生錯誤: {loop_error}")
+                    # 重新拋出異常，讓外層的 try...except 捕獲並復原交易
+                    raise
             
             cursor.execute('SELECT unique_id FROM "Workers" WHERE data_source != %s', ('手動管理(他仲)',))
             db_syncable_ids = {rec['unique_id'] for rec in cursor.fetchall()}
