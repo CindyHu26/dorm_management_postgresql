@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+from dateutil.relativedelta import relativedelta
 from data_models import dormitory_model, single_dorm_analyzer
 
 def render():
@@ -98,7 +99,6 @@ def render():
             
     st.markdown("---")
 
-    # --- 【核心修改點】 ---
     st.subheader(f"{year_month_str} 財務分析 (我司視角)")
 
     income_total = single_dorm_analyzer.get_income_summary(selected_dorm_id, year_month_str)
@@ -119,7 +119,53 @@ def render():
     # 展開區塊顯示所有支付方的明細
     with st.expander("點此查看支出細項 (含所有支付方)"):
         st.dataframe(expense_data_df, width="stretch", hide_index=True)
-    # --- 修改結束 ---
+
+    st.markdown("---")
+    st.subheader("歷史財務趨勢 (近24個月)")
+    
+    @st.cache_data
+    def get_trend_data(dorm_id):
+        return single_dorm_analyzer.get_monthly_financial_trend(dorm_id)
+
+    trend_df = get_trend_data(selected_dorm_id)
+    if not trend_df.empty:
+        chart_df = trend_df.set_index("月份")
+        st.line_chart(chart_df)
+        with st.expander("查看趨勢圖原始數據"):
+            st.dataframe(trend_df, width="stretch", hide_index=True)
+    else:
+        st.info("尚無足夠的歷史資料可繪製趨勢圖。")
+    
+    # --- 自訂區間平均分析 ---
+    st.markdown("---")
+    st.subheader("自訂區間平均損益分析")
+    
+    c1_avg, c2_avg, c3_avg = st.columns(3)
+    today = datetime.now().date()
+    default_start = today - relativedelta(years=1)
+    
+    start_date = c1_avg.date_input("選擇起始日", value=default_start)
+    end_date = c2_avg.date_input("選擇結束日", value=today)
+    
+    # 讓按鈕垂直對齊
+    c3_avg.write("")
+    c3_avg.write("")
+    if c3_avg.button("📈 計算平均損益", type="primary"):
+        if start_date > end_date:
+            st.error("錯誤：起始日不能晚于結束日！")
+        else:
+            with st.spinner("正在計算中..."):
+                summary_data = single_dorm_analyzer.calculate_financial_summary_for_period(selected_dorm_id, start_date, end_date)
+            
+            if summary_data:
+                st.markdown(f"#### 分析結果: {start_date} ~ {end_date}")
+                m_col1, m_col2, m_col3 = st.columns(3)
+                m_col1.metric("平均每月收入", f"NT$ {summary_data.get('avg_monthly_income', 0):,}")
+                m_col2.metric("平均每月支出", f"NT$ {summary_data.get('avg_monthly_expense', 0):,}")
+                avg_pl = summary_data.get('avg_monthly_profit_loss', 0)
+                m_col3.metric("平均每月淨損益", f"NT$ {avg_pl:,}", delta=f"{avg_pl:,}")
+            else:
+                st.warning("在此期間內查無任何財務數據可供計算。")
 
     st.markdown("---")
     st.subheader(f"{year_month_str} 在住人員詳細名單")
