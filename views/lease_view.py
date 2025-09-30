@@ -8,7 +8,7 @@ def render():
     """渲染「合約管理」頁面"""
     st.header("租賃合約管理")
 
-    # 【核心修改】計算前後 30 年的日期範圍
+    # 計算前後 30 年的日期範圍
     today = date.today()
     thirty_years_ago = today - relativedelta(years=30)
     thirty_years_from_now = today + relativedelta(years=30)
@@ -21,9 +21,12 @@ def render():
             selected_dorm_id = st.selectbox("選擇宿舍地址", options=dorm_options.keys(), format_func=lambda x: dorm_options.get(x, "未知宿舍"))
             
             c1, c2 = st.columns(2)
-            # 【核心修改】為日期輸入框設定新的 min_value 和 max_value
+            # 為日期輸入框設定新的 min_value 和 max_value
             lease_start_date = c1.date_input("合約起始日", value=None, min_value=thirty_years_ago, max_value=thirty_years_from_now)
-            lease_end_date = c2.date_input("合約截止日", value=None, min_value=thirty_years_ago, max_value=thirty_years_from_now)
+            with c2:
+                lease_end_date = st.date_input("合約截止日 (可留空)", value=None, min_value=thirty_years_ago, max_value=thirty_years_from_now)
+                # 雖然新增時可以直接不選，但為了介面一致性，仍保留說明文字
+                st.write("若為長期合約，此處請留空。")
             
             c3, c4, c5 = st.columns(3)
             monthly_rent = c3.number_input("月租金", min_value=0, step=1000)
@@ -98,10 +101,12 @@ def render():
                     start_date_val = lease_details.get('lease_start_date')
                     end_date_val = lease_details.get('lease_end_date')
                     
-                    # 【核心修改】為日期輸入框設定新的 min_value 和 max_value
+                    # 為日期輸入框設定新的 min_value 和 max_value
                     e_lease_start_date = ec1.date_input("合約起始日", value=start_date_val, min_value=thirty_years_ago, max_value=thirty_years_from_now)
-                    e_lease_end_date = ec2.date_input("合約截止日", value=end_date_val, min_value=thirty_years_ago, max_value=thirty_years_from_now)
-                    
+                    with ec2:
+                        e_lease_end_date = st.date_input("合約截止日", value=end_date_val, min_value=thirty_years_ago, max_value=thirty_years_from_now)
+                        clear_end_date = st.checkbox("清除截止日 (設為長期合約)")
+
                     ec3, ec4, ec5 = st.columns(3)
                     e_monthly_rent = ec3.number_input("月租金", min_value=0, step=1000, value=int(lease_details.get('monthly_rent') or 0))
                     e_deposit = ec4.number_input("押金", min_value=0, step=1000, value=int(lease_details.get('deposit') or 0))
@@ -109,9 +114,14 @@ def render():
 
                     edit_submitted = st.form_submit_button("儲存變更")
                     if edit_submitted:
+                        # --- 根據核取方塊狀態決定最終日期 ---
+                        final_end_date = None
+                        if not clear_end_date:
+                            final_end_date = str(e_lease_end_date) if e_lease_end_date else None
+
                         updated_details = {
                             "lease_start_date": str(e_lease_start_date) if e_lease_start_date else None,
-                            "lease_end_date": str(e_lease_end_date) if e_lease_end_date else None,
+                            "lease_end_date": final_end_date,
                             "monthly_rent": e_monthly_rent,
                             "deposit": e_deposit,
                             "utilities_included": e_utilities_included

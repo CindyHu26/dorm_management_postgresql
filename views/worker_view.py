@@ -122,7 +122,6 @@ def render():
                 tab1, tab2, tab3, tab4 = st.tabs(["✏️ 編輯核心資料", "🏠 住宿歷史管理", "🕒 狀態歷史管理", "💰 費用歷史"])
 
                 with tab1:
-                    # ... (編輯核心資料的 Tab 維持不變) ...
                     with st.form("edit_worker_form"):
                         st.info(f"資料來源: **{worker_details.get('data_source')}**")
                         st.markdown("##### 基本資料 (多由系統同步)")
@@ -143,16 +142,26 @@ def render():
                         fcc1, fcc2 = st.columns(2)
                         payment_method_options = ["", "員工自付", "雇主支付"]
                         payment_method = fcc1.selectbox("付款方", payment_method_options, index=payment_method_options.index(worker_details.get('payment_method')) if worker_details.get('payment_method') in payment_method_options else 0)
-                        end_date_value = worker_details.get('accommodation_end_date')
-                        accommodation_end_date = fcc2.date_input("最終離住日期 (若留空表示在住)", value=end_date_value)
+                        
+                        # --- 在日期選擇器旁新增一個核取方塊 ---
+                        with fcc2:
+                            end_date_value = worker_details.get('accommodation_end_date')
+                            accommodation_end_date = st.date_input("最終離住日期", value=end_date_value)
+                            clear_end_date = st.checkbox("清除離住日期 (將狀態改回在住)")
+
                         worker_notes = st.text_area("個人備註", value=worker_details.get('worker_notes') or "")
                         submitted = st.form_submit_button("儲存核心資料變更")
                         if submitted:
+                            # --- 根據核取方塊的狀態決定最終的日期值 ---
+                            final_end_date = None
+                            if not clear_end_date:
+                                final_end_date = str(accommodation_end_date) if accommodation_end_date else None
+
                             update_data = {
                                 'monthly_fee': monthly_fee, 'utilities_fee': utilities_fee, 'cleaning_fee': cleaning_fee,
                                 'restoration_fee': restoration_fee, 'charging_cleaning_fee': charging_cleaning_fee,
                                 'payment_method': payment_method,
-                                'accommodation_end_date': str(accommodation_end_date) if accommodation_end_date else None,
+                                'accommodation_end_date': final_end_date,
                                 'worker_notes': worker_notes
                             }
                             success, message = worker_model.update_worker_details(selected_worker_id, update_data)
