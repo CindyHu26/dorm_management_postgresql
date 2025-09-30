@@ -321,3 +321,46 @@ def render():
                         st.dataframe(failed_df)
             except Exception as e:
                 st.error(f"處理檔案時發生錯誤：{e}")
+
+    st.markdown("---")
+    with st.container(border=True):
+            st.subheader("🏢 宿舍房間資訊匯入")
+            st.info("用於更新現有宿舍的房間資訊，或為已存在的宿舍批次新增房間。請確保 Excel 中的『宿舍地址』已存在於系統中，否則相關的所有房間資料將會匯入失敗。")
+            
+            # --- 移除宿舍層級的欄位，讓範本更簡潔 ---
+            dorm_room_template_df = pd.DataFrame({
+                "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號", "範例：彰化縣鹿港鎮中山路100號", "範例：雲林縣麥寮鄉工業路1號"],
+                "房號": ["A01", "A02", "101"],
+                "容量": [4, 6, 4],
+                "性別限制": ["僅限男性", "可混住", "不限"],
+                "國籍限制": ["單一國籍", "不限", "不限"],
+                "房間備註": ["", "只提供A雇主員工", ""]
+            })
+            st.download_button(
+                label="📥 下載宿舍與房間匯入範本",
+                data=to_excel(dorm_room_template_df),
+                file_name="dorm_room_import_template.xlsx"
+            )
+
+            uploaded_dorm_room_file = st.file_uploader("上傳【宿舍與房間】Excel 檔案", type=["xlsx"], key="dorm_room_uploader")
+
+            if uploaded_dorm_room_file:
+                try:
+                    df_dorm_room = pd.read_excel(uploaded_dorm_room_file)
+                    st.markdown("##### 檔案內容預覽：")
+                    st.dataframe(df_dorm_room.head())
+                    if st.button("🚀 開始匯入宿舍與房間", type="primary", key="dorm_room_import_btn"):
+                        with st.spinner("正在處理與匯入資料..."):
+                            success, failed_df = importer_model.batch_import_dorms_and_rooms(df_dorm_room)
+                        st.success(f"匯入完成！成功處理 {success} 筆房間紀錄。")
+                        if not failed_df.empty:
+                            st.error(f"有 {len(failed_df)} 筆資料匯入失敗：")
+                            st.dataframe(failed_df)
+                            st.download_button(
+                                label="📥 下載失敗紀錄報告",
+                                data=to_excel(failed_df),
+                                file_name="dorm_room_import_failed_report.xlsx",
+                                key="failed_dorm_room_download"
+                            )
+                except Exception as e:
+                    st.error(f"處理檔案時發生錯誤：{e}")

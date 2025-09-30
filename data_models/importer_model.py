@@ -721,3 +721,101 @@ def batch_import_other_income(df: pd.DataFrame):
         if conn: conn.close()
             
     return success_count, pd.DataFrame(failed_records)
+
+def batch_import_dorms_and_rooms(df: pd.DataFrame):
+    """
+    【v1.1 修正版】批次匯入宿舍與房間的基本資料。
+    採用「有就更新，沒有就新增」的邏輯。如果宿舍地址不存在，則直接報錯跳過。
+    """
+    success_count = 0
+    failed_records = []
+    conn = database.get_db_connection()
+    if not conn:
+        error_df = df.copy()
+        error_df['錯誤原因'] = "無法連接到資料庫"
+        return 0, error_df
+
+    try:
+        with conn.cursor() as cursor:
+            # 預載現有宿舍與房間資料以供比對
+            dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, original_address, normalized_address FROM "Dormitories"')
+            original_addr_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
+            normalized_addr_map = {d['normalized_address']: d['id'] for _, d in dorms_df.iterrows()}
+            
+            rooms_df = _execute_query_to_dataframe(conn, 'SELECT id, dorm_id, room_number FROM "Rooms"')
+            room_map = {(r['dorm_id'], str(r['room_number'])): r['id'] for _, r in rooms_df.iterrows()}
+
+            # 使用 groupby 確保我們先處理完一個宿舍的所有房間再到下一個
+            for address, group in df.groupby('宿舍地址'):
+                dorm_id = None
+                try:
+                    # --- 步驟 1: 嚴格查找宿舍 ---
+                    if not address or pd.isna(address):
+                        raise ValueError("宿舍地址為空")
+
+                    addr_stripped = str(address).strip()
+                    dorm_id = original_addr_map.get(addr_stripped)
+                    
+                    if not dorm_id:
+                        normalized_input = normalize_taiwan_address(addr_stripped)['full']
+                        dorm_id = normalized_addr_map.get(normalized_input)
+
+                    # --- 如果找不到 dorm_id，就拋出錯誤，而不是建立新的 ---
+                    if not dorm_id:
+                        raise ValueError(f"宿舍地址不存在: '{addr_stripped}'")
+
+                    # --- 步驟 2: 遍歷該宿舍下的所有房間 ---
+                    for _, row in group.iterrows():
+                        try:
+                            room_number = row.get('房號')
+                            if not room_number or pd.isna(room_number):
+                                continue # 如果沒有房號，就只處理宿舍，跳過這行
+
+                            room_number_str = str(room_number).strip()
+                            room_details = {
+                                'capacity': int(pd.to_numeric(row.get('容量'), errors='coerce', downcast='integer')),
+                                'gender_policy': row.get('性別限制', '可混住'),
+                                'nationality_policy': row.get('國籍限制', '不限'),
+                                'room_notes': row.get('房間備註')
+                            }
+
+                            room_key = (dorm_id, room_number_str)
+                            existing_room_id = room_map.get(room_key)
+
+                            if existing_room_id:
+                                # 更新現有房間
+                                fields = ', '.join([f'"{key}" = %s' for key in room_details.keys()])
+                                values = list(room_details.values()) + [existing_room_id]
+                                cursor.execute(f'UPDATE "Rooms" SET {fields} WHERE id = %s', tuple(values))
+                            else:
+                                # 新增房間
+                                room_details['dorm_id'] = dorm_id
+                                room_details['room_number'] = room_number_str
+                                columns = ', '.join(f'"{k}"' for k in room_details.keys())
+                                placeholders = ', '.join(['%s'] * len(room_details))
+                                cursor.execute(f'INSERT INTO "Rooms" ({columns}) VALUES ({placeholders}) RETURNING id', tuple(room_details.values()))
+                                new_room_id = cursor.fetchone()['id']
+                                room_map[room_key] = new_room_id # 更新 map
+                            
+                            success_count += 1
+                        except Exception as row_error:
+                            # 這是處理單一房間匯入失敗的狀況
+                            failed_row = row.copy()
+                            failed_row['錯誤原因'] = str(row_error)
+                            failed_records.append(failed_row)
+                            
+                except Exception as group_error:
+                    # 這是處理整個宿舍（地址）層級失敗的狀況
+                    for _, failed_row_in_group in group.iterrows():
+                        failed_row = failed_row_in_group.copy()
+                        failed_row['錯誤原因'] = str(group_error)
+                        failed_records.append(failed_row)
+
+        conn.commit()
+    except Exception as e:
+        if conn: conn.rollback()
+        print(f"批次匯入宿舍與房間時發生嚴重錯誤: {e}")
+    finally:
+        if conn: conn.close()
+            
+    return success_count, pd.DataFrame(failed_records)
