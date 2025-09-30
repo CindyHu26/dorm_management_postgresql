@@ -337,13 +337,12 @@ def get_dorm_analysis_data(dorm_id: int, year_month: str):
 
 def get_monthly_financial_trend(dorm_id: int):
     """
-    【新功能】為指定的宿舍，計算過去24個月的每月收入、支出與損益，用於繪製趨勢圖。
+    【v1.1 細分費用版】為指定的宿舍，計算過去24個月的每月收入、支出與損益，用於繪製趨勢圖。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
 
     try:
-        # 這個查詢會產生一個包含過去24個月的序列，然後分別左連接上每個月的收入和支出
         query = """
             WITH MonthSeries AS (
                 SELECT TO_CHAR(GENERATE_SERIES(
@@ -367,42 +366,52 @@ def get_monthly_financial_trend(dorm_id: int):
                 SELECT TO_CHAR(transaction_date, 'YYYY-MM') as year_month, SUM(amount) as total_other_income
                 FROM "OtherIncome" WHERE dorm_id = %(dorm_id)s GROUP BY 1
             ),
-            MonthlyExpenses AS (
-                SELECT
-                    TO_CHAR(d.month_date, 'YYYY-MM') as year_month,
-                    SUM(d.daily_expense) as total_expense
+            -- 將 MonthlyExpenses 拆分為三個獨立的 CTE
+            MonthlyRent AS (
+                SELECT TO_CHAR(generate_series(l.lease_start_date, COALESCE(l.lease_end_date, CURRENT_DATE), '1 month'::interval)::date, 'YYYY-MM') as year_month,
+                       AVG(l.monthly_rent) as rent_expense
+                FROM "Leases" l JOIN "Dormitories" d ON l.dorm_id = d.id
+                WHERE l.dorm_id = %(dorm_id)s AND d.rent_payer = '我司'
+                GROUP BY 1
+            ),
+            MonthlyUtilities AS (
+                SELECT TO_CHAR(d.month_date, 'YYYY-MM') as year_month, SUM(d.daily_expense) as utility_expense
                 FROM (
-                    -- 月租
-                    SELECT generate_series(l.lease_start_date, COALESCE(l.lease_end_date, CURRENT_DATE), '1 day'::interval)::date as month_date, (l.monthly_rent / 30.4375) as daily_expense
-                    FROM "Leases" l JOIN "Dormitories" d ON l.dorm_id = d.id
-                    WHERE l.dorm_id = %(dorm_id)s AND d.rent_payer = '我司'
-                    UNION ALL
-                    -- 雜費
-                    SELECT generate_series(b.bill_start_date, b.bill_end_date, '1 day'::interval)::date, (b.amount::decimal / (b.bill_end_date - b.bill_start_date + 1))
+                    SELECT generate_series(b.bill_start_date, b.bill_end_date, '1 day'::interval)::date as month_date, (b.amount::decimal / (b.bill_end_date - b.bill_start_date + 1)) as daily_expense
                     FROM "UtilityBills" b JOIN "Dormitories" d ON b.dorm_id = d.id
                     WHERE b.dorm_id = %(dorm_id)s AND ((b.bill_type IN ('水費', '電費') AND d.utilities_payer = '我司') OR (b.bill_type NOT IN ('水費', '電費') AND b.payer = '我司'))
-                    UNION ALL
-                    -- 攤銷
-                    SELECT generate_series(TO_DATE(ae.amortization_start_month, 'YYYY-MM'), TO_DATE(ae.amortization_end_month, 'YYYY-MM'), '1 day'::interval)::date, (ae.total_amount::decimal / (((EXTRACT(YEAR FROM TO_DATE(ae.amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(ae.amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(ae.amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(ae.amortization_start_month, 'YYYY-MM'))) + 1) * 30.4375))
+                ) as d GROUP BY 1
+            ),
+            MonthlyAmortized AS (
+                 SELECT TO_CHAR(d.month_date, 'YYYY-MM') as year_month, SUM(d.daily_expense) as amortized_expense
+                 FROM (
+                    SELECT generate_series(TO_DATE(ae.amortization_start_month, 'YYYY-MM'), TO_DATE(ae.amortization_end_month, 'YYYY-MM'), '1 day'::interval)::date as month_date, (ae.total_amount::decimal / (((EXTRACT(YEAR FROM TO_DATE(ae.amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(ae.amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(ae.amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(ae.amortization_start_month, 'YYYY-MM'))) + 1) * 30.4375)) as daily_expense
                     FROM "AnnualExpenses" ae
                     WHERE ae.dorm_id = %(dorm_id)s
-                ) as d
-                GROUP BY 1
+                 ) as d GROUP BY 1
             )
             SELECT
                 ms.year_month AS "月份",
                 COALESCE(mi.total_income, 0) + COALESCE(omi.total_other_income, 0) AS "總收入",
-                COALESCE(me.total_expense, 0) AS "總支出",
-                (COALESCE(mi.total_income, 0) + COALESCE(omi.total_other_income, 0) - COALESCE(me.total_expense, 0)) AS "淨損益"
+                COALESCE(mr.rent_expense, 0) AS "月租支出",
+                COALESCE(mu.utility_expense, 0) AS "變動雜費",
+                COALESCE(ma.amortized_expense, 0) AS "長期攤銷",
+                (COALESCE(mr.rent_expense, 0) + COALESCE(mu.utility_expense, 0) + COALESCE(ma.amortized_expense, 0)) AS "總支出",
+                (COALESCE(mi.total_income, 0) + COALESCE(omi.total_other_income, 0) - (COALESCE(mr.rent_expense, 0) + COALESCE(mu.utility_expense, 0) + COALESCE(ma.amortized_expense, 0))) AS "淨損益"
             FROM MonthSeries ms
             LEFT JOIN MonthlyIncome mi ON ms.year_month = mi.year_month
             LEFT JOIN OtherMonthlyIncome omi ON ms.year_month = omi.year_month
-            LEFT JOIN MonthlyExpenses me ON ms.year_month = me.year_month
+            LEFT JOIN MonthlyRent mr ON ms.year_month = mr.year_month
+            LEFT JOIN MonthlyUtilities mu ON ms.year_month = mu.year_month
+            LEFT JOIN MonthlyAmortized ma ON ms.year_month = ma.year_month
             ORDER BY ms.year_month;
         """
         df = _execute_query_to_dataframe(conn, query, {"dorm_id": dorm_id})
         if not df.empty:
-            df[["總收入", "總支出", "淨損益"]] = df[["總收入", "總支出", "淨損益"]].astype(int)
+            # 將所有數字欄位轉換為整數
+            num_cols = ["總收入", "月租支出", "變動雜費", "長期攤銷", "總支出", "淨損益"]
+            for col in num_cols:
+                df[col] = df[col].astype(float).round().astype(int)
         return df
 
     finally:
@@ -410,37 +419,38 @@ def get_monthly_financial_trend(dorm_id: int):
 
 def calculate_financial_summary_for_period(dorm_id: int, start_date: date, end_date: date):
     """
-    【v1.1 邏輯優化版】為指定的宿舍和自訂日期區間，計算平均每月收入、支出與損益。
+    【v1.2 費用細分版】為指定的宿舍和自訂日期區間，計算平均每月收入、支出與損益。
     """
     try:
-        # 步驟 1: 直接呼叫已有的、穩定的趨勢圖函式來獲取每月的財務數據
         monthly_df = get_monthly_financial_trend(dorm_id)
         if monthly_df.empty:
             return {}
 
-        # 步驟 2: 使用 Pandas 來進行日期篩選，這遠比在 SQL 中處理複雜日期邏輯來得穩定和簡單
         monthly_df['月份'] = pd.to_datetime(monthly_df['月份'])
-        
-        # 確保 start_date 和 end_date 也是 datetime 物件
         start_date_dt = pd.to_datetime(start_date)
         end_date_dt = pd.to_datetime(end_date)
         
-        # 篩選出在指定區間內的月份
         mask = (monthly_df['月份'] >= start_date_dt) & (monthly_df['月份'] <= end_date_dt)
         period_df = monthly_df.loc[mask]
 
         if period_df.empty:
             return {}
 
-        # 步驟 3: 計算平均值
+        # 計算所有需要的平均值
         avg_income = period_df['總收入'].mean()
         avg_expense = period_df['總支出'].mean()
         avg_profit_loss = period_df['淨損益'].mean()
+        avg_rent = period_df['月租支出'].mean()
+        avg_utilities = period_df['變動雜費'].mean()
+        avg_amortized = period_df['長期攤銷'].mean()
 
         return {
             "avg_monthly_income": int(avg_income),
             "avg_monthly_expense": int(avg_expense),
             "avg_monthly_profit_loss": int(avg_profit_loss),
+            "avg_monthly_rent": int(avg_rent),
+            "avg_monthly_utilities": int(avg_utilities),
+            "avg_monthly_amortized": int(avg_amortized),
         }
     except Exception as e:
         print(f"計算自訂區間財務摘要時發生錯誤: {e}")

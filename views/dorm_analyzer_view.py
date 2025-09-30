@@ -147,7 +147,6 @@ def render():
     start_date = c1_avg.date_input("選擇起始日", value=default_start)
     end_date = c2_avg.date_input("選擇結束日", value=today)
     
-    # 讓按鈕垂直對齊
     c3_avg.write("")
     c3_avg.write("")
     if c3_avg.button("📈 計算平均損益", type="primary"):
@@ -159,11 +158,21 @@ def render():
             
             if summary_data:
                 st.markdown(f"#### 分析結果: {start_date} ~ {end_date}")
+                
+                # 主要指標
                 m_col1, m_col2, m_col3 = st.columns(3)
                 m_col1.metric("平均每月收入", f"NT$ {summary_data.get('avg_monthly_income', 0):,}")
-                m_col2.metric("平均每月支出", f"NT$ {summary_data.get('avg_monthly_expense', 0):,}")
+                m_col2.metric("平均每月總支出", f"NT$ {summary_data.get('avg_monthly_expense', 0):,}")
                 avg_pl = summary_data.get('avg_monthly_profit_loss', 0)
                 m_col3.metric("平均每月淨損益", f"NT$ {avg_pl:,}", delta=f"{avg_pl:,}")
+
+                st.markdown("##### 平均每月支出結構")
+                # 支出細項
+                ex_col1, ex_col2, ex_col3 = st.columns(3)
+                ex_col1.metric("平均月租支出", f"NT$ {summary_data.get('avg_monthly_rent', 0):,}")
+                ex_col2.metric("平均變動雜費", f"NT$ {summary_data.get('avg_monthly_utilities', 0):,}")
+                ex_col3.metric("平均長期攤銷", f"NT$ {summary_data.get('avg_monthly_amortized', 0):,}")
+
             else:
                 st.warning("在此期間內查無任何財務數據可供計算。")
 
