@@ -251,7 +251,7 @@ def get_annual_financial_summary_report(year: int):
     """
     產生指定年度的宿舍財務總覽報表。
     計算區間為該年 1/1 至執行當日。
-    【v2.3 修正版】新增縣市、區域、負責人欄位。
+    【v2.4 費用結構整合版】將多個費用結構欄位合併為一個總額結構。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -265,14 +265,12 @@ def get_annual_financial_summary_report(year: int):
                     TO_DATE(%(year)s || '-01-01', 'YYYY-MM-DD') as start_date,
                     CURRENT_DATE as end_date
             ),
-            -- 1. 找出指定期間內的所有活躍住戶及其費用 (此部分邏輯不變)
+            -- 在 ActiveResidents 中直接計算每位工人的費用總額
             ActiveResidents AS (
                 SELECT DISTINCT ON (r.dorm_id, w.unique_id)
                     r.dorm_id,
                     w.unique_id,
-                    COALESCE(w.monthly_fee, 0) as monthly_fee,
-                    COALESCE(w.utilities_fee, 0) as utilities_fee,
-                    COALESCE(w.cleaning_fee, 0) as cleaning_fee
+                    (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0) + COALESCE(w.restoration_fee, 0) + COALESCE(w.charging_cleaning_fee, 0)) as total_fee
                 FROM "AccommodationHistory" ah
                 JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
                 JOIN "Rooms" r ON ah.room_id = r.id
@@ -280,35 +278,29 @@ def get_annual_financial_summary_report(year: int):
                 WHERE ah.start_date <= dp.end_date AND (ah.end_date IS NULL OR ah.end_date >= dp.start_date)
                   AND (w.special_status IS NULL OR w.special_status NOT ILIKE '%%掛宿外住%%')
             ),
-            -- 2. 計算總人數 (此部分邏輯不變)
             Headcount AS (
                 SELECT dorm_id, COUNT(unique_id) as total_residents
                 FROM ActiveResidents
                 GROUP BY dorm_id
             ),
-            -- 3. 計算各項費用結構 (此部分邏輯不變)
-            MonthlyFeeStructure AS (
-                SELECT dorm_id, STRING_AGG(monthly_fee::text || '(' || count || ')', ', ') as rent_fee_structure
-                FROM (SELECT dorm_id, monthly_fee, COUNT(*) FROM ActiveResidents WHERE monthly_fee > 0 GROUP BY dorm_id, monthly_fee) as counts
+            -- 建立新的費用總額結構
+            TotalFeeStructure AS (
+                SELECT dorm_id, STRING_AGG(total_fee::text || '(' || count || '人)', ', ') as total_fee_structure
+                FROM (
+                    SELECT dorm_id, total_fee, COUNT(*)
+                    FROM ActiveResidents 
+                    WHERE total_fee > 0 
+                    GROUP BY dorm_id, total_fee 
+                    ORDER BY dorm_id, total_fee
+                ) as counts
                 GROUP BY dorm_id
             ),
-            UtilitiesFeeStructure AS (
-                SELECT dorm_id, STRING_AGG(utilities_fee::text || '(' || count || ')', ', ') as utilities_fee_structure
-                FROM (SELECT dorm_id, utilities_fee, COUNT(*) FROM ActiveResidents WHERE utilities_fee > 0 GROUP BY dorm_id, utilities_fee) as counts
-                GROUP BY dorm_id
-            ),
-            CleaningFeeStructure AS (
-                SELECT dorm_id, STRING_AGG(cleaning_fee::text || '(' || count || ')', ', ') as cleaning_fee_structure
-                FROM (SELECT dorm_id, cleaning_fee, COUNT(*) FROM ActiveResidents WHERE cleaning_fee > 0 GROUP BY dorm_id, cleaning_fee) as counts
-                GROUP BY dorm_id
-            ),
-            -- 4. 計算居住公司 (此部分邏輯不變)
+            -- (居住公司、總收入、總支出、目前租約等 CTE 維持不變)
             ResidentCompanies AS (
                 SELECT r.dorm_id, STRING_AGG(DISTINCT w.employer_name, ', ') as resident_companies
                 FROM "AccommodationHistory" ah JOIN "Workers" w ON ah.worker_unique_id = w.unique_id JOIN "Rooms" r ON ah.room_id = r.id CROSS JOIN DateParams dp
                 WHERE ah.start_date <= dp.end_date AND (ah.end_date IS NULL OR ah.end_date >= dp.start_date) GROUP BY r.dorm_id
             ),
-            -- 5. 計算年度總收入 (此部分邏輯不變)
             TotalIncome AS (
                 SELECT dorm_id, SUM(total_monthly_fee) as income FROM (
                     SELECT DISTINCT ON (r.dorm_id, w.unique_id, date_trunc('month', s.month_in_service)) r.dorm_id, (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0) + COALESCE(w.restoration_fee, 0) + COALESCE(w.charging_cleaning_fee, 0)) as total_monthly_fee
@@ -319,7 +311,6 @@ def get_annual_financial_summary_report(year: int):
                 UNION ALL
                 SELECT dorm_id, SUM(amount) as income FROM "OtherIncome" CROSS JOIN DateParams dp WHERE transaction_date BETWEEN dp.start_date AND dp.end_date GROUP BY dorm_id
             ),
-            -- 6. 計算年度總支出 (我司支付) (此部分邏輯不變)
             TotalExpense AS (
                 SELECT l.dorm_id, SUM(COALESCE(l.monthly_rent, 0) * ((LEAST(COALESCE(l.lease_end_date, dp.end_date), dp.end_date)::date - GREATEST(l.lease_start_date, dp.start_date)::date + 1) / 30.4375)) as expense
                 FROM "Leases" l JOIN "Dormitories" d ON l.dorm_id = d.id CROSS JOIN DateParams dp
@@ -331,23 +322,18 @@ def get_annual_financial_summary_report(year: int):
                 SELECT dorm_id, SUM((total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0)) * (LEAST(TO_DATE(amortization_end_month, 'YYYY-MM'), dp.end_date)::date - GREATEST(TO_DATE(amortization_start_month, 'YYYY-MM'), dp.start_date)::date + 1) / 30.4375) as expense
                 FROM "AnnualExpenses" CROSS JOIN DateParams dp WHERE TO_DATE(amortization_start_month, 'YYYY-MM') <= dp.end_date AND TO_DATE(amortization_end_month, 'YYYY-MM') >= dp.start_date GROUP BY dorm_id
             ),
-            -- 7. 取得最新的合約到期日 (此部分邏輯不變)
             CurrentLease AS (
                 SELECT DISTINCT ON (dorm_id) dorm_id, lease_end_date
                 FROM "Leases"
                 WHERE lease_start_date <= CURRENT_DATE AND (lease_end_date IS NULL OR lease_end_date >= CURRENT_DATE)
                 ORDER BY dorm_id, lease_start_date DESC
             )
-            -- 8. 最終匯總
+            -- 最終匯總
             SELECT
                 d.original_address AS "宿舍地址",
-                
-                -- --- 【核心修改點 1】新增這三個欄位 ---
                 d.city AS "縣市",
                 d.district AS "區域",
                 d.person_in_charge AS "負責人",
-                -- --- 修改結束 ---
-
                 CASE WHEN d.is_self_owned THEN '是' ELSE '否' END AS "是否自購",
                 COALESCE(h.total_residents, 0) AS "總人數",
                 rc.resident_companies AS "居住公司",
@@ -355,14 +341,11 @@ def get_annual_financial_summary_report(year: int):
                 COALESCE(te.total_expense, 0)::int AS "年度總支出 (我司)",
                 (COALESCE(ti.total_income, 0) - COALESCE(te.total_expense, 0))::int AS "淨損益 (我司)",
                 cl.lease_end_date AS "房租合約到期日",
-                mfs.rent_fee_structure AS "房租結構 (金額/人數)",
-                ufs.utilities_fee_structure AS "水電費結構 (金額/人數)",
-                cfs.cleaning_fee_structure AS "清潔費結構 (金額/人數)"
+                -- 【核心修改 3】使用新的費用結構欄位
+                tfs.total_fee_structure AS "工人費用結構 (總額/人數)"
             FROM "Dormitories" d
             LEFT JOIN Headcount h ON d.id = h.dorm_id
-            LEFT JOIN MonthlyFeeStructure mfs ON d.id = mfs.dorm_id
-            LEFT JOIN UtilitiesFeeStructure ufs ON d.id = ufs.dorm_id
-            LEFT JOIN CleaningFeeStructure cfs ON d.id = cfs.dorm_id
+            LEFT JOIN TotalFeeStructure tfs ON d.id = tfs.dorm_id -- JOIN 新的 CTE
             LEFT JOIN ResidentCompanies rc ON d.id = rc.dorm_id
             LEFT JOIN (SELECT dorm_id, SUM(income) as total_income FROM TotalIncome GROUP BY dorm_id) ti ON d.id = ti.dorm_id
             LEFT JOIN (SELECT dorm_id, SUM(expense) as total_expense FROM TotalExpense GROUP BY dorm_id) te ON d.id = te.dorm_id
@@ -372,13 +355,12 @@ def get_annual_financial_summary_report(year: int):
         """
         df = _execute_query_to_dataframe(conn, query, params)
         if not df.empty:
-            # --- 【核心修改點 2】調整最終輸出的欄位順序 ---
+            # 【核心修改 4】調整最終輸出的欄位順序
             column_order = [
                 "宿舍地址", "縣市", "區域", "負責人", "是否自購", "總人數", "居住公司",
                 "年度總收入", "年度總支出 (我司)", "淨損益 (我司)",
-                "房租合約到期日", "房租結構 (金額/人數)", "水電費結構 (金額/人數)", "清潔費結構 (金額/人數)"
+                "房租合約到期日", "工人費用結構 (總額/人數)"
             ]
-            # --- 修改結束 ---
             existing_columns = [col for col in column_order if col in df.columns]
             df = df[existing_columns]
         return df

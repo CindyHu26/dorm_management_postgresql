@@ -397,9 +397,97 @@ def render():
                                         st.error(message)
 
                 with tab4:
-                    st.markdown("##### 費用變更歷史紀錄")
+                    st.markdown("##### 手動新增費用歷史")
+                    with st.expander("點此展開以新增一筆費用歷史紀錄"):
+                        with st.form("new_fee_history_form", clear_on_submit=True):
+                            fee_type_options = ['房租', '水電費', '清潔費', '宿舍復歸費', '充電清潔費']
+                            
+                            fc1, fc2, fc3 = st.columns(3)
+                            new_fee_type = fc1.selectbox("費用類型", fee_type_options)
+                            new_amount = fc2.number_input("金額", min_value=0, step=100)
+                            new_effective_date = fc3.date_input("生效日期", value=date.today())
+                            
+                            submitted_new = st.form_submit_button("新增歷史紀錄")
+                            if submitted_new:
+                                details = {
+                                    "worker_unique_id": selected_worker_id,
+                                    "fee_type": new_fee_type,
+                                    "amount": new_amount,
+                                    "effective_date": new_effective_date
+                                }
+                                success, message = worker_model.add_fee_history(details)
+                                if success:
+                                    st.success(message)
+                                    st.cache_data.clear()
+                                    st.rerun()
+                                else:
+                                    st.error(message)
+
+                    st.markdown("---")
+                    st.markdown("##### 費用變更歷史總覽")
+                    # 現在 get_fee_history_for_worker() 會直接回傳包含 id 的 DataFrame
                     fee_history_df = worker_model.get_fee_history_for_worker(selected_worker_id)
-                    st.dataframe(fee_history_df, width="stretch", hide_index=True)
+                    
+                    # 在顯示時，可以選擇隱藏 id 欄位
+                    st.dataframe(fee_history_df, width="stretch", hide_index=True, column_config={"id": None})
+                    
+                    st.markdown("---")
+                    st.subheader("編輯或刪除單筆費用歷史")
+
+                    if fee_history_df.empty:
+                        st.info("此員工尚無任何費用歷史可供編輯。")
+                    else:
+                        # fee_history_df 已經包含 id，可以直接使用
+                        history_options = {row['id']: f"{row['生效日期']} | {row['費用類型']} | 金額: {row['金額']}" for _, row in fee_history_df.iterrows()}
+                        selected_history_id = st.selectbox(
+                            "請從上方列表選擇一筆紀錄進行操作：",
+                            options=[None] + list(history_options.keys()),
+                            format_func=lambda x: "請選擇..." if x is None else history_options.get(x),
+                            key=f"fee_history_selector_{selected_worker_id}"
+                        )
+
+                        if selected_history_id:
+                            history_details = worker_model.get_single_fee_history_details(selected_history_id)
+                            if history_details:
+                                with st.form(f"edit_fee_history_form_{selected_history_id}"):
+                                    st.markdown(f"###### 正在編輯 ID: {history_details['id']} 的紀錄")
+                                    
+                                    fee_type_options = ['房租', '水電費', '清潔費', '宿舍復歸費', '充電清潔費']
+                                    try:
+                                        default_index = fee_type_options.index(history_details.get('fee_type'))
+                                    except ValueError:
+                                        default_index = 0
+                                    
+                                    efc1, efc2, efc3 = st.columns(3)
+                                    edit_fee_type = efc1.selectbox("費用類型", fee_type_options, index=default_index)
+                                    edit_amount = efc2.number_input("金額", min_value=0, step=100, value=history_details.get('amount', 0))
+                                    edit_effective_date = efc3.date_input("生效日期", value=history_details.get('effective_date'))
+
+                                    edit_submitted = st.form_submit_button("儲存變更")
+                                    if edit_submitted:
+                                        update_data = {
+                                            "fee_type": edit_fee_type, 
+                                            "amount": edit_amount, 
+                                            "effective_date": edit_effective_date,
+                                        }
+                                        success, message = worker_model.update_fee_history(selected_history_id, update_data)
+                                        if success:
+                                            st.success(message)
+                                            st.cache_data.clear()
+                                            st.rerun()
+                                        else:
+                                            st.error(message)
+                                
+                                st.markdown("##### 危險操作區")
+                                confirm_delete_history = st.checkbox("我了解並確認要刪除此筆費用歷史", key=f"delete_fee_hist_{selected_history_id}")
+                                if st.button("🗑️ 刪除此筆歷史", type="primary", disabled=not confirm_delete_history):
+                                    success, message = worker_model.delete_fee_history(selected_history_id)
+                                    if success:
+                                        st.success(message)
+                                        st.cache_data.clear()
+                                        st.rerun()
+                                    else:
+                                        st.error(message)
 
     st.markdown("---")
     

@@ -479,7 +479,8 @@ def get_fee_history_for_worker(unique_id: str):
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
-        query = 'SELECT effective_date AS "生效日期", fee_type AS "費用類型", amount AS "金額" FROM "FeeHistory" WHERE worker_unique_id = %s ORDER BY effective_date DESC, created_at DESC'
+        # 在查詢中加入 id 欄位
+        query = 'SELECT id, effective_date AS "生效日期", fee_type AS "費用類型", amount AS "金額" FROM "FeeHistory" WHERE worker_unique_id = %s ORDER BY effective_date DESC, created_at DESC'
         return _execute_query_to_dataframe(conn, query, (unique_id,))
     finally:
         if conn: conn.close()
@@ -622,5 +623,76 @@ def set_worker_as_fully_manual(worker_id: str):
     except Exception as e:
         if conn: conn.rollback()
         return False, f"完全鎖定時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
+
+def get_single_fee_history_details(history_id: int):
+    """
+    取得單筆費用歷史的詳細資料。
+    """
+    conn = database.get_db_connection()
+    if not conn: return None
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute('SELECT * FROM "FeeHistory" WHERE id = %s', (history_id,))
+            record = cursor.fetchone()
+            return dict(record) if record else None
+    finally:
+        if conn: conn.close()
+
+def add_fee_history(details: dict):
+    """
+    為移工手動新增一筆新的費用歷史紀錄。
+    """
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗。"
+    try:
+        with conn.cursor() as cursor:
+            columns = ', '.join(f'"{k}"' for k in details.keys())
+            placeholders = ', '.join(['%s'] * len(details))
+            sql = f'INSERT INTO "FeeHistory" ({columns}) VALUES ({placeholders})'
+            cursor.execute(sql, tuple(details.values()))
+        conn.commit()
+        return True, "成功新增費用歷史紀錄。"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"新增費用歷史時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
+
+def update_fee_history(history_id: int, details: dict):
+    """
+    更新一筆已存在的費用歷史紀錄。
+    """
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗"
+    try:
+        with conn.cursor() as cursor:
+            fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
+            values = list(details.values()) + [history_id]
+            sql = f'UPDATE "FeeHistory" SET {fields} WHERE id = %s'
+            cursor.execute(sql, tuple(values))
+        conn.commit()
+        return True, "費用歷史紀錄更新成功！"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"更新費用歷史時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
+
+def delete_fee_history(history_id: int):
+    """
+    刪除一筆費用歷史紀錄。
+    """
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗"
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute('DELETE FROM "FeeHistory" WHERE id = %s', (history_id,))
+        conn.commit()
+        return True, "費用歷史紀錄已成功刪除。"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"刪除費用歷史時發生錯誤: {e}"
     finally:
         if conn: conn.close()
