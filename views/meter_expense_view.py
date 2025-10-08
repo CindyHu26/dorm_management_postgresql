@@ -1,4 +1,4 @@
-# views/meter_expense_view.py (修正快取問題的完整版)
+# views/meter_expense_view.py
 
 import streamlit as st
 import pandas as pd
@@ -56,7 +56,7 @@ def render():
         st.subheader(f"目前操作對象: {meter_options[selected_meter_id]}")
         col1, col2 = st.columns(2)
         col1.info(f"**舊編號:** {dorm_details.get('legacy_dorm_code') or '未設定'}")
-        col2.info(f"**宿舍備註:** {dorm_details.get('dorm_notes') or '無'}")
+        col2.info(f"**變動費用備註:** {dorm_details.get('utility_bill_notes') or '無'}")
 
 
     # --- 3. 新增帳單紀錄 ---

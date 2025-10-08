@@ -15,7 +15,7 @@ def render():
     """渲染「地址管理」頁面的所有 Streamlit UI 元件。"""
     st.header("宿舍地址管理")
 
-    # --- Session State 初始化 ---
+    # --- Session State 初始化 (維持不變) ---
     if 'selected_dorm_id' not in st.session_state:
         st.session_state.selected_dorm_id = None
     if 'selected_room_id' not in st.session_state:
@@ -42,15 +42,20 @@ def render():
             legacy_code = c1.text_input("舊系統編號 (選填)")
             original_address = c1.text_input("原始地址 (必填)")
             dorm_name = c2.text_input("宿舍自訂名稱 (例如: 中山A棟)")
-            person_in_charge = c3.text_input("負責人") # 【新增】
+            person_in_charge = c3.text_input("負責人")
             is_self_owned = st.checkbox("✅ 此為公司自購宿舍", key="new_self_owned")
 
-            st.subheader("責任歸屬")
+            st.subheader("責任歸屬與備註")
             rc1, rc2, rc3 = st.columns(3)
             primary_manager = rc1.selectbox("主要管理人", ["我司", "雇主"], key="new_pm")
             rent_payer = rc2.selectbox("租金支付方", ["我司", "雇主", "工人"], key="new_rp")
             utilities_payer = rc3.selectbox("水電支付方", ["我司", "雇主", "工人"], key="new_up")
+            
+            # --- 【核心修改 1】同時加入兩種備註欄位 ---
+            dorm_notes = st.text_area("宿舍備註 (通用)")
             management_notes = st.text_area("管理模式備註 (可記錄特殊約定)")
+            utility_bill_notes = st.text_area("變動費用備註 (將顯示在錶號費用管理頁面)")
+
             norm_addr_preview = normalize_taiwan_address(original_address)['full'] if original_address else ""
             if norm_addr_preview: st.info(f"正規化地址預覽: {norm_addr_preview}")
             submitted = st.form_submit_button("儲存新宿舍")
@@ -60,10 +65,12 @@ def render():
                 else:
                     dorm_details = {
                         'legacy_dorm_code': legacy_code, 'original_address': original_address,
-                        'dorm_name': dorm_name, 'person_in_charge': person_in_charge, # 【新增】
+                        'dorm_name': dorm_name, 'person_in_charge': person_in_charge,
                         'primary_manager': primary_manager,
                         'rent_payer': rent_payer, 'utilities_payer': utilities_payer,
+                        'dorm_notes': dorm_notes, # 將 dorm_notes 加入
                         'management_notes': management_notes,
+                        'utility_bill_notes': utility_bill_notes,
                         'is_self_owned': is_self_owned
                     }
                     success, message = dormitory_model.add_new_dormitory(dorm_details)
@@ -80,7 +87,6 @@ def render():
     st.subheader("現有宿舍總覽")
     
     search_term = st.text_input("搜尋宿舍 (可輸入舊編號、名稱、地址、縣市、區域或負責人)")
-    
     dorms_df = get_dorms_df(search_term)
     
     if dorms_df.empty:
@@ -104,13 +110,7 @@ def render():
             st.subheader(f"詳細資料: {dorm_details.get('original_address', '')}")
             
             tab_options = ["基本資料與編輯", "房間管理"]
-            st.radio(
-                "管理選項:",
-                options=tab_options,
-                key='dorm_active_tab',
-                horizontal=True,
-                label_visibility="collapsed"
-            )
+            st.radio("管理選項:", options=tab_options, key='dorm_active_tab', horizontal=True, label_visibility="collapsed")
 
             if st.session_state.dorm_active_tab == "基本資料與編輯":
                 with st.container():
@@ -128,31 +128,35 @@ def render():
 
                         edit_is_self_owned = st.checkbox("✅ 此為公司自購宿舍", value=dorm_details.get('is_self_owned', False), key="edit_self_owned")
 
-                        st.markdown("##### 責任歸屬")
+                        st.markdown("##### 責任歸屬與備註")
                         edit_rc1, edit_rc2, edit_rc3 = st.columns(3)
                         manager_options = ["我司", "雇主", "工人"]
                         primary_manager = edit_rc1.selectbox("主要管理人", manager_options, index=manager_options.index(dorm_details.get('primary_manager')) if dorm_details.get('primary_manager') in manager_options else 0)
                         rent_payer = edit_rc2.selectbox("租金支付方", manager_options, index=manager_options.index(dorm_details.get('rent_payer')) if dorm_details.get('rent_payer') in manager_options else 0)
                         utilities_payer = edit_rc3.selectbox("水電支付方", manager_options, index=manager_options.index(dorm_details.get('utilities_payer')) if dorm_details.get('utilities_payer') in manager_options else 0)
+                        
+                        # --- 【核心修改 2】在編輯表單中同時加入兩種備註欄位 ---
+                        dorm_notes_edit = st.text_area("宿舍備註 (通用)", value=dorm_details.get('dorm_notes', ''))
                         management_notes = st.text_area("管理模式備註", value=dorm_details.get('management_notes', ''))
+                        utility_bill_notes_edit = st.text_area("變動費用備註", value=dorm_details.get('utility_bill_notes', ''))
+
                         edit_submitted = st.form_submit_button("儲存變更")
                         if edit_submitted:
                             updated_details = {
                                 'legacy_dorm_code': legacy_code, 'original_address': original_address,
-                                'dorm_name': dorm_name, 
-                                'city': city, 'district': district, 'person_in_charge': person_in_charge, # 【新增】
-                                'primary_manager': primary_manager,
-                                'rent_payer': rent_payer, 'utilities_payer': utilities_payer,
+                                'dorm_name': dorm_name, 'city': city, 'district': district, 'person_in_charge': person_in_charge,
+                                'primary_manager': primary_manager, 'rent_payer': rent_payer, 'utilities_payer': utilities_payer,
+                                'dorm_notes': dorm_notes_edit, # 將 dorm_notes 加入更新
                                 'management_notes': management_notes,
+                                'utility_bill_notes': utility_bill_notes_edit,
                                 'is_self_owned': edit_is_self_owned
                             }
                             success, message = dormitory_model.update_dormitory_details(dorm_id, updated_details)
                             if success:
-                                st.success(message)
-                                get_dorms_df.clear()
-                                st.rerun()
+                                st.success(message); get_dorms_df.clear(); st.rerun()
                             else:
                                 st.error(message)
+
                     st.markdown("---")
                     st.markdown("##### 危險操作區")
                     confirm_delete = st.checkbox("我了解並確認要刪除此宿舍")
@@ -167,6 +171,7 @@ def render():
                             st.error(message)
 
             elif st.session_state.dorm_active_tab == "房間管理":
+                # ... (房間管理的部分維持不變) ...
                 with st.container():
                     st.markdown("##### 房間列表")
                     rooms_df = dormitory_model.get_rooms_for_dorm_as_df(dorm_id)
