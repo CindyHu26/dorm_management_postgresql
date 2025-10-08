@@ -119,3 +119,55 @@ def get_meters_for_selection(dorm_id: int):
     finally:
         if conn: 
             conn.close()
+
+def search_all_meters(search_term: str = None):
+    """
+    搜尋所有宿舍的所有錶號，用於錶號費用管理頁面。
+    """
+    conn = database.get_db_connection()
+    if not conn: 
+        return []
+    try:
+        query = """
+            SELECT 
+                m.id,
+                m.meter_type,
+                m.meter_number,
+                d.original_address
+            FROM "Meters" m
+            JOIN "Dormitories" d ON m.dorm_id = d.id
+        """
+        params = []
+        if search_term:
+            query += " WHERE m.meter_number ILIKE %s OR m.meter_type ILIKE %s OR d.original_address ILIKE %s"
+            term = f"%{search_term}%"
+            params.extend([term, term, term])
+            
+        query += " ORDER BY d.original_address, m.meter_type, m.meter_number"
+        
+        with conn.cursor() as cursor:
+            cursor.execute(query, tuple(params))
+            records = [dict(row) for row in cursor.fetchall()]
+        return records
+    except Exception as e:
+        print(f"搜尋所有錶號時發生錯誤: {e}")
+        return []
+    finally:
+        if conn: 
+            conn.close()
+
+def get_dorm_id_from_meter_id(meter_id: int):
+    """
+    根據 meter_id 反查 dorm_id。
+    """
+    if not meter_id:
+        return None
+    conn = database.get_db_connection()
+    if not conn: return None
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute('SELECT dorm_id FROM "Meters" WHERE id = %s', (meter_id,))
+            result = cursor.fetchone()
+            return result['dorm_id'] if result else None
+    finally:
+        if conn: conn.close()

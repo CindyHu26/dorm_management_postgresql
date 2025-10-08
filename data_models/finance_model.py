@@ -501,3 +501,25 @@ def update_annual_expense_record(expense_id: int, details: dict):
         return False, f"更新年度費用時發生錯誤: {e}"
     finally:
         if conn: conn.close()
+
+def get_bill_records_for_meter_as_df(meter_id: int):
+    """查詢指定錶號的所有獨立帳單紀錄。"""
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        query = """
+            SELECT 
+                b.id, b.bill_type AS "費用類型", b.amount AS "帳單金額",
+                b.usage_amount AS "用量(度/噸)",
+                b.bill_start_date AS "帳單起始日", b.bill_end_date AS "帳單結束日",
+                b.payer AS "支付方", 
+                b.is_pass_through AS "是否為代收代付",
+                b.is_invoiced AS "是否已請款", 
+                b.notes AS "備註"
+            FROM "UtilityBills" b
+            WHERE b.meter_id = %s
+            ORDER BY b.bill_end_date DESC
+        """
+        return _execute_query_to_dataframe(conn, query, (meter_id,))
+    finally:
+        if conn: conn.close()
