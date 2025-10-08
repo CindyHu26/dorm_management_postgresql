@@ -270,6 +270,17 @@ def create_all_tables_and_indexes():
             );
             """
             
+            TABLES['Vendors'] = """
+            CREATE TABLE IF NOT EXISTS "Vendors" (
+                "id" SERIAL PRIMARY KEY,
+                "service_category" TEXT,
+                "vendor_name" TEXT,
+                "contact_person" TEXT,
+                "phone_number" TEXT,
+                "notes" TEXT
+            );
+            """
+
             print("INFO: (PostgreSQL) 正在建立所有表格...")
             for table_name, table_sql in TABLES.items():
                 cursor.execute(table_sql)
@@ -281,9 +292,13 @@ def create_all_tables_and_indexes():
                 'CREATE INDEX IF NOT EXISTS idx_workers_room_id ON "Workers" ("room_id");',
                 'CREATE INDEX IF NOT EXISTS idx_feehistory_worker_id ON "FeeHistory" ("worker_unique_id");',
                 'CREATE INDEX IF NOT EXISTS idx_statushistory_worker_id ON "WorkerStatusHistory" ("worker_unique_id");',
-                # --- 【核心新增】為新表格建立索引，加速查詢 ---
                 'CREATE INDEX IF NOT EXISTS idx_accomhistory_worker_id ON "AccommodationHistory" ("worker_unique_id");',
-                'CREATE INDEX IF NOT EXISTS idx_accomhistory_room_id ON "AccommodationHistory" ("room_id");'
+                'CREATE INDEX IF NOT EXISTS idx_accomhistory_room_id ON "AccommodationHistory" ("room_id");',
+                'CREATE INDEX IF NOT EXISTS idx_vendors_service_category ON public."Vendors" (service_category);',
+                'CREATE INDEX IF NOT EXISTS idx_vendors_vendor_name ON public."Vendors" (vendor_name);',
+                'CREATE INDEX IF NOT EXISTS idx_vendors_contact_person ON public."Vendors" (contact_person);',
+                'CREATE INDEX IF NOT EXISTS idx_vendors_phone_number ON public."Vendors" (phone_number);'
+
             ]
             print("INFO: (PostgreSQL) 正在建立所有索引...")
             for index_sql in INDEXES:

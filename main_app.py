@@ -22,7 +22,8 @@ from views import (
     annual_expense_view, 
     lease_view, 
     equipment_view, 
-    meter_view, 
+    meter_view,
+    vendor_view,
     batch_import_view, 
     report_view
 )
@@ -58,7 +59,8 @@ PAGES = {
         "年度費用": annual_expense_view,
         "房租合約管理": lease_view,
         "設備管理": equipment_view,
-        "電水錶管理": meter_view
+        "電水錶管理": meter_view,
+        "廠商資料管理": vendor_view
     },
     "資料與系統維護": {
         "批次匯入": batch_import_view,
