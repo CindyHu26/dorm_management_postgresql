@@ -674,7 +674,7 @@ def batch_import_other_income(df: pd.DataFrame):
                         if room_key in room_map:
                             room_id = room_map[room_key]
                         else:
-                            # --- 【核心修改】如果找不到房號，就直接拋出錯誤 ---
+                            # --- 如果找不到房號，就直接拋出錯誤 ---
                             raise ValueError(f"在宿舍 '{original_address}' 中找不到房號 '{room_number_str}'")
                             
                     income_item = row.get('收入項目')
@@ -815,6 +815,83 @@ def batch_import_dorms_and_rooms(df: pd.DataFrame):
     except Exception as e:
         if conn: conn.rollback()
         print(f"批次匯入宿舍與房間時發生嚴重錯誤: {e}")
+    finally:
+        if conn: conn.close()
+            
+    return success_count, pd.DataFrame(failed_records)
+
+def batch_import_vendors(df: pd.DataFrame):
+    """
+    批次匯入廠商聯絡資料。
+    """
+    success_count = 0
+    failed_records = []
+    conn = database.get_db_connection()
+    if not conn:
+        error_df = df.copy()
+        error_df['錯誤原因'] = "無法連接到資料庫"
+        return 0, error_df
+
+    try:
+        with conn.cursor() as cursor:
+            # 將 Excel 欄位名稱對應到資料庫欄位名稱
+            column_mapping = {
+                "修理項目": "service_category",
+                "廠商": "vendor_name",
+                "聯絡人": "contact_person",
+                "聯絡電話": "phone_number"
+            }
+            df.rename(columns=column_mapping, inplace=True)
+
+            for index, row in df.iterrows():
+                try:
+                    # 取得必要的欄位值，並清除前後空白
+                    vendor_name = str(row.get('vendor_name', '')).strip()
+                    service_category = str(row.get('service_category', '')).strip()
+
+                    if not vendor_name and not service_category:
+                        raise ValueError("「廠商」和「修理項目」至少需要一項")
+
+                    details = {
+                        'service_category': service_category,
+                        'vendor_name': vendor_name,
+                        'contact_person': str(row.get('contact_person', '')).strip(),
+                        'phone_number': str(row.get('phone_number', '')).strip(),
+                        'notes': str(row.get('備註', '')).strip()
+                    }
+
+                    # 判斷：如果廠商名稱和服務項目都相同，就視為同一筆資料
+                    cursor.execute(
+                        'SELECT id FROM "Vendors" WHERE vendor_name = %s AND service_category = %s',
+                        (details['vendor_name'], details['service_category'])
+                    )
+                    existing = cursor.fetchone()
+                    
+                    if existing:
+                        # 更新現有廠商
+                        existing_id = existing['id']
+                        fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
+                        values = list(details.values()) + [existing_id]
+                        update_sql = f'UPDATE "Vendors" SET {fields} WHERE id = %s'
+                        cursor.execute(update_sql, tuple(values))
+                    else:
+                        # 新增廠商
+                        columns = ', '.join(f'"{k}"' for k in details.keys())
+                        placeholders = ', '.join(['%s'] * len(details))
+                        insert_sql = f'INSERT INTO "Vendors" ({columns}) VALUES ({placeholders})'
+                        cursor.execute(insert_sql, tuple(details.values()))
+
+                    success_count += 1
+                except Exception as row_error:
+                    # 如果單筆資料處理失敗，記錄下來
+                    original_row = row.rename(index={v: k for k, v in column_mapping.items()})
+                    original_row['錯誤原因'] = str(row_error)
+                    failed_records.append(original_row)
+
+        conn.commit()
+    except Exception as e:
+        if conn: conn.rollback()
+        print(f"批次匯入廠商資料時發生嚴重錯誤: {e}")
     finally:
         if conn: conn.close()
             

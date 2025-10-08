@@ -364,3 +364,32 @@ def render():
                             )
                 except Exception as e:
                     st.error(f"處理檔案時發生錯誤：{e}")
+
+    st.markdown("---")
+    with st.container(border=True):
+        st.subheader("🔧 廠商資料匯入")
+        st.info("用於將您現有的廠商聯絡人 Excel 檔案 (.xls 或 .xlsx) 批次匯入系統。")
+        
+        uploaded_vendor_file = st.file_uploader("上傳【廠商資料】Excel/XLS 檔案", type=["xlsx", "xls"], key="vendor_uploader")
+
+        if uploaded_vendor_file:
+            try:
+                # 使用 pandas 讀取 .xls 或 .xlsx 檔案
+                df_vendor = pd.read_excel(uploaded_vendor_file)
+                st.markdown("##### 檔案內容預覽：")
+                st.dataframe(df_vendor.head())
+                if st.button("🚀 開始匯入廠商資料", type="primary", key="vendor_import_btn"):
+                    with st.spinner("正在處理與匯入廠商資料..."):
+                        success, failed_df = importer_model.batch_import_vendors(df_vendor)
+                    st.success(f"匯入完成！成功處理 {success} 筆廠商紀錄。")
+                    if not failed_df.empty:
+                        st.error(f"有 {len(failed_df)} 筆資料匯入失敗：")
+                        st.dataframe(failed_df)
+                        st.download_button(
+                            label="📥 下載失敗紀錄報告",
+                            data=to_excel(failed_df),
+                            file_name="vendor_import_failed_report.xlsx",
+                            key="failed_vendor_download"
+                        )
+            except Exception as e:
+                st.error(f"處理檔案時發生錯誤：{e}")
