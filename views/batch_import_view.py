@@ -393,3 +393,54 @@ def render():
                         )
             except Exception as e:
                 st.error(f"處理檔案時發生錯誤：{e}")
+
+    st.markdown("---")
+    with st.container(border=True):
+        st.subheader("🛠️ 維修紀錄匯入")
+        st.info("用於將過往的維修案件紀錄，從 Excel 檔案批次匯入系統。")
+        
+        maintenance_template_df = pd.DataFrame({
+            "收到通知日期": [date.today().strftime('%Y-%m-%d')],
+            "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號"],
+            "修理細項說明": ["A01房門鎖損壞"],
+            "項目類型": ["門窗"],
+            "維修廠商": ["範例廠商-金冠不鏽鋼"],
+            "公司內部通知人": ["王大明"],
+            "聯絡廠商日期": [None],
+            "鑰匙": ["警衛室領取"],
+            "廠商回報完成日期": [None],
+            "付款人": ["我司"],
+            "維修費用": [1500],
+            "請款日期": [None],
+            "發票": ["抬頭: XXX, 統編: 12345678"],
+            "備註": ["房客回報"],
+            "狀態": ["待處理"]
+        })
+        st.download_button(
+            label="📥 下載維修紀錄匯入範本",
+            data=to_excel(maintenance_template_df),
+            file_name="maintenance_import_template.xlsx"
+        )
+
+        uploaded_maintenance_file = st.file_uploader("上傳【維修紀錄】Excel 檔案", type=["xlsx", "xls"], key="maintenance_uploader")
+
+        if uploaded_maintenance_file:
+            try:
+                df_maintenance = pd.read_excel(uploaded_maintenance_file)
+                st.markdown("##### 檔案內容預覽：")
+                st.dataframe(df_maintenance.head())
+                if st.button("🚀 開始匯入維修紀錄", type="primary", key="maintenance_import_btn"):
+                    with st.spinner("正在處理與匯入維修紀錄..."):
+                        success, failed_df = importer_model.batch_import_maintenance_logs(df_maintenance)
+                    st.success(f"匯入完成！成功處理 {success} 筆維修紀錄。")
+                    if not failed_df.empty:
+                        st.error(f"有 {len(failed_df)} 筆資料匯入失敗：")
+                        st.dataframe(failed_df)
+                        st.download_button(
+                            label="📥 下載失敗紀錄報告",
+                            data=to_excel(failed_df),
+                            file_name="maintenance_import_failed_report.xlsx",
+                            key="failed_maintenance_download"
+                        )
+            except Exception as e:
+                st.error(f"處理檔案時發生錯誤：{e}")

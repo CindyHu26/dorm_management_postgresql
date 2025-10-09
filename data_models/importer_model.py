@@ -896,3 +896,90 @@ def batch_import_vendors(df: pd.DataFrame):
         if conn: conn.close()
             
     return success_count, pd.DataFrame(failed_records)
+
+def batch_import_maintenance_logs(df: pd.DataFrame):
+    """
+    【新功能】批次匯入維修追蹤紀錄。
+    """
+    success_count = 0
+    failed_records = []
+    conn = database.get_db_connection()
+    if not conn:
+        error_df = df.copy()
+        error_df['錯誤原因'] = "無法連接到資料庫"
+        return 0, error_df
+
+    try:
+        with conn.cursor() as cursor:
+            # 預載對照表
+            dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, original_address, normalized_address FROM "Dormitories"')
+            original_addr_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
+            normalized_addr_map = {d['normalized_address']: d['id'] for _, d in dorms_df.iterrows()}
+            
+            vendors_df = _execute_query_to_dataframe(conn, 'SELECT id, vendor_name FROM "Vendors"')
+            vendor_map = {v['vendor_name']: v['id'] for _, v in vendors_df.iterrows()}
+
+            for index, row in df.iterrows():
+                try:
+                    # --- 查找宿舍 ID ---
+                    address = row.get('宿舍地址')
+                    if not address or pd.isna(address):
+                        raise ValueError("宿舍地址為空")
+                    addr_stripped = str(address).strip()
+                    dorm_id = original_addr_map.get(addr_stripped) or normalized_addr_map.get(normalize_taiwan_address(addr_stripped)['full'])
+                    if not dorm_id:
+                        raise ValueError(f"找不到宿舍地址: '{addr_stripped}'")
+
+                    # --- 查找廠商 ID (選填) ---
+                    vendor_id = None
+                    vendor_name = row.get('維修廠商')
+                    if pd.notna(vendor_name) and str(vendor_name).strip():
+                        vendor_id = vendor_map.get(str(vendor_name).strip())
+                        # 如果找不到廠商，可以選擇報錯或忽略，這裡我們先忽略，讓紀錄可以先建立
+
+                    # --- 組合資料 ---
+                    details = {
+                        'dorm_id': dorm_id,
+                        'vendor_id': vendor_id,
+                        'status': row.get('狀態', '已完成'), # 批次匯入的通常是舊資料，預設為已完成
+                        'notification_date': pd.to_datetime(row.get('收到通知日期')).date() if pd.notna(row.get('收到通知日期')) else None,
+                        'reported_by': row.get('公司內部通知人'),
+                        'item_type': row.get('項目類型'),
+                        'description': row.get('修理細項說明'),
+                        'contacted_vendor_date': pd.to_datetime(row.get('聯絡廠商日期')).date() if pd.notna(row.get('聯絡廠商日期')) else None,
+                        'key_info': row.get('鑰匙'),
+                        'completion_date': pd.to_datetime(row.get('廠商回報完成日期')).date() if pd.notna(row.get('廠商回報完成日期')) else None,
+                        'cost': int(pd.to_numeric(row.get('維修費用'), errors='coerce')) if pd.notna(row.get('維修費用')) else None,
+                        'payer': row.get('付款人'),
+                        'invoice_date': pd.to_datetime(row.get('請款日期')).date() if pd.notna(row.get('請款日期')) else None,
+                        'invoice_info': row.get('發票'),
+                        'notes': row.get('備註')
+                    }
+                    
+                    # 避免重複匯入簡單檢查
+                    cursor.execute(
+                        'SELECT id FROM "MaintenanceLog" WHERE dorm_id = %s AND description = %s AND notification_date = %s',
+                        (details['dorm_id'], details['description'], details['notification_date'])
+                    )
+                    if cursor.fetchone():
+                        # 如果找到重複紀錄，可以選擇跳過
+                        continue
+
+                    columns = ', '.join(f'"{k}"' for k in details.keys())
+                    placeholders = ', '.join(['%s'] * len(details))
+                    sql = f'INSERT INTO "MaintenanceLog" ({columns}) VALUES ({placeholders})'
+                    cursor.execute(sql, tuple(v for v in details.values()))
+
+                    success_count += 1
+                except Exception as row_error:
+                    row['錯誤原因'] = str(row_error)
+                    failed_records.append(row)
+
+        conn.commit()
+    except Exception as e:
+        if conn: conn.rollback()
+        print(f"批次匯入維修紀錄時發生嚴重錯誤: {e}")
+    finally:
+        if conn: conn.close()
+            
+    return success_count, pd.DataFrame(failed_records)
