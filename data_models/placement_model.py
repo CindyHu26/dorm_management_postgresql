@@ -1,5 +1,8 @@
+# /data_models/placement_model.py
+
 import pandas as pd
 import database
+from datetime import date # 引入 date 模組
 
 def _execute_query_to_dataframe(conn, query, params=None):
     """一個輔助函式，用來手動執行查詢並回傳 DataFrame。"""
@@ -15,11 +18,13 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def find_available_rooms(filters: dict):
     """
-    【v2.0 修改版】根據篩選條件查找所有符合條件且有空床位的房間。
-    改為從 AccommodationHistory 查詢實際在住人數。
+    【v2.1 日期查詢版】根據篩選條件查找所有符合條件且有空床位的房間。
+    改為從 AccommodationHistory 查詢指定日期的實際在住人數。
     """
     gender_to_place = filters.get("gender")
     dorm_ids_filter = filters.get("dorm_ids")
+    # --- 【核心修改 1】從傳入的 filters 中取得查詢日期 ---
+    query_date = filters.get("query_date", date.today())
 
     if not gender_to_place:
         return pd.DataFrame()
@@ -39,14 +44,15 @@ def find_available_rooms(filters: dict):
         params = []
         
         if dorm_ids_filter:
-            base_query += ' AND d.id IN %s'
-            params.append(tuple(dorm_ids_filter))
+            # 使用 ANY(%s) 語法來處理列表，更安全
+            base_query += ' AND d.id = ANY(%s)'
+            params.append(list(dorm_ids_filter))
 
-        rooms_df = _execute_query_to_dataframe(conn, base_query, tuple(params) if params else None)
+        rooms_df = _execute_query_to_dataframe(conn, base_query, params if params else None)
         if rooms_df.empty:
             return pd.DataFrame()
 
-        # --- 核心修改點：從 AccommodationHistory 取得當前所有在住人員的資料 ---
+        # --- 【核心修改 2】修改 workers_query 的 WHERE 條件，以使用傳入的日期 ---
         workers_query = """
             SELECT 
                 ah.room_id, 
@@ -55,11 +61,14 @@ def find_available_rooms(filters: dict):
                 w.gender 
             FROM "AccommodationHistory" ah
             JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
-            WHERE ah.end_date IS NULL OR ah.end_date > CURRENT_DATE
+            WHERE 
+                ah.start_date <= %(query_date)s
+                AND (ah.end_date IS NULL OR ah.end_date >= %(query_date)s)
         """
-        workers_df = _execute_query_to_dataframe(conn, workers_query)
+        # 將日期作為參數傳遞給查詢
+        workers_df = _execute_query_to_dataframe(conn, workers_query, {"query_date": query_date})
         
-        # 後續的 Pandas 邏輯完全不需要修改
+        # 後續的 Pandas 邏輯完全不需要修改，它會自動根據新的 workers_df 計算
         if not workers_df.empty:
             occupancy = workers_df.groupby('room_id').size().rename('current_occupants')
             rooms_df = rooms_df.merge(occupancy, left_on='room_id', right_index=True, how='left')
