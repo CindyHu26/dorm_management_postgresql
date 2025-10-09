@@ -55,7 +55,7 @@ def render():
     with st.container(border=True):
         st.subheader(f"目前操作對象: {meter_options[selected_meter_id]}")
         col1, col2 = st.columns(2)
-        col1.info(f"**舊編號:** {dorm_details.get('legacy_dorm_code') or '未設定'}")
+        col1.info(f"**編號:** {dorm_details.get('legacy_dorm_code') or '未設定'}")
         col2.info(f"**變動費用備註:** {dorm_details.get('utility_bill_notes') or '無'}")
 
 

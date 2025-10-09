@@ -24,7 +24,7 @@ def get_all_dorms_for_view(search_term: str = None):
         query = """
             SELECT 
                 id, 
-                legacy_dorm_code AS "舊編號", 
+                legacy_dorm_code AS "編號", 
                 city AS "縣市",
                 district AS "區域",
                 person_in_charge AS "負責人",

@@ -86,7 +86,7 @@ def render():
     # --- 現有宿舍總覽與編輯 ---
     st.subheader("現有宿舍總覽")
     
-    search_term = st.text_input("搜尋宿舍 (可輸入舊編號、名稱、地址、縣市、區域或負責人)")
+    search_term = st.text_input("搜尋宿舍 (可輸入編號、名稱、地址、縣市、區域或負責人)")
     dorms_df = get_dorms_df(search_term)
     
     if dorms_df.empty:

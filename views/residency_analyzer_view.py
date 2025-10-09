@@ -1,4 +1,4 @@
-# views/residency_analyzer_view.py (新檔案)
+# views/residency_analyzer_view.py (新增「新增入住」區塊與擴充欄位)
 
 import streamlit as st
 import pandas as pd
@@ -34,10 +34,21 @@ def render():
                 "dorm_ids": selected_dorm_ids if selected_dorm_ids else None
             }
             with st.spinner("正在查詢中..."):
+                # 同時執行兩種查詢
                 results_df = residency_analyzer_model.get_residents_for_period(filters)
+                new_residents_df = residency_analyzer_model.get_new_residents_for_period(filters)
             
+            # ---「期間新增入住人員」區塊 ---
             st.markdown("---")
-            st.subheader("查詢結果")
+            st.subheader(f"期間新增入住人員 ({start_date} ~ {end_date})")
+            if new_residents_df.empty:
+                st.info("此期間內無新增入住人員。")
+            else:
+                st.success(f"此期間內共有 {len(new_residents_df)} 位新入住人員。")
+                st.dataframe(new_residents_df, width='stretch', hide_index=True)
+
+            st.markdown("---")
+            st.subheader("住宿總覽")
 
             if results_df.empty:
                 st.warning("在您指定的條件下，查無任何住宿紀錄。")
@@ -51,4 +62,11 @@ def render():
                 m1.metric("總住宿人次", f"{total_records} 人次")
                 m2.metric("期間費用總計 (以月費為基礎)", f"NT$ {total_fee:,}")
                 
-                st.dataframe(results_df, width='stretch', hide_index=True)
+                # 預設顯示的欄位順序
+                column_order = [
+                    "宿舍地址", "編號", "主要管理人", "負責人", "房號", 
+                    "雇主", "姓名", "性別", "國籍", "入住日", "退宿日", "總費用"
+                ]
+                # 確保只顯示實際存在的欄位
+                display_columns = [col for col in column_order if col in results_df.columns]
+                st.dataframe(results_df[display_columns], width='stretch', hide_index=True)
