@@ -1,10 +1,12 @@
+# scraper.py (新版系統修正後)
+
 import requests
 import os
 import shutil
 import time
 import string
 from typing import List, Tuple, Callable
-from datetime import datetime
+from datetime import datetime, timedelta # 引入 timedelta 來計算日期
 
 # ==============================================================================
 # 核心功能函式
@@ -13,9 +15,6 @@ from datetime import datetime
 def generate_code_ranges() -> List[Tuple[str, str]]:
     """
     自動產生所有雇主編號的查詢區間，用於後續的批次下載。
-    
-    Returns:
-        List[Tuple[str, str]]: 一個包含所有 (起始編號, 截止編號) 的列表。
     """
     ranges = []
     # A01~H99，每10個一組
@@ -40,20 +39,9 @@ def download_all_reports(
 ) -> List[str]:
     """
     遍歷所有查詢區間，下載所有報表，並將它們存入指定的暫存資料夾。
-
-    Args:
-        target_url (str): 目標網站的 URL。
-        auth_credentials (Tuple[str, str]): 包含 (帳號, 密碼) 的元組。
-        query_ranges (List[Tuple[str, str]]): 由 (起始編號, 截止編號) 組成的查詢列表。
-        temp_dir (str): 用於存放下載檔案的暫存資料夾路徑。
-        log_callback (Callable[[str], None]): 用於回報進度與狀態的日誌函式。
-
-    Returns:
-        List[str]: 一個包含所有成功下載的檔案絕對路徑的列表。
     """
-    log_callback("INFO: 開始執行報表下載程序...")
+    log_callback("INFO: 開始執行報表下載程序 (新版系統)...")
 
-    # 準備暫存資料夾，如果已存在則清空重建
     try:
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
@@ -66,54 +54,50 @@ def download_all_reports(
     downloaded_files = []
     total_ranges = len(query_ranges)
 
-    today_str = datetime.today().strftime('%Y-%m-%d')
-    log_callback(f"INFO: 將使用基準日期: {today_str} 進行查詢。")
+    # --- 計算基準日期 (今天 + 14天) ---
+    base_date_str = (datetime.today() + timedelta(days=14)).strftime('%Y-%m-%d')
+    log_callback(f"INFO: 將使用基準日期: {base_date_str} 進行查詢。")
 
     for i, (start_code, end_code) in enumerate(query_ranges):
         log_callback(f"INFO: 正在下載第 {i+1}/{total_ranges} 批: {start_code} - {end_code} ...")
         
+        # --- 【核心修改 2】更新 payload 以符合新版系統的表單欄位 ---
         payload = {
-            'CU00_BNO': start_code,
-            'CU00_ENO': end_code,
-            'CU00_SDATE': '1',
-            'CU00_BDATE': '',
-            'CU00_EDATE': '',
-            'CU00_BDATE1': '',
-            'CU00_EDATE1': '',
-            'CU00_BDATE2': '',
-            'CU00_EDATE2': '',
-            'CU00_BASE': today_str,
-            'CU00_BASE_I': 'N',
-            'CU00_sel8': 'A',
-            'CU00_LA04': '0',
-            'CU00_LA19': '0',
-            'CU00_LA198': '0',
-            'CU00_WORK': '0',
-            'CU00_PNO': '0',
-
-            'CU00_ORG1': 'A',
-            'CU00_LNO': '1',
-            'CU00_LA28': '0',
-            'CU00_SALERS': '0',
-            'CU00_MEMBER': '0',
-            'CU00_SERVS': 'A',
-            'CU00_ACCS': '0',
-            'CU00_TRANSF': '0',
-            'CU00_RET': '0',
-            'CU00_ORD': '1',
-            'CU00_drt': '5',
-            'CU00_SEL32': '4',
-            'CU00_SEL33': '5',
-            'CU00_SEL35': '2',
-            'CU00_LA37': '',
-            'CU00_LA37_1': '',
-            'CU00_LA120': '全部',
-            'LFK02_mm': '',
+            'CU00_BNO1': start_code,         # 起始雇主編號
+            'CU00_ENO1': end_code,           # 截止雇主編號
+            'CU00_SDATE': '2',              # 期間別: 2 (接管日)
+            'CU00_BDATE': '',               # 空白
+            'CU00_EDATE': '',               # 空白
+            'CU00_BDATE1': '',              # 空白
+            'CU00_EDATE1': '',              # 空白
+            'CU00_BDATE2': '',              # 空白
+            'CU00_EDATE2': '',              # 空白
+            'CU00_BASE': base_date_str,     # 基準日期 (今日+14天)
+            'CU00_BASE_I': 'Y',             # 廢止聘可移工算任用中?: Y
+            'CU00_LA04': '0',               # 接管身份代號: 所有
+            'CU00_LA19': '0',               # 離管身份代號: 所有
+            'CU00_LA198': '0',              # 申請類別: 全部
+            'CU00_ORG1': 'A',               # 任用來源: 全部
+            'CU00_WORK': '0',               
+            'CU00_PNO': '0',                # 移工類別: 全部
+            'CU00_LNO': '0',                # 工種類別: 全部
+            'CU00_LA28': '0',               # 外勞國籍: 全部
+            'CU00_SALERS': 'A',             # 業務人員: 全部
+            'CU00_MEMBER': 'A',             # 負責行政人員: 全部
+            'CU00_SERVS': 'A',              # 負責客服人員: 全部 
+            'CU00_ACCS': '0',               # 負責會計人員: 全部
+            'CU00_TRANSF': 'A',             # 負責雙語人員: 全部
+            'CU00_RET': '0',                # 所屬縣市: 全部
+            'CU00_ORD': '1',                # 資料排序: 日期
+            'CU00_chk1': 'N',               # 不同雇主是否跳頁: N
+            'CU00_chk2': 'N',               # 不同業務是否跳頁: N 
+            'CU00_chk21': 'D',              # 報表格式: D
+            'CU00_SEL35': '2',              # 表單日期格式: 2 (西元)
+            'CU00_LA120': '全部',                 # 國內仲介: 全部 (對應的欄位是空的)
             'key': '轉出Excel'
         }
 
         try:
-            # ... (requests 請求與錯誤處理邏輯不變) ...
             response = requests.post(
                 target_url,
                 data=payload,

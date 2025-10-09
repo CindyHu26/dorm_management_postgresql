@@ -304,6 +304,34 @@ def create_all_tables_and_indexes():
                 FOREIGN KEY ("vendor_id") REFERENCES "Vendors" ("id") ON DELETE SET NULL
             );
             """
+            TABLES['InventoryItems'] = """
+            CREATE TABLE IF NOT EXISTS "InventoryItems" (
+                "id" SERIAL PRIMARY KEY,
+                "item_name" TEXT NOT NULL UNIQUE,
+                "item_category" TEXT,
+                "dorm_id" INTEGER,
+                "current_stock" INTEGER NOT NULL DEFAULT 0,
+                "unit_cost" INTEGER,
+                "specifications" TEXT,
+                "notes" TEXT,
+                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE SET NULL
+            );
+            """
+            TABLES['InventoryLog'] = """
+            CREATE TABLE IF NOT EXISTS "InventoryLog" (
+                "id" SERIAL PRIMARY KEY,
+                "item_id" INTEGER NOT NULL,
+                "transaction_type" VARCHAR(50),
+                "quantity" INTEGER,
+                "transaction_date" DATE NOT NULL,
+                "dorm_id" INTEGER,
+                "person_in_charge" TEXT,
+                "related_expense_id" INTEGER,
+                "notes" TEXT,
+                FOREIGN KEY ("item_id") REFERENCES "InventoryItems" ("id") ON DELETE CASCADE,
+                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE SET NULL
+            );
+            """
 
             print("INFO: (PostgreSQL) 正在建立所有表格...")
             for table_name, table_sql in TABLES.items():

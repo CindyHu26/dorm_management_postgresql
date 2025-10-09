@@ -185,21 +185,34 @@ def parse_and_process_reports(
     log_callback: Callable[[str], None]
 ) -> pd.DataFrame:
     """
-    解析所有下載的XML報表檔案，進行清理、正規化。
+    【v2.1 XML修復版】解析所有下載的XML報表檔案，進行清理、正規化。
     """
-    log_callback("INFO: 開始執行報表解析與資料處理程序...")
+    log_callback("INFO: 開始執行報表解析與資料處理程序 (新版系統)...")
     all_dataframes = []
     ns = {'ss': 'urn:schemas-microsoft-com:office:spreadsheet'}
 
+    # --- 【核心修改】建立一個有修復功能的解析器 ---
+    parser = etree.XMLParser(recover=True, encoding='utf-8')
+
     for file_path in file_paths:
         try:
-            tree = etree.parse(file_path)
+            # --- 【核心修改】先讀取檔案內容，再用修復模式解析 ---
+            with open(file_path, 'rb') as f:
+                file_content = f.read()
+            
+            # 如果檔案內容為空，則跳過
+            if not file_content:
+                log_callback(f"WARNING: 檔案 {os.path.basename(file_path)} 內容為空，已略過。")
+                continue
+
+            tree = etree.fromstring(file_content, parser=parser)
             rows_xml = tree.xpath('.//ss:Row', namespaces=ns)
             header, all_rows_data, is_data_section = [], [], False
             for row in rows_xml:
                 cells_text = [(data.text or "").strip() for cell in row.findall('ss:Cell', ns) for data in cell.findall('ss:Data', ns)]
                 if not cells_text: continue
-                if cells_text[0] == "入境日" and not is_data_section:
+                
+                if cells_text[0] == "客戶簡稱" and not is_data_section:
                     is_data_section = True
                     header = [h.replace('\n', '') for h in cells_text]
                     continue
@@ -221,29 +234,30 @@ def parse_and_process_reports(
     master_df = pd.concat(all_dataframes, ignore_index=True)
     log_callback(f"INFO: 所有報表已成功合併！總共有 {len(master_df)} 筆原始資料。")
 
-    if not master_df.empty and str(master_df.iloc[-1, 0]).strip().startswith('合計'):
-        master_df = master_df.iloc[:-1]
-        log_callback("INFO: 已成功移除合計列。")
-    
     log_callback("INFO: 正在過濾無效的空白資料列...")
     original_rows = len(master_df)
-    master_df.dropna(subset=['雇主簡稱', '中文譯名'], inplace=True)
-    master_df = master_df[master_df['雇主簡稱'].str.strip() != '']
-    master_df = master_df[master_df['中文譯名'].str.strip() != '']
+    master_df.dropna(subset=['客戶簡稱', '姓名(中)'], inplace=True)
+    master_df = master_df[master_df['客戶簡稱'].str.strip() != '']
+    master_df = master_df[master_df['姓名(中)'].str.strip() != '']
     log_callback(f"INFO: 已過濾 {original_rows - len(master_df)} 筆無效資料列。")
 
     log_callback("INFO: 正在進行資料欄位標準化與正規化...")
-    # --- 【核心修改點 1】: 新增 '移工英文姓名' 的映射 ---
     column_mapping = {
-        '雇主簡稱': 'employer_name', '中文譯名': 'worker_name', '移工英文姓名': 'native_name',
-        '性別': 'gender', '國籍': 'nationality', '護照號碼': 'passport_number', 
-        '居留證號': 'arc_number', '入境日': 'arrival_date', '離境日': 'departure_date', 
-        '工作期限': 'work_permit_expiry_date', '居留地址': 'original_address',
+        '客戶簡稱': 'employer_name', 
+        '姓名(中)': 'worker_name', 
+        '英文姓名': 'native_name',
+        '性別': 'gender', 
+        '國籍': 'nationality', 
+        '護照號碼': 'passport_number', 
+        '居留證號': 'arc_number', 
+        '聘僱起始日': 'accommodation_start_date',
+        '聘僱期滿日': 'work_permit_expiry_date', 
+        '居住地址': 'original_address',
     }
     master_df.rename(columns=column_mapping, inplace=True)
 
     log_callback("INFO: 正在強制統一所有日期欄位格式為 YYYY-MM-DD...")
-    date_columns = ['arrival_date', 'departure_date', 'work_permit_expiry_date']
+    date_columns = ['accommodation_start_date', 'work_permit_expiry_date']
     for col in date_columns:
         if col in master_df.columns:
             master_df[col] = pd.to_datetime(master_df[col], errors='coerce').dt.strftime('%Y-%m-%d')
@@ -268,11 +282,12 @@ def parse_and_process_reports(
     addr_info = master_df['original_address'].apply(normalize_taiwan_address).apply(pd.Series)
     master_df[['normalized_address', 'city', 'district']] = addr_info[['full', 'city', 'district']]
     
-    # --- 將 native_name 加入最終輸出的欄位列表 ---
     final_columns = [
         'unique_id', 'employer_name', 'worker_name', 'native_name', 'gender', 'nationality', 
-        'passport_number', 'arc_number', 'arrival_date', 'departure_date', 
-        'work_permit_expiry_date', 'original_address', 'normalized_address', 'city', 'district'
+        'passport_number', 'arc_number', 
+        'accommodation_start_date',
+        'work_permit_expiry_date', 
+        'original_address', 'normalized_address', 'city', 'district'
     ]
     existing_final_columns = [col for col in final_columns if col in master_df.columns]
     
