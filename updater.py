@@ -17,9 +17,9 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], None]):
     """
-    【v2.5 新版系統修正】執行核心的資料庫更新流程。
+    【v2.10 最終修正版】執行核心的資料庫更新流程，徹底解決型別問題。
     """
-    log_callback("\n===== 開始執行核心資料庫更新程序 (新版系統) =====")
+    log_callback("\n===== 開始執行核心資料庫更新程序 (v2.10 最終修正版) =====")
     today = datetime.now().date()
     yesterday = today - timedelta(days=1)
     
@@ -50,7 +50,7 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
             address_room_df = _execute_query_to_dataframe(conn, 'SELECT d.normalized_address, r.id as room_id FROM "Rooms" r JOIN "Dormitories" d ON r.dorm_id = d.id WHERE r.room_number = %s', ("[未分配房間]",))
             address_room_map = pd.Series(address_room_df.room_id.values, index=address_room_df.normalized_address).to_dict()
             fresh_df['room_id'] = fresh_df['normalized_address'].map(address_room_map)
-
+            
             log_callback("INFO: 步驟 3/4 - 正在取得現有工人的最新住宿與來源狀態...")
             all_workers_info_df = _execute_query_to_dataframe(conn, """
                 SELECT w.unique_id, w.data_source, ah.room_id
@@ -71,23 +71,27 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
 
             for index, fresh_worker in fresh_df.iterrows():
                 unique_id = fresh_worker['unique_id']
-                new_room_id = fresh_worker.get('room_id')
+                
+                # 在迴圈內部進行強制型別轉換，這是最可靠的方式
+                raw_room_id = fresh_worker.get('room_id')
+                new_room_id = int(raw_room_id) if pd.notna(raw_room_id) else None
+                
                 data_source = worker_data_sources.get(unique_id)
                 
                 cursor.execute('SELECT unique_id FROM "Workers" WHERE unique_id = %s', (unique_id,))
                 existing_worker = cursor.fetchone()
 
                 if existing_worker:
-                    # --- 【核心修改 1】對於已存在的工人，更新列表不包含 accommodation_start_date ---
                     update_cols = ['native_name', 'gender', 'nationality', 'passport_number', 'arc_number', 'work_permit_expiry_date']
                     update_details = {col: fresh_worker.get(col) for col in update_cols if col in fresh_worker}
                     
-                    # 確保在職狀態被更新為"在住"
                     update_details['accommodation_end_date'] = None
+                    # 【核心修正 1】直接使用處理過的 new_room_id
                     update_details['room_id'] = new_room_id
                     
                     fields = ', '.join([f'"{key}" = %s' for key in update_details.keys()])
                     values = list(update_details.values()) + [unique_id]
+                    
                     cursor.execute(f'UPDATE "Workers" SET {fields} WHERE unique_id = %s', tuple(values))
                     updated_count += 1
                     
@@ -101,21 +105,22 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                     else:
                         log_callback(f"INFO: [保護] 工人 '{unique_id}' 為手動調整狀態，跳過「實際住宿」歷史紀錄的更新。")
                 else:
-                    # --- 【核心修改 2】對於新工人，所有資料都寫入，包含新的 accommodation_start_date ---
                     new_worker_details = fresh_worker.to_dict()
                     new_worker_details['data_source'] = '系統自動更新'
                     new_worker_details['special_status'] = '在住'
                     
-                    # 將所有從 Excel 來的資料欄位都對應到資料庫欄位
                     final_details = {k: v for k, v in new_worker_details.items() if k in worker_columns}
+                    
+                    # 【核心修正 2】在建立完字典後，強制覆蓋 room_id
+                    final_details['room_id'] = new_room_id
                     
                     columns = ', '.join(f'"{k}"' for k in final_details.keys())
                     placeholders = ', '.join(['%s'] * len(final_details))
+                    
                     cursor.execute(f'INSERT INTO "Workers" ({columns}) VALUES ({placeholders})', tuple(final_details.values()))
                     added_count += 1
                     if new_room_id:
-                        # 新增住宿歷史時，使用新的 accommodation_start_date
-                        start_date = new_worker_details.get('accommodation_start_date', today)
+                        start_date = new_worker_details.get('accommodation_start_date') or today
                         cursor.execute('INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date) VALUES (%s, %s, %s)', (unique_id, new_room_id, start_date))
                 
                 processed_ids.add(unique_id)

@@ -185,22 +185,19 @@ def parse_and_process_reports(
     log_callback: Callable[[str], None]
 ) -> pd.DataFrame:
     """
-    【v2.1 XML修復版】解析所有下載的XML報表檔案，進行清理、正規化。
+    【v2.11 地址過濾版】解析所有下載的XML報表檔案，進行清理、正規化。
     """
     log_callback("INFO: 開始執行報表解析與資料處理程序 (新版系統)...")
     all_dataframes = []
     ns = {'ss': 'urn:schemas-microsoft-com:office:spreadsheet'}
 
-    # --- 【核心修改】建立一個有修復功能的解析器 ---
     parser = etree.XMLParser(recover=True, encoding='utf-8')
 
     for file_path in file_paths:
         try:
-            # --- 【核心修改】先讀取檔案內容，再用修復模式解析 ---
             with open(file_path, 'rb') as f:
                 file_content = f.read()
             
-            # 如果檔案內容為空，則跳過
             if not file_content:
                 log_callback(f"WARNING: 檔案 {os.path.basename(file_path)} 內容為空，已略過。")
                 continue
@@ -208,22 +205,29 @@ def parse_and_process_reports(
             tree = etree.fromstring(file_content, parser=parser)
             rows_xml = tree.xpath('.//ss:Row', namespaces=ns)
             header, all_rows_data, is_data_section = [], [], False
+            
             for row in rows_xml:
                 cells_text = [(data.text or "").strip() for cell in row.findall('ss:Cell', ns) for data in cell.findall('ss:Data', ns)]
                 if not cells_text: continue
                 
-                if cells_text[0] == "客戶簡稱" and not is_data_section:
+                if "客戶簡稱" in cells_text and "姓名(中)" in cells_text and not is_data_section:
                     is_data_section = True
                     header = [h.replace('\n', '') for h in cells_text]
+                    log_callback(f"INFO: 在檔案 {os.path.basename(file_path)} 中找到資料標頭。")
                     continue
+
                 if is_data_section:
                     row_data = cells_text[:len(header)]
                     while len(row_data) < len(header):
                         row_data.append("")
                     all_rows_data.append(row_data)
+            
             if header and all_rows_data:
                 df = pd.DataFrame(all_rows_data, columns=header)
                 all_dataframes.append(df)
+            elif not header:
+                 log_callback(f"WARNING: 在檔案 {os.path.basename(file_path)} 中找不到有效的資料標頭，已略過。")
+
         except Exception as e:
             log_callback(f"ERROR: 解析檔案 {os.path.basename(file_path)} 時發生錯誤: {e}")
 
@@ -239,7 +243,19 @@ def parse_and_process_reports(
     master_df.dropna(subset=['客戶簡稱', '姓名(中)'], inplace=True)
     master_df = master_df[master_df['客戶簡稱'].str.strip() != '']
     master_df = master_df[master_df['姓名(中)'].str.strip() != '']
-    log_callback(f"INFO: 已過濾 {original_rows - len(master_df)} 筆無效資料列。")
+    log_callback(f"INFO: 已過濾 {original_rows - len(master_df)} 筆客戶或姓名為空的資料列。")
+
+    # --- 【核心修改】在此處新增地址過濾邏輯 ---
+    log_callback("INFO: 正在過濾地址為空的資料列...")
+    original_rows = len(master_df)
+    # 確保 '居住地址' 欄位存在
+    if '居住地址' in master_df.columns:
+        # 使用 .loc 來避免 SettingWithCopyWarning
+        master_df = master_df.loc[master_df['居住地址'].notna() & (master_df['居住地址'].str.strip() != '')].copy()
+        log_callback(f"INFO: 已過濾 {original_rows - len(master_df)} 筆地址為空的資料列。")
+    else:
+        log_callback("WARNING: 在報表中找不到 '居住地址' 欄位，無法進行地址過濾。")
+
 
     log_callback("INFO: 正在進行資料欄位標準化與正規化...")
     column_mapping = {
