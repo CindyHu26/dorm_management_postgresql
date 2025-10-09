@@ -4,7 +4,6 @@ import pandas as pd
 import database
 from dateutil.relativedelta import relativedelta
 from datetime import date
-from data_models import finance_model
 
 def _execute_query_to_dataframe(conn, query, params=None):
     """輔助函式"""
@@ -132,7 +131,7 @@ def delete_log(log_id: int):
 
 def archive_log_as_annual_expense(log_id: int):
     """
-    將一筆維修紀錄轉為年度費用，並更新其狀態。
+    【v1.2 交易邏輯修正版】將一筆維修紀錄轉為年度費用，並更新其狀態。
     """
     conn = database.get_db_connection()
     if not conn: return False, "資料庫連線失敗。"
@@ -151,38 +150,34 @@ def archive_log_as_annual_expense(log_id: int):
                 return False, "維修費用為 0 或未設定，無法轉入年度費用。"
 
             # 步驟 2: 準備要寫入年度費用的資料
-            # 預設支付日期為完成日，若無則為通報日
             payment_date = log_details.get('completion_date') or log_details.get('notification_date') or date.today()
-
+            
             annual_expense_details = {
                 "dorm_id": log_details['dorm_id'],
                 "expense_item": f"維修-{log_details.get('item_type') or '項目未分類'}",
                 "payment_date": payment_date,
                 "total_amount": log_details['cost'],
-                # 預設攤銷期間為12個月，從支付日當月開始
                 "amortization_start_month": payment_date.strftime('%Y-%m'),
                 "amortization_end_month": (payment_date + relativedelta(months=11)).strftime('%Y-%m'),
                 "notes": f"來自維修紀錄ID:{log_id} - {log_details.get('description')}"
             }
 
-            # 呼叫 finance_model 的函式來新增紀錄
-            # 注意：add_annual_expense_record 內部會自己處理 commit/rollback
-            # 我們需要暫時關閉目前的交易，讓它獨立運作
-            conn.autocommit = True
-            success, message, new_id = finance_model.add_annual_expense_record(annual_expense_details)
-            conn.autocommit = False # 恢復正常的交易模式
+            # 【核心修正】直接在此交易中執行 INSERT，而不是呼叫外部函式
+            columns = ', '.join(f'"{k}"' for k in annual_expense_details.keys())
+            placeholders = ', '.join(['%s'] * len(annual_expense_details))
+            sql = f'INSERT INTO "AnnualExpenses" ({columns}) VALUES ({placeholders}) RETURNING id'
+            cursor.execute(sql, tuple(annual_expense_details.values()))
+            new_expense_id = cursor.fetchone()['id']
 
-            if not success:
-                # 如果 finance_model 新增失敗，直接回傳其錯誤訊息
-                raise Exception(f"轉入年度費用失敗: {message}")
-
-            # 步驟 3: 如果成功，更新維修紀錄的 'is_archived_as_expense' 標記
+            # 步驟 3: 更新維修紀錄的 'is_archived_as_expense' 標記
             cursor.execute(
                 'UPDATE "MaintenanceLog" SET is_archived_as_expense = TRUE WHERE id = %s',
                 (log_id,)
             )
-            conn.commit()
-            return True, f"成功將維修紀錄轉入年度費用 (新費用ID: {new_id})！您可至「年度費用」頁面調整攤銷期間。"
+        
+        # 所有操作成功後，一次性提交
+        conn.commit()
+        return True, f"成功將維修紀錄轉入年度費用 (新費用ID: {new_expense_id})！您可至「年度費用」頁面調整攤銷期間。"
 
     except Exception as e:
         if conn: conn.rollback()
