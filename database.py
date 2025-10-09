@@ -281,6 +281,30 @@ def create_all_tables_and_indexes():
             );
             """
 
+            TABLES['MaintenanceLog'] = """
+            CREATE TABLE IF NOT EXISTS "MaintenanceLog" (
+                "id" SERIAL PRIMARY KEY,
+                "dorm_id" INTEGER NOT NULL,
+                "vendor_id" INTEGER,
+                "status" VARCHAR(50) NOT NULL DEFAULT '待處理',
+                "notification_date" DATE,
+                "reported_by" TEXT,
+                "item_type" TEXT,
+                "description" TEXT,
+                "contacted_vendor_date" DATE,
+                "key_info" TEXT,
+                "completion_date" DATE,
+                "cost" INTEGER,
+                "payer" VARCHAR(50),
+                "invoice_date" DATE,
+                "invoice_info" TEXT,
+                "is_archived_as_expense" BOOLEAN DEFAULT FALSE,
+                "notes" TEXT,
+                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE,
+                FOREIGN KEY ("vendor_id") REFERENCES "Vendors" ("id") ON DELETE SET NULL
+            );
+            """
+
             print("INFO: (PostgreSQL) 正在建立所有表格...")
             for table_name, table_sql in TABLES.items():
                 cursor.execute(table_sql)
