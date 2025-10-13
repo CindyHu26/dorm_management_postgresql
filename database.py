@@ -300,6 +300,7 @@ def create_all_tables_and_indexes():
                 "invoice_info" TEXT,
                 "is_archived_as_expense" BOOLEAN DEFAULT FALSE,
                 "notes" TEXT,
+                "photo_paths" TEXT[],
                 FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE,
                 FOREIGN KEY ("vendor_id") REFERENCES "Vendors" ("id") ON DELETE SET NULL
             );

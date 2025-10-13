@@ -1,12 +1,60 @@
-# data_models/maintenance_model.py (新檔案)
+# data_models/maintenance_model.py
 
 import pandas as pd
 import database
 from dateutil.relativedelta import relativedelta
 from datetime import date
+import os
+import uuid
+import re
+
+# --- 強化檔案儲存函式 ---
+PHOTO_UPLOAD_DIR = "maintenance_photos"
+
+def save_uploaded_photo(uploaded_file, file_info: dict):
+    """
+    將上傳的檔案以包含詳細資訊的檔名儲存，並回傳相對路徑。
+    file_info 應包含: date, reporter, address, type 等鍵值。
+    """
+    if not os.path.exists(PHOTO_UPLOAD_DIR):
+        os.makedirs(PHOTO_UPLOAD_DIR)
+
+    # 組合基本檔名
+    info_date = file_info.get('date', 'nodate')
+    info_address = file_info.get('address', 'noaddr')
+    info_reporter = file_info.get('reporter', 'noreporter')
+    info_type = file_info.get('type', 'notype')
+    
+    # 清理檔名中的非法字元
+    def sanitize_filename(name):
+        return re.sub(r'[\\/*?:"<>|]', "", name)
+
+    base_name = f"{info_date}_{sanitize_filename(info_address)}_{sanitize_filename(info_reporter)}_{sanitize_filename(info_type)}"
+    
+    # 產生獨一無二的檔名
+    file_extension = os.path.splitext(uploaded_file.name)[1]
+    unique_id = str(uuid.uuid4())[:4] # 取 uuid 的前4碼以縮短檔名
+    unique_filename = f"{base_name}_{unique_id}{file_extension}"
+    
+    file_path = os.path.join(PHOTO_UPLOAD_DIR, unique_filename)
+    
+    with open(file_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+        
+    return file_path
+
+def delete_photo(file_path):
+    """從伺服器刪除指定的照片檔案。"""
+    try:
+        if file_path and os.path.exists(file_path):
+            os.remove(file_path)
+            return True
+    except Exception as e:
+        print(f"Error deleting file {file_path}: {e}")
+        return False
+    return False
 
 def _execute_query_to_dataframe(conn, query, params=None):
-    """輔助函式"""
     with conn.cursor() as cursor:
         cursor.execute(query, params)
         records = cursor.fetchall()
@@ -17,7 +65,6 @@ def _execute_query_to_dataframe(conn, query, params=None):
         return pd.DataFrame(records, columns=columns)
 
 def get_logs_for_view(filters: dict = None):
-    """【v1.1 篩選強化版】查詢所有維修紀錄，並支援更複雜的篩選條件。"""
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
@@ -40,36 +87,19 @@ def get_logs_for_view(filters: dict = None):
         """
         params = []
         where_clauses = []
-        
-        # --- 【核心修改】增加處理多重篩選條件的邏輯 ---
         if filters:
-            if filters.get("status"):
-                where_clauses.append("l.status = %s")
-                params.append(filters["status"])
-            if filters.get("dorm_id"):
-                where_clauses.append("l.dorm_id = %s")
-                params.append(filters["dorm_id"])
-            if filters.get("vendor_id"):
-                where_clauses.append("l.vendor_id = %s")
-                params.append(filters["vendor_id"])
-            # 以「完成日期」作為篩選區間
-            if filters.get("start_date"):
-                where_clauses.append("l.completion_date >= %s")
-                params.append(filters["start_date"])
-            if filters.get("end_date"):
-                where_clauses.append("l.completion_date <= %s")
-                params.append(filters["end_date"])
-        
-        if where_clauses:
-            query += " WHERE " + " AND ".join(where_clauses)
-
+            if filters.get("status"): where_clauses.append("l.status = %s"); params.append(filters["status"])
+            if filters.get("dorm_id"): where_clauses.append("l.dorm_id = %s"); params.append(filters["dorm_id"])
+            if filters.get("vendor_id"): where_clauses.append("l.vendor_id = %s"); params.append(filters["vendor_id"])
+            if filters.get("start_date"): where_clauses.append("l.completion_date >= %s"); params.append(filters["start_date"])
+            if filters.get("end_date"): where_clauses.append("l.completion_date <= %s"); params.append(filters["end_date"])
+        if where_clauses: query += " WHERE " + " AND ".join(where_clauses)
         query += " ORDER BY l.status, l.notification_date DESC"
         return _execute_query_to_dataframe(conn, query, params)
     finally:
         if conn: conn.close()
 
 def get_single_log_details(log_id: int):
-    """取得單筆維修紀錄的詳細資料。"""
     conn = database.get_db_connection()
     if not conn: return None
     try:
@@ -81,7 +111,6 @@ def get_single_log_details(log_id: int):
         if conn: conn.close()
 
 def add_log(details: dict):
-    """新增一筆維修紀錄。"""
     conn = database.get_db_connection()
     if not conn: return False, "資料庫連線失敗。"
     try:
@@ -98,8 +127,7 @@ def add_log(details: dict):
     finally:
         if conn: conn.close()
 
-def update_log(log_id: int, details: dict):
-    """更新一筆維修紀錄。"""
+def update_log(log_id: int, details: dict, paths_to_delete: list = None):
     conn = database.get_db_connection()
     if not conn: return False, "資料庫連線失敗。"
     try:
@@ -109,6 +137,9 @@ def update_log(log_id: int, details: dict):
             sql = f'UPDATE "MaintenanceLog" SET {fields} WHERE id = %s'
             cursor.execute(sql, tuple(values))
         conn.commit()
+        if paths_to_delete:
+            for path in paths_to_delete:
+                delete_photo(path)
         return True, "維修紀錄更新成功！"
     except Exception as e:
         if conn: conn.rollback(); return False, f"更新紀錄時發生錯誤: {e}"
@@ -116,42 +147,37 @@ def update_log(log_id: int, details: dict):
         if conn: conn.close()
 
 def delete_log(log_id: int):
-    """刪除一筆維修紀錄。"""
     conn = database.get_db_connection()
     if not conn: return False, "資料庫連線失敗。"
+    paths_to_delete = []
     try:
         with conn.cursor() as cursor:
+            cursor.execute('SELECT photo_paths FROM "MaintenanceLog" WHERE id = %s', (log_id,))
+            result = cursor.fetchone()
+            if result and result.get('photo_paths'):
+                paths_to_delete = result['photo_paths']
             cursor.execute('DELETE FROM "MaintenanceLog" WHERE id = %s', (log_id,))
         conn.commit()
-        return True, "維修紀錄已成功刪除。"
+        if paths_to_delete:
+            for path in paths_to_delete:
+                delete_photo(path)
+        return True, "維修紀錄及其關聯檔案已成功刪除。"
     except Exception as e:
         if conn: conn.rollback(); return False, f"刪除紀錄時發生錯誤: {e}"
     finally:
         if conn: conn.close()
 
 def archive_log_as_annual_expense(log_id: int):
-    """
-    【v1.2 交易邏輯修正版】將一筆維修紀錄轉為年度費用，並更新其狀態。
-    """
     conn = database.get_db_connection()
     if not conn: return False, "資料庫連線失敗。"
-
     try:
         with conn.cursor() as cursor:
-            # 步驟 1: 獲取維修紀錄的詳細資料
             cursor.execute('SELECT * FROM "MaintenanceLog" WHERE id = %s', (log_id,))
             log_details = cursor.fetchone()
-
-            if not log_details:
-                return False, "找不到指定的維修紀錄。"
-            if log_details.get('is_archived_as_expense'):
-                return False, "此筆紀錄已經轉入過年度費用，無法重複操作。"
-            if not log_details.get('cost') or log_details.get('cost') <= 0:
-                return False, "維修費用為 0 或未設定，無法轉入年度費用。"
-
-            # 步驟 2: 準備要寫入年度費用的資料
+            if not log_details: return False, "找不到指定的維修紀錄。"
+            if log_details.get('is_archived_as_expense'): return False, "此筆紀錄已經轉入過年度費用，無法重複操作。"
+            if not log_details.get('cost') or log_details.get('cost') <= 0: return False, "維修費用為 0 或未設定，無法轉入年度費用。"
             payment_date = log_details.get('completion_date') or log_details.get('notification_date') or date.today()
-            
             annual_expense_details = {
                 "dorm_id": log_details['dorm_id'],
                 "expense_item": f"維修-{log_details.get('item_type') or '項目未分類'}",
@@ -161,24 +187,14 @@ def archive_log_as_annual_expense(log_id: int):
                 "amortization_end_month": (payment_date + relativedelta(months=11)).strftime('%Y-%m'),
                 "notes": f"來自維修紀錄ID:{log_id} - {log_details.get('description')}"
             }
-
-            # 【核心修正】直接在此交易中執行 INSERT，而不是呼叫外部函式
             columns = ', '.join(f'"{k}"' for k in annual_expense_details.keys())
             placeholders = ', '.join(['%s'] * len(annual_expense_details))
             sql = f'INSERT INTO "AnnualExpenses" ({columns}) VALUES ({placeholders}) RETURNING id'
             cursor.execute(sql, tuple(annual_expense_details.values()))
             new_expense_id = cursor.fetchone()['id']
-
-            # 步驟 3: 更新維修紀錄的 'is_archived_as_expense' 標記
-            cursor.execute(
-                'UPDATE "MaintenanceLog" SET is_archived_as_expense = TRUE WHERE id = %s',
-                (log_id,)
-            )
-        
-        # 所有操作成功後，一次性提交
+            cursor.execute('UPDATE "MaintenanceLog" SET is_archived_as_expense = TRUE WHERE id = %s', (log_id,))
         conn.commit()
         return True, f"成功將維修紀錄轉入年度費用 (新費用ID: {new_expense_id})！您可至「年度費用」頁面調整攤銷期間。"
-
     except Exception as e:
         if conn: conn.rollback()
         return False, f"操作失敗: {e}"
@@ -186,11 +202,9 @@ def archive_log_as_annual_expense(log_id: int):
         if conn: conn.close()
 
 def get_unfinished_maintenance_logs():
-    """【新功能】查詢所有未完成的維修案件，用於進度追蹤。"""
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
-        # 查詢狀態不是'已完成'的案件，並依照通報日期排序，最舊的在最前面
         query = """
             SELECT 
                 l.status AS "狀態",
