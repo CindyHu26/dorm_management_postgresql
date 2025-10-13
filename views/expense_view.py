@@ -27,7 +27,7 @@ def render():
         st.session_state.form_pass_through = False
         st.session_state.form_notes = ""
 
-    bill_type_options = ["電費", "水費", "天然氣", "瓦斯費", "網路費", "子母車", "其他 (請手動輸入)"]
+    bill_type_options = ["電費", "水費", "天然氣", "網路費", "子母車", "清潔", "其他 (請手動輸入)"]
 
     selected_dorm_id = st.selectbox(
         "請選擇要管理的宿舍：",
@@ -152,7 +152,7 @@ def render():
                     st.markdown(f"##### 正在編輯 ID: {bill_details['id']} 的帳單")
                     c1, c2, c3, c4 = st.columns(4)
                     
-                    bill_type_options_edit = ["電費", "水費", "天然氣", "瓦斯費", "網路費", "子母車", "其他 (請手動輸入)"]
+                    bill_type_options_edit = ["電費", "水費", "天然氣", "網路費", "子母車",  "清潔", "其他 (請手動輸入)"]
                     current_bill_type = bill_details['bill_type']
                     default_index = bill_type_options_edit.index(current_bill_type) if current_bill_type in bill_type_options_edit else bill_type_options_edit.index("其他 (請手動輸入)")
                     pre_fill_custom = "" if current_bill_type in bill_type_options_edit else current_bill_type
@@ -161,7 +161,7 @@ def render():
 
                     amount_edit = c2.number_input("帳單總金額", min_value=0, step=100, value=bill_details['amount'], key=f"edit_amount_{selected_bill_id}")
                     
-                    # --- 【核心修改點】: 將 value 明確轉換為 float，並處理 None 的情況 ---
+                    # --- 將 value 明確轉換為 float，並處理 None 的情況 ---
                     usage_value = bill_details.get('usage_amount')
                     display_usage_value = float(usage_value) if usage_value is not None else None
                     usage_amount_edit = c3.number_input("用量(度/噸) (選填)", min_value=0.0, format="%.2f", value=display_usage_value, key=f"edit_usage_{selected_bill_id}")

@@ -983,3 +983,109 @@ def batch_import_maintenance_logs(df: pd.DataFrame):
         if conn: conn.close()
             
     return success_count, pd.DataFrame(failed_records)
+
+def batch_import_equipment(df: pd.DataFrame):
+    """
+    【v1.1 地址嚴格版】批次匯入【設備】的核心邏輯。
+    如果宿舍地址不存在，則跳過該筆紀錄。
+    如果地址存在，則對設備採「有就更新，沒有就新增」的策略。
+    """
+    success_count = 0
+    failed_records = []
+    conn = database.get_db_connection()
+    if not conn:
+        error_df = df.copy()
+        error_df['錯誤原因'] = "無法連接到資料庫"
+        return 0, error_df
+
+    try:
+        with conn.cursor() as cursor:
+            # 預載宿舍地址對照表
+            dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, original_address, normalized_address FROM "Dormitories"')
+            original_addr_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
+            normalized_addr_map = {d['normalized_address']: d['id'] for _, d in dorms_df.iterrows()}
+            
+            # 預載現有設備以供比對 (宿舍ID, 設備名稱, 位置) -> 設備ID
+            equip_df = _execute_query_to_dataframe(conn, 'SELECT id, dorm_id, equipment_name, location FROM "DormitoryEquipment"')
+            equip_map = {(row['dorm_id'], row['equipment_name'], str(row['location'] or '')): row['id'] for _, row in equip_df.iterrows()}
+
+            for index, row in df.iterrows():
+                try:
+                    # --- 步驟 1: 嚴格的資料驗證與地址查找 ---
+                    original_address = row.get('宿舍地址')
+                    if pd.isna(original_address) or not str(original_address).strip():
+                        raise ValueError("宿舍地址為必填欄位")
+
+                    addr_stripped = str(original_address).strip()
+                    dorm_id = None
+                    # 優先比對原始地址
+                    if addr_stripped in original_addr_map:
+                        dorm_id = original_addr_map[addr_stripped]
+                    # 若找不到，再比對正規化地址
+                    else:
+                        normalized_input = normalize_taiwan_address(addr_stripped)['full']
+                        if normalized_input in normalized_addr_map:
+                            dorm_id = normalized_addr_map[normalized_input]
+                    
+                    # 如果兩種比對都找不到，就拋出錯誤，此筆紀錄將被跳過
+                    if not dorm_id:
+                        raise ValueError(f"在資料庫中找不到對應的宿舍地址，此筆紀錄已跳過: {original_address}")
+
+                    equipment_name = row.get('設備名稱')
+                    if pd.isna(equipment_name) or not str(equipment_name).strip():
+                        raise ValueError("設備名稱為必填欄位")
+                    
+                    # --- 步驟 2: 組合資料字典 ---
+                    def to_int_or_none(val):
+                        if pd.isna(val) or val == '': return None
+                        return int(val)
+                    
+                    def to_date_or_none(val):
+                        if pd.isna(val): return None
+                        return pd.to_datetime(val).date()
+
+                    details = {
+                        "dorm_id": dorm_id,
+                        "equipment_name": str(equipment_name).strip(),
+                        "equipment_category": str(row.get('設備分類', '')).strip() or None,
+                        "location": str(row.get('位置', '')).strip() or None,
+                        "brand_model": str(row.get('品牌/型號', '')).strip() or None,
+                        "serial_number": str(row.get('序號/批號', '')).strip() or None,
+                        "installation_date": to_date_or_none(row.get('安裝/啟用日期')),
+                        "maintenance_interval_months": to_int_or_none(row.get('保養週期(月)')),
+                        "last_maintenance_date": to_date_or_none(row.get('上次保養日期')),
+                        "next_maintenance_date": to_date_or_none(row.get('下次保養/檢查日期')),
+                        "status": str(row.get('狀態', '正常')).strip(),
+                        "notes": str(row.get('備註', '')).strip() or None
+                    }
+
+                    # --- 步驟 3: 判斷是新增還是更新 ---
+                    lookup_key = (dorm_id, details['equipment_name'], details['location'] or '')
+                    existing_id = equip_map.get(lookup_key)
+                    
+                    if existing_id:
+                        # 更新現有設備
+                        fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
+                        values = list(details.values()) + [existing_id]
+                        update_sql = f'UPDATE "DormitoryEquipment" SET {fields} WHERE id = %s'
+                        cursor.execute(update_sql, tuple(values))
+                    else:
+                        # 新增設備
+                        columns = ', '.join(f'"{k}"' for k in details.keys())
+                        placeholders = ', '.join(['%s'] * len(details))
+                        insert_sql = f'INSERT INTO "DormitoryEquipment" ({columns}) VALUES ({placeholders}) RETURNING id'
+                        cursor.execute(insert_sql, tuple(details.values()))
+                    
+                    success_count += 1
+                except Exception as row_error:
+                    row['錯誤原因'] = str(row_error)
+                    failed_records.append(row)
+        
+        conn.commit()
+    except Exception as e:
+        if conn: conn.rollback()
+        print(f"批次匯入設備時發生嚴重錯誤: {e}")
+    finally:
+        if conn: conn.close()
+            
+    return success_count, pd.DataFrame(failed_records)

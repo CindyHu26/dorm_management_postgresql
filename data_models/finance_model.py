@@ -51,31 +51,37 @@ def add_building_permit_record(permit_details: dict, expense_details: dict):
     finally:
         if conn: conn.close()
 
-def add_compliance_record(record_type: str, record_details: dict, expense_details: dict):
+def add_compliance_record(record_type: str, record_details: dict, expense_details: dict = None):
     """
-    【v1.1 修正版】新增一筆合規紀錄及其關聯的攤銷費用 (例如消防安檢、保險)。
-    修正 placeholder 變數未定義的錯誤。
+    【v1.2 設備關聯版】新增一筆合規紀錄，並可選擇性地關聯攤銷費用。
     """
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed.", None
     
     try:
         with conn.cursor() as cursor:
-            compliance_sql = """
-                INSERT INTO "ComplianceRecords" (dorm_id, record_type, details)
-                VALUES (%s, %s, %s) RETURNING id;
-            """
-            details_json = json.dumps(record_details['details'], ensure_ascii=False, default=str)
-            cursor.execute(compliance_sql, (record_details['dorm_id'], record_type, details_json))
+            # --- 在 INSERT 指令中加入 equipment_id ---
+            compliance_columns = ['dorm_id', 'record_type', 'details']
+            compliance_values = [record_details['dorm_id'], record_type, json.dumps(record_details['details'], ensure_ascii=False, default=str)]
+            
+            if 'equipment_id' in record_details and record_details['equipment_id']:
+                compliance_columns.append('equipment_id')
+                compliance_values.append(record_details['equipment_id'])
+
+            cols_str = ', '.join(f'"{c}"' for c in compliance_columns)
+            placeholders_str = ', '.join(['%s'] * len(compliance_values))
+            
+            compliance_sql = f'INSERT INTO "ComplianceRecords" ({cols_str}) VALUES ({placeholders_str}) RETURNING id;'
+            cursor.execute(compliance_sql, tuple(compliance_values))
             new_compliance_id = cursor.fetchone()['id']
 
-            expense_details['compliance_record_id'] = new_compliance_id
-            expense_columns = ', '.join(f'"{k}"' for k in expense_details.keys())
-            
-            # placeholders 變數未定義，修正為動態產生
-            expense_placeholders = ', '.join(['%s'] * len(expense_details))
-            expense_sql = f'INSERT INTO "AnnualExpenses" ({expense_columns}) VALUES ({expense_placeholders})'
-            cursor.execute(expense_sql, tuple(expense_details.values()))
+            # 如果有提供費用明細，才新增費用紀錄
+            if expense_details and expense_details.get('total_amount', 0) > 0:
+                expense_details['compliance_record_id'] = new_compliance_id
+                expense_columns = ', '.join(f'"{k}"' for k in expense_details.keys())
+                expense_placeholders = ', '.join(['%s'] * len(expense_details))
+                expense_sql = f'INSERT INTO "AnnualExpenses" ({expense_columns}) VALUES ({expense_placeholders})'
+                cursor.execute(expense_sql, tuple(expense_details.values()))
 
         conn.commit()
         return True, f"成功新增 {record_type} 紀錄 (ID: {new_compliance_id})", new_compliance_id

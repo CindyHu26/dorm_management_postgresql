@@ -181,9 +181,20 @@ def create_all_tables_and_indexes():
 
             TABLES['DormitoryEquipment'] = """
             CREATE TABLE IF NOT EXISTS "DormitoryEquipment" (
-                "id" SERIAL PRIMARY KEY, "dorm_id" INTEGER NOT NULL, "equipment_name" VARCHAR(100) NOT NULL,
-                "location" VARCHAR(100), "last_replaced_date" DATE, "next_check_date" DATE,
-                "status" VARCHAR(50), "report_path" VARCHAR(255),
+                "id" SERIAL PRIMARY KEY,
+                "dorm_id" INTEGER NOT NULL,
+                "equipment_name" VARCHAR(100) NOT NULL,
+                "equipment_category" VARCHAR(50), -- 新增：分類 (如: 消防設備, 電器, 飲水設備)
+                "location" VARCHAR(100),
+                "brand_model" VARCHAR(100), -- 新增：品牌型號
+                "serial_number" VARCHAR(100), -- 新增：序號
+                "installation_date" DATE, -- 新增：安裝日期
+                "maintenance_interval_months" INTEGER, -- 新增：保養週期(月)
+                "last_maintenance_date" DATE, -- 從 last_replaced_date 改名
+                "next_maintenance_date" DATE, -- 從 next_check_date 改名
+                "status" VARCHAR(50),
+                "notes" TEXT, -- 新增：備註欄位
+                "report_path" VARCHAR(255),
                 FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE
             );
             """
@@ -198,7 +209,9 @@ def create_all_tables_and_indexes():
 
             TABLES['Leases'] = """
             CREATE TABLE IF NOT EXISTS "Leases" (
-                "id" SERIAL PRIMARY KEY, "dorm_id" INTEGER NOT NULL, "lease_start_date" DATE,
+                "id" SERIAL PRIMARY KEY, "dorm_id" INTEGER NOT NULL, 
+                "contract_item" VARCHAR(100) DEFAULT '房租',
+                "lease_start_date" DATE,
                 "lease_end_date" DATE, "monthly_rent" INTEGER, "deposit" INTEGER,
                 "utilities_included" BOOLEAN, "contract_scan_path" VARCHAR(255),
                 FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE
@@ -222,10 +235,12 @@ def create_all_tables_and_indexes():
             CREATE TABLE IF NOT EXISTS "ComplianceRecords" (
                 "id" SERIAL PRIMARY KEY,
                 "dorm_id" INTEGER NOT NULL,
+                "equipment_id" INTEGER, -- 新增：關聯到特定設備 (例如飲水機的水質檢測)
                 "record_type" VARCHAR(50) NOT NULL,
                 "details" JSONB,
                 "created_at" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE
+                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE,
+                FOREIGN KEY ("equipment_id") REFERENCES "DormitoryEquipment" ("id") ON DELETE SET NULL -- 新增外鍵關聯
             );
             """
 
@@ -296,10 +311,11 @@ def create_all_tables_and_indexes():
                 "id" SERIAL PRIMARY KEY,
                 "dorm_id" INTEGER NOT NULL,
                 "vendor_id" INTEGER,
+                "equipment_id" INTEGER, -- 新增：關聯到特定設備
                 "status" VARCHAR(50) NOT NULL DEFAULT '待處理',
                 "notification_date" DATE,
                 "reported_by" TEXT,
-                "item_type" TEXT,
+                "item_type" TEXT, -- 可用於區分 維修/保養
                 "description" TEXT,
                 "contacted_vendor_date" DATE,
                 "key_info" TEXT,
@@ -312,9 +328,11 @@ def create_all_tables_and_indexes():
                 "notes" TEXT,
                 "photo_paths" TEXT[],
                 FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE,
-                FOREIGN KEY ("vendor_id") REFERENCES "Vendors" ("id") ON DELETE SET NULL
+                FOREIGN KEY ("vendor_id") REFERENCES "Vendors" ("id") ON DELETE SET NULL,
+                FOREIGN KEY ("equipment_id") REFERENCES "DormitoryEquipment" ("id") ON DELETE SET NULL -- 新增外鍵關聯
             );
             """
+
             TABLES['InventoryItems'] = """
             CREATE TABLE IF NOT EXISTS "InventoryItems" (
                 "id" SERIAL PRIMARY KEY,

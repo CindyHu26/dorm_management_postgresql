@@ -444,3 +444,50 @@ def render():
                         )
             except Exception as e:
                 st.error(f"處理檔案時發生錯誤：{e}")
+
+    with st.container(border=True):
+        st.subheader("⚙️ 設備匯入")
+        st.info("用於批次新增或更新宿舍內的各項設備資產。系統會以「宿舍地址 + 設備名稱 + 位置」來判斷是否為同一筆資料。")
+        
+        equipment_template_df = pd.DataFrame({
+            "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號"],
+            "設備名稱": ["2F飲水機"],
+            "設備分類": ["飲水設備"],
+            "位置": ["2F走廊"],
+            "品牌/型號": ["賀眾牌 UR-123"],
+            "序號/批號": ["SN-98765"],
+            "安裝/啟用日期": [date(2025, 1, 15).strftime('%Y-%m-%d')],
+            "保養週期(月)": [3],
+            "上次保養日期": [date(2025, 7, 15).strftime('%Y-%m-%d')],
+            "下次保養/檢查日期": [date(2025, 10, 15).strftime('%Y-%m-%d')],
+            "狀態": ["正常"],
+            "備註": ["定期更換濾心"]
+        })
+        st.download_button(
+            label="📥 下載設備匯入範本",
+            data=to_excel(equipment_template_df),
+            file_name="equipment_import_template.xlsx"
+        )
+
+        uploaded_equipment_file = st.file_uploader("上傳【設備】Excel 檔案", type=["xlsx"], key="equipment_uploader")
+
+        if uploaded_equipment_file:
+            try:
+                df_equipment = pd.read_excel(uploaded_equipment_file)
+                st.markdown("##### 檔案內容預覽：")
+                st.dataframe(df_equipment.head())
+                if st.button("🚀 開始匯入設備", type="primary", key="equipment_import_btn"):
+                    with st.spinner("正在處理與匯入設備資料..."):
+                        success, failed_df = importer_model.batch_import_equipment(df_equipment)
+                    st.success(f"匯入完成！成功處理 {success} 筆紀錄。")
+                    if not failed_df.empty:
+                        st.error(f"有 {len(failed_df)} 筆資料匯入失敗：")
+                        st.dataframe(failed_df)
+                        st.download_button(
+                            label="📥 下載失敗紀錄報告",
+                            data=to_excel(failed_df),
+                            file_name="equipment_import_failed_report.xlsx",
+                            key="failed_equipment_download"
+                        )
+            except Exception as e:
+                st.error(f"處理檔案時發生錯誤：{e}")

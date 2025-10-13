@@ -3,13 +3,14 @@
 import streamlit as st
 import pandas as pd
 from datetime import date
-from data_models import maintenance_model, dormitory_model, vendor_model
+from data_models import maintenance_model, dormitory_model, vendor_model, equipment_model
 import os
 
 def render():
     st.header("維修追蹤管理")
     st.info("用於登記、追蹤和管理宿舍的各項維修申報與進度，並可上傳現場照片、報價單(PDF)等相關文件。")
 
+    # --- 進度追蹤區塊 ---
     st.markdown("---")
     st.subheader("進度追蹤 (未完成案件)")
     
@@ -26,6 +27,7 @@ def render():
         st.dataframe(unfinished_logs_df, width='stretch', hide_index=True)
     st.markdown("---")
 
+    # --- 準備下拉選單用的資料 ---
     dorms = dormitory_model.get_dorms_for_selection()
     dorm_options = {d['id']: d.get('original_address', '') for d in dorms} if dorms else {}
     
@@ -33,16 +35,23 @@ def render():
     vendor_options = {v['id']: f"{v['服務項目']} - {v['廠商名稱']}" for _, v in vendors.iterrows()} if not vendors.empty else {}
     
     status_options = ["待處理", "進行中", "待付款", "已完成"]
-    item_type_options = ["水電", "包通", "飲水機", "冷氣", "消防", "金城", "監視器", "水質檢測", "清運", "裝潢", "其他", "其他...(手動輸入)"]
+    item_type_options = ["維修", "定期保養", "更換耗材", "水電", "包通", "飲水機", "冷氣", "消防", "金城", "監視器", "水質檢測", "清運", "裝潢", "其他", "其他...(手動輸入)"]
 
     # --- 新增紀錄 ---
     with st.expander("➕ 新增維修紀錄"):
         with st.form("new_log_form", clear_on_submit=True):
             st.subheader("案件資訊")
             c1, c2, c3 = st.columns(3)
-            dorm_id = c1.selectbox("宿舍地址", options=dorm_options.keys(), format_func=lambda x: dorm_options.get(x, "未選擇"), index=None, placeholder="請選擇宿舍...")
-            notification_date = c2.date_input("收到通知日期", value=date.today())
-            reported_by = c3.text_input("公司內部提報人")
+            dorm_id = c1.selectbox("宿舍地址*", options=list(dorm_options.keys()), format_func=lambda x: dorm_options.get(x, "未選擇"), index=None, placeholder="請選擇宿舍...")
+            
+            # 動態載入所選宿舍的設備
+            equipment_in_dorm = equipment_model.get_equipment_for_dorm_as_df(dorm_id) if dorm_id else pd.DataFrame()
+            equip_options = {row['id']: f"{row['設備名稱']} ({row.get('位置', 'N/A')})" for _, row in equipment_in_dorm.iterrows()} if not equipment_in_dorm.empty else {}
+            
+            equipment_id = c2.selectbox("關聯設備 (選填)", options=[None] + list(equip_options.keys()), format_func=lambda x: "無 (非特定設備)" if x is None else equip_options.get(x))
+            
+            notification_date = c3.date_input("收到通知日期*", value=date.today())
+            reported_by = c1.text_input("公司內部提報人")
 
             st.subheader("維修詳情")
             c4, c5 = st.columns(2)
@@ -51,7 +60,7 @@ def render():
                 selected_item_type = st.selectbox("項目類型", options=item_type_options)
                 custom_item_type = st.text_input("自訂項目類型", help="若上方選擇「其他...」，請在此處填寫")
             
-            description = c5.text_area("修理細項說明")
+            description = c5.text_area("修理細項說明*")
             
             uploaded_files = st.file_uploader(
                 "上傳照片或文件 (可多選)",
@@ -65,6 +74,7 @@ def render():
             contacted_vendor_date = c7.date_input("聯絡廠商日期", value=None)
             completion_date = c8.date_input("廠商回報完成日期", value=None)
             key_info = st.text_input("鑰匙/備註 (如: 需房東帶、鑰匙在警衛室)")
+            
             st.subheader("費用與款項")
             c9, c10, c11, c12 = st.columns(4)
             cost = c9.number_input("維修費用", min_value=0, step=100)
@@ -83,7 +93,6 @@ def render():
                 else:
                     file_paths = []
                     if uploaded_files:
-                        # --- 打包檔名資訊 ---
                         file_info_dict = {
                             "date": notification_date.strftime('%Y%m%d'),
                             "address": dorm_options.get(dorm_id, 'UnknownAddr'),
@@ -95,11 +104,21 @@ def render():
                             file_paths.append(path)
                     
                     details = {
-                        'dorm_id': dorm_id, 'vendor_id': vendor_id, 'notification_date': notification_date,
-                        'reported_by': reported_by, 'item_type': final_item_type, 'description': description,
-                        'contacted_vendor_date': contacted_vendor_date, 'completion_date': completion_date,
-                        'key_info': key_info, 'cost': cost, 'payer': payer, 'invoice_date': invoice_date,
-                        'invoice_info': invoice_info, 'notes': notes,
+                        'dorm_id': dorm_id, 
+                        'equipment_id': equipment_id,
+                        'vendor_id': vendor_id, 
+                        'notification_date': notification_date,
+                        'reported_by': reported_by, 
+                        'item_type': final_item_type, 
+                        'description': description,
+                        'contacted_vendor_date': contacted_vendor_date, 
+                        'completion_date': completion_date,
+                        'key_info': key_info, 
+                        'cost': cost, 
+                        'payer': payer, 
+                        'invoice_date': invoice_date,
+                        'invoice_info': invoice_info, 
+                        'notes': notes,
                         'photo_paths': file_paths 
                     }
                     success, message = maintenance_model.add_log(details)
@@ -110,6 +129,8 @@ def render():
                     else:
                         st.error(message)
 
+
+    # --- 總覽與篩選 ---
     st.markdown("---")
     st.markdown("##### 篩選條件")
     filter1, filter2, filter3 = st.columns(3)
@@ -168,13 +189,23 @@ def render():
 
             with st.form(f"edit_log_form_{selected_log_id}"):
                 st.subheader("案件資訊")
-                ec1, ec2, ec3 = st.columns(3)
+                ec1, ec2, ec3, ec4 = st.columns(4)
                 ec1.text_input("宿舍地址", value=dorm_options.get(details.get('dorm_id')), disabled=True)
-                e_notification_date = ec2.date_input("收到通知日期", value=details.get('notification_date'))
-                e_reported_by = ec3.text_input("公司內部提報人", value=details.get('reported_by'))
+                
+                record_dorm_id = details.get('dorm_id')
+                equipment_in_dorm_edit = equipment_model.get_equipment_for_dorm_as_df(record_dorm_id) if record_dorm_id else pd.DataFrame()
+                equip_options_edit = {row['id']: f"{row['設備名稱']} ({row.get('位置', 'N/A')})" for _, row in equipment_in_dorm_edit.iterrows()} if not equipment_in_dorm_edit.empty else {}
+                current_equip_id = details.get('equipment_id')
+                
+                e_equipment_id = ec2.selectbox("關聯設備 (選填)", options=[None] + list(equip_options_edit.keys()), format_func=lambda x: "無 (非特定設備)" if x is None else equip_options_edit.get(x), index=([None] + list(equip_options_edit.keys())).index(current_equip_id) if current_equip_id in [None] + list(equip_options_edit.keys()) else 0)
+                
+                e_notification_date = ec3.date_input("收到通知日期", value=details.get('notification_date'))
+                e_reported_by = ec4.text_input("公司內部提報人", value=details.get('reported_by'))
+                
                 st.subheader("維修詳情")
-                ec4, ec5 = st.columns(2)
-                with ec4:
+                edc1, edc2 = st.columns(2)
+
+                with edc1:
                     current_item_type = details.get('item_type', '')
                     if current_item_type in item_type_options:
                         default_index = item_type_options.index(current_item_type)
@@ -184,10 +215,10 @@ def render():
                         default_custom_value = current_item_type
                     e_selected_item_type = st.selectbox("項目類型", options=item_type_options, index=default_index, key=f"edit_item_type_{selected_log_id}")
                     e_custom_item_type = st.text_input("自訂項目類型", value=default_custom_value, help="若上方選擇「其他...」，請在此處填寫", key=f"edit_custom_item_type_{selected_log_id}")
-                e_description = ec5.text_area("修理細項說明", value=details.get('description'))
+
+                e_description = edc2.text_area("修理細項說明", value=details.get('description'))
                 
                 st.markdown("##### 檔案管理")
-                # --- 新增提示文字 ---
                 st.caption("🔴 注意：若要刪除已儲存的檔案，請在下方勾選後，按下表單最底部的「儲存變更」按鈕。")
                 files_to_delete = st.multiselect("勾選要刪除的舊檔案：", options=existing_files, format_func=lambda f: os.path.basename(f))
                 new_files = st.file_uploader(
@@ -202,9 +233,12 @@ def render():
                 e_status = ec6.selectbox("案件狀態", options=status_options, index=status_options.index(details.get('status')) if details.get('status') in status_options else 0)
                 e_vendor_id = ec7.selectbox("維修廠商", options=[None] + list(vendor_options.keys()), format_func=lambda x: "未指定" if x is None else vendor_options.get(x), index=([None] + list(vendor_options.keys())).index(details.get('vendor_id')) if details.get('vendor_id') in [None] + list(vendor_options.keys()) else 0)
                 e_contacted_vendor_date = ec7.date_input("聯絡廠商日期", value=details.get('contacted_vendor_date'))
+                
                 with ec8:
                     e_completion_date = st.date_input("廠商回報完成日期", value=details.get('completion_date'))
+                
                 e_key_info = st.text_input("鑰匙/備註 (如: 需房東帶、鑰匙在警衛室)", value=details.get('key_info', ''))
+
                 st.subheader("費用與款項")
                 ec9, ec10, ec11, ec12 = st.columns(4)
                 e_cost = ec9.number_input("維修費用", min_value=0, step=100, value=details.get('cost') or 0)
@@ -221,7 +255,6 @@ def render():
                     else:
                         final_file_paths = [p for p in existing_files if p not in files_to_delete]
                         if new_files:
-                            # --- 打包檔名資訊 (編輯模式) ---
                             file_info_dict = {
                                 "date": e_notification_date.strftime('%Y%m%d'),
                                 "address": dorm_options.get(details.get('dorm_id'), 'UnknownAddr'),
@@ -233,6 +266,7 @@ def render():
                                 final_file_paths.append(path)
 
                         update_data = {
+                            'equipment_id': e_equipment_id,
                             'status': e_status, 'vendor_id': e_vendor_id, 'notification_date': e_notification_date,
                             'reported_by': e_reported_by, 'item_type': e_final_item_type, 'description': e_description,
                             'contacted_vendor_date': e_contacted_vendor_date, 'completion_date': e_completion_date,
@@ -250,6 +284,7 @@ def render():
                         else:
                             st.error(message)
             
+            # --- (財務與刪除區塊維持不變) ---
             st.markdown("---")
             st.markdown("##### 財務操作")
             if details.get('is_archived_as_expense'):
