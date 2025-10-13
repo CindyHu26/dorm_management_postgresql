@@ -1,5 +1,3 @@
-# in cindyhu26/dorm_management_postgresql/dorm_management_postgresql-9d360666d3904b108b5d17042586141e3f8171a2/data_models/employer_dashboard_model.py
-
 import pandas as pd
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
@@ -65,7 +63,7 @@ def get_employer_resident_details(employer_names: list):
 
 def get_employer_financial_summary(employer_names: list, year_month: str):
     """
-    【v2.2 語法修正版】為指定雇主列表和月份，計算收支與損益。
+    【v2.3 合約項目擴充版】為指定雇主列表和月份，計算收支與損益。
     """
     if not employer_names:
         return pd.DataFrame()
@@ -118,22 +116,21 @@ def get_employer_financial_summary(employer_names: list, year_month: str):
             DormMonthlyExpenses AS (
                  SELECT
                     d.id as dorm_id, d.original_address,
-                    COALESCE(l.monthly_rent, 0) AS rent_expense,
+                    COALESCE(l.contract_expense, 0) AS contract_expense,,
                     COALESCE(pu.pass_through_expense, 0) as pass_through_expense,
                     COALESCE(pu.company_expense, 0) as company_expense,
                     COALESCE(ae.total_amortized, 0) AS amortized_expense,
                     COALESCE(oi.total_other_income, 0) AS other_income
                 FROM "Dormitories" d
                 LEFT JOIN (
-                    -- 【核心修正】將 l.dorm_id 和 l.monthly_rent 移到子查詢內部
-                    SELECT dorm_id, monthly_rent FROM (
-                        SELECT l.dorm_id, l.monthly_rent, ROW_NUMBER() OVER(PARTITION BY l.dorm_id ORDER BY l.lease_start_date DESC) as rn
-                        FROM "Leases" l
-                        JOIN "Dormitories" d_filter ON l.dorm_id = d_filter.id
-                        CROSS JOIN DateParams dp
-                        WHERE d_filter.rent_payer = '我司' AND l.lease_start_date <= dp.last_day_of_month
-                          AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month)
-                    ) as sub_leases WHERE rn = 1
+                    -- 將所有合約費用加總
+                    SELECT l.dorm_id, SUM(l.monthly_rent) as contract_expense
+                    FROM "Leases" l
+                    JOIN "Dormitories" d_filter ON l.dorm_id = d_filter.id
+                    CROSS JOIN DateParams dp
+                    WHERE d_filter.rent_payer = '我司' AND l.lease_start_date <= dp.last_day_of_month
+                      AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month)
+                    GROUP BY l.dorm_id
                 ) l ON d.id = l.dorm_id
                 LEFT JOIN (
                     SELECT b.dorm_id,
@@ -158,7 +155,7 @@ def get_employer_financial_summary(employer_names: list, year_month: str):
                 dme.original_address AS "宿舍地址",
                 dp.employer_income::int AS "收入(員工月費)",
                 ROUND(dme.other_income * dp.proration_ratio)::int AS "分攤其他收入",
-                ROUND(dme.rent_expense * dp.proration_ratio)::int AS "我司分攤月租",
+                ROUND(dme.contract_expense * dp.proration_ratio)::int AS "我司分攤合約費", -- 改名
                 ROUND((dme.company_expense + dme.pass_through_expense) * dp.proration_ratio)::int AS "我司分攤雜費",
                 ROUND(dme.amortized_expense * dp.proration_ratio)::int AS "我司分攤攤銷"
             FROM DormProration dp
@@ -356,9 +353,10 @@ def get_employer_financial_details_for_dorm(employer_names: list, dorm_id: int, 
             WITH DateParams AS (
                 SELECT %(start_date)s::date as start_date, %(end_date)s::date as end_date
             )
+            -- 【核心修改】從 Leases 表中讀取 contract_item
             SELECT 
-                '月租' as "費用項目",
-                ROUND(monthly_rent * ((LEAST(COALESCE(lease_end_date, dp.end_date), dp.end_date)::date - GREATEST(lease_start_date, dp.start_date)::date + 1) / 30.4375))::numeric as "原始總額",
+                l.contract_item as "費用項目",
+                ROUND(l.monthly_rent * ((LEAST(COALESCE(l.lease_end_date, dp.end_date), dp.end_date)::date - GREATEST(l.lease_start_date, dp.start_date)::date + 1) / 30.4375))::numeric as "原始總額",
                 d.rent_payer as "支付方"
             FROM "Leases" l JOIN "Dormitories" d ON l.dorm_id = d.id
             CROSS JOIN DateParams dp

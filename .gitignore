@@ -75,6 +75,10 @@ config*.ini
 *.xls
 db_backup/
 *.json
+*.jpg
+*.png
+*.pdf
+maintenance_photos/
 
 run_daily_sync.py
 sync_log.txt

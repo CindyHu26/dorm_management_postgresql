@@ -15,7 +15,7 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_leases_for_view(dorm_id_filter=None):
     """
-    查詢租賃合約，並關聯宿舍地址以便顯示 (已為 PostgreSQL 優化)。
+    【v1.1 項目擴充版】查詢合約，並顯示合約項目。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -24,11 +24,12 @@ def get_leases_for_view(dorm_id_filter=None):
             SELECT
                 l.id,
                 d.original_address AS "宿舍地址",
+                l.contract_item AS "合約項目",
                 l.lease_start_date AS "合約起始日",
                 l.lease_end_date AS "合約截止日",
-                l.monthly_rent AS "月租金",
+                l.monthly_rent AS "月費金額",
                 l.deposit AS "押金",
-                CASE WHEN l.utilities_included THEN '是' ELSE '否' END AS "租金含水電"
+                CASE WHEN l.utilities_included THEN '是' ELSE '否' END AS "費用含水電"
             FROM "Leases" l
             JOIN "Dormitories" d ON l.dorm_id = d.id
         """

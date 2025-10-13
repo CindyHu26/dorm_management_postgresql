@@ -1,3 +1,5 @@
+# views/lease_view.py
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
@@ -5,51 +7,61 @@ from dateutil.relativedelta import relativedelta
 from data_models import lease_model, dormitory_model
 
 def render():
-    """渲染「合約管理」頁面"""
-    st.header("租賃合約管理")
+    """渲染「長期合約管理」頁面"""
+    st.header("長期合約管理")
+    st.info("用於管理房租、清運費、網路費等具備固定月費的長期合約。")
 
-    # 計算前後 30 年的日期範圍
     today = date.today()
     thirty_years_ago = today - relativedelta(years=30)
     thirty_years_from_now = today + relativedelta(years=30)
 
-    with st.expander("➕ 新增租賃合約"):
+    with st.expander("➕ 新增長期合約"):
         with st.form("new_lease_form", clear_on_submit=True):
             dorms = dormitory_model.get_dorms_for_selection() or []
             dorm_options = {d['id']: d['original_address'] for d in dorms}
             
-            selected_dorm_id = st.selectbox("選擇宿舍地址", options=dorm_options.keys(), format_func=lambda x: dorm_options.get(x, "未知宿舍"))
+            selected_dorm_id = st.selectbox("選擇宿舍地址*", options=dorm_options.keys(), format_func=lambda x: dorm_options.get(x, "未知宿舍"))
             
+            # --- 合約項目欄位 ---
+            c1_item, c2_item = st.columns(2)
+            item_options = ["房租", "清運費", "其他...(手動輸入)"]
+            selected_item = c1_item.selectbox("合約項目*", options=item_options)
+            custom_item = c1_item.text_input("自訂項目名稱", help="若上方選擇「其他...」，請在此處填寫")
+            
+            monthly_rent = c2_item.number_input("每月固定金額*", min_value=0, step=1000)
+
             c1, c2 = st.columns(2)
-            # 為日期輸入框設定新的 min_value 和 max_value
             lease_start_date = c1.date_input("合約起始日", value=None, min_value=thirty_years_ago, max_value=thirty_years_from_now)
             with c2:
                 lease_end_date = st.date_input("合約截止日 (可留空)", value=None, min_value=thirty_years_ago, max_value=thirty_years_from_now)
-                # 雖然新增時可以直接不選，但為了介面一致性，仍保留說明文字
                 st.write("若為長期合約，此處請留空。")
             
-            c3, c4, c5 = st.columns(3)
-            monthly_rent = c3.number_input("月租金", min_value=0, step=1000)
-            deposit = c4.number_input("押金", min_value=0, step=1000)
-            utilities_included = c5.checkbox("租金含水電")
+            c3, c4 = st.columns([1, 3])
+            deposit = c3.number_input("押金", min_value=0, step=1000)
+            utilities_included = c4.checkbox("費用是否包含水電 (通常用於房租)")
 
             submitted = st.form_submit_button("儲存新合約")
             if submitted:
-                details = {
-                    "dorm_id": selected_dorm_id,
-                    "lease_start_date": str(lease_start_date) if lease_start_date else None,
-                    "lease_end_date": str(lease_end_date) if lease_end_date else None,
-                    "monthly_rent": monthly_rent,
-                    "deposit": deposit,
-                    "utilities_included": utilities_included
-                }
-                success, message, _ = lease_model.add_lease(details)
-                if success:
-                    st.success(message)
-                    st.cache_data.clear()
-                    st.rerun()
+                final_item = custom_item if selected_item == "其他..." and custom_item else selected_item
+                if not final_item:
+                    st.error("「合約項目」為必填欄位！")
                 else:
-                    st.error(message)
+                    details = {
+                        "dorm_id": selected_dorm_id,
+                        "contract_item": final_item,
+                        "lease_start_date": str(lease_start_date) if lease_start_date else None,
+                        "lease_end_date": str(lease_end_date) if lease_end_date else None,
+                        "monthly_rent": monthly_rent,
+                        "deposit": deposit,
+                        "utilities_included": utilities_included
+                    }
+                    success, message, _ = lease_model.add_lease(details)
+                    if success:
+                        st.success(message)
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(message)
 
     st.markdown("---")
 
@@ -65,7 +77,10 @@ def render():
 
     leases_df = get_leases(dorm_id_filter)
     
-    st.dataframe(leases_df, width="stretch", hide_index=True)
+    # --- 顯示的欄位名稱 ---
+    st.dataframe(leases_df, width="stretch", hide_index=True, column_config={
+        "月費金額": st.column_config.NumberColumn(format="NT$ %d")
+    })
     
     st.markdown("---")
 
@@ -79,7 +94,7 @@ def render():
             dorm_options = {d['id']: d['original_address'] for d in dorms}
             
         lease_options_dict = {
-            row['id']: f"ID:{row['id']} - {row['宿舍地址']} ({row['合約起始日']})" 
+            row['id']: f"ID:{row['id']} - {row['宿舍地址']} ({row['合約項目']})" 
             for _, row in leases_df.iterrows()
         }
         
@@ -97,29 +112,43 @@ def render():
                 with st.form(f"edit_lease_form_{selected_lease_id}"):
                     st.text_input("宿舍地址", value=dorm_options.get(lease_details['dorm_id'], "未知"), disabled=True)
                     
+                    ec1_item, ec2_item = st.columns(2)
+                    current_item = lease_details.get('contract_item', '')
+                    if current_item in item_options:
+                        default_index = item_options.index(current_item)
+                        default_custom = ""
+                    else:
+                        default_index = item_options.index("其他...")
+                        default_custom = current_item
+                    
+                    e_selected_item = ec1_item.selectbox("合約項目*", options=item_options, index=default_index)
+                    e_custom_item = ec1_item.text_input("自訂項目名稱", value=default_custom)
+                    
+                    e_monthly_rent = ec2_item.number_input("每月固定金額*", min_value=0, step=1000, value=int(lease_details.get('monthly_rent') or 0))
+
                     ec1, ec2 = st.columns(2)
                     start_date_val = lease_details.get('lease_start_date')
                     end_date_val = lease_details.get('lease_end_date')
                     
-                    # 為日期輸入框設定新的 min_value 和 max_value
                     e_lease_start_date = ec1.date_input("合約起始日", value=start_date_val, min_value=thirty_years_ago, max_value=thirty_years_from_now)
                     with ec2:
                         e_lease_end_date = st.date_input("合約截止日", value=end_date_val, min_value=thirty_years_ago, max_value=thirty_years_from_now)
                         clear_end_date = st.checkbox("清除截止日 (設為長期合約)")
 
-                    ec3, ec4, ec5 = st.columns(3)
-                    e_monthly_rent = ec3.number_input("月租金", min_value=0, step=1000, value=int(lease_details.get('monthly_rent') or 0))
-                    e_deposit = ec4.number_input("押金", min_value=0, step=1000, value=int(lease_details.get('deposit') or 0))
-                    e_utilities_included = ec5.checkbox("租金含水電", value=bool(lease_details.get('utilities_included', False)))
+                    ec3, ec4 = st.columns([1, 3])
+                    e_deposit = ec3.number_input("押金", min_value=0, step=1000, value=int(lease_details.get('deposit') or 0))
+                    e_utilities_included = ec4.checkbox("費用是否包含水電", value=bool(lease_details.get('utilities_included', False)))
 
                     edit_submitted = st.form_submit_button("儲存變更")
                     if edit_submitted:
-                        # --- 根據核取方塊狀態決定最終日期 ---
                         final_end_date = None
                         if not clear_end_date:
                             final_end_date = str(e_lease_end_date) if e_lease_end_date else None
+                        
+                        e_final_item = e_custom_item if e_selected_item == "其他..." and e_custom_item else e_selected_item
 
                         updated_details = {
+                            "contract_item": e_final_item,
                             "lease_start_date": str(e_lease_start_date) if e_lease_start_date else None,
                             "lease_end_date": final_end_date,
                             "monthly_rent": e_monthly_rent,

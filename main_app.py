@@ -63,7 +63,7 @@ PAGES = {
         "年度費用": annual_expense_view,
         "維修追蹤管理": maintenance_view,
         "資產與庫存管理": inventory_view,
-        "房租合約管理": lease_view,
+        "長期合約管理": lease_view,
         "設備管理": equipment_view,
         "電水錶管理": meter_view,
         "廠商資料管理": vendor_view

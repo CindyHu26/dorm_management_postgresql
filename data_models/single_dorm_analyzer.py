@@ -106,7 +106,7 @@ def get_resident_summary(dorm_id: int, year_month: str):
 
 def get_expense_summary(dorm_id: int, year_month: str):
     """
-    【v1.2 支付方精準修正版】計算指定月份宿舍的總支出細項，並嚴格根據宿舍設定標示支付方。
+    【v1.3 合約項目擴充版】計算指定月份宿舍的總支出細項。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -119,19 +119,18 @@ def get_expense_summary(dorm_id: int, year_month: str):
                     TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
                     (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
             )
-            -- 1. 月租金支出，支付方來自 Dormitories.rent_payer
+            -- 1. 長期合約支出 (如月租金、清運費)，支付方來自 Dormitories.rent_payer
             SELECT 
-                '月租金 (' || d.rent_payer || '支付)' AS "費用項目", 
-                l.monthly_rent AS "金額"
+                l.contract_item || ' (' || d.rent_payer || '支付)' AS "費用項目", 
+                SUM(l.monthly_rent) AS "金額"
             FROM "Dormitories" d
-            JOIN (
-                SELECT dorm_id, monthly_rent, ROW_NUMBER() OVER(PARTITION BY dorm_id ORDER BY lease_start_date DESC) as rn
-                FROM "Leases" CROSS JOIN DateParams dp
-                WHERE lease_start_date <= dp.last_day_of_month
-                  AND (lease_end_date IS NULL OR lease_end_date >= dp.first_day_of_month)
-            ) l ON d.id = l.dorm_id
-            WHERE d.id = %(dorm_id)s AND l.rn = 1
-            
+            JOIN "Leases" l ON d.id = l.dorm_id
+            CROSS JOIN DateParams dp
+            WHERE d.id = %(dorm_id)s
+              AND l.lease_start_date <= dp.last_day_of_month
+              AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month)
+            GROUP BY l.contract_item, d.rent_payer
+
             UNION ALL
             
             -- 2. 變動雜費，根據類型決定支付方
@@ -367,9 +366,9 @@ def get_monthly_financial_trend(dorm_id: int):
                 FROM "OtherIncome" WHERE dorm_id = %(dorm_id)s GROUP BY 1
             ),
             -- 將 MonthlyExpenses 拆分為三個獨立的 CTE
-            MonthlyRent AS (
+            MonthlyContract AS
                 SELECT TO_CHAR(generate_series(l.lease_start_date, COALESCE(l.lease_end_date, CURRENT_DATE), '1 month'::interval)::date, 'YYYY-MM') as year_month,
-                       AVG(l.monthly_rent) as rent_expense
+                       SUM(l.monthly_rent) as contract_expense -- 從 AVG 改為 SUM 以處理多筆合約
                 FROM "Leases" l JOIN "Dormitories" d ON l.dorm_id = d.id
                 WHERE l.dorm_id = %(dorm_id)s AND d.rent_payer = '我司'
                 GROUP BY 1
@@ -393,15 +392,15 @@ def get_monthly_financial_trend(dorm_id: int):
             SELECT
                 ms.year_month AS "月份",
                 COALESCE(mi.total_income, 0) + COALESCE(omi.total_other_income, 0) AS "總收入",
-                COALESCE(mr.rent_expense, 0) AS "月租支出",
+                COALESCE(mc.contract_expense, 0) AS "長期合約支出", -- 改名
                 COALESCE(mu.utility_expense, 0) AS "變動雜費",
                 COALESCE(ma.amortized_expense, 0) AS "長期攤銷",
-                (COALESCE(mr.rent_expense, 0) + COALESCE(mu.utility_expense, 0) + COALESCE(ma.amortized_expense, 0)) AS "總支出",
-                (COALESCE(mi.total_income, 0) + COALESCE(omi.total_other_income, 0) - (COALESCE(mr.rent_expense, 0) + COALESCE(mu.utility_expense, 0) + COALESCE(ma.amortized_expense, 0))) AS "淨損益"
+                (COALESCE(mc.contract_expense, 0) + COALESCE(mu.utility_expense, 0) + COALESCE(ma.amortized_expense, 0)) AS "總支出",
+                (COALESCE(mi.total_income, 0) + COALESCE(omi.total_other_income, 0) - (COALESCE(mc.contract_expense, 0) + COALESCE(mu.utility_expense, 0) + COALESCE(ma.amortized_expense, 0))) AS "淨損益"
             FROM MonthSeries ms
             LEFT JOIN MonthlyIncome mi ON ms.year_month = mi.year_month
             LEFT JOIN OtherMonthlyIncome omi ON ms.year_month = omi.year_month
-            LEFT JOIN MonthlyRent mr ON ms.year_month = mr.year_month
+            LEFT JOIN MonthlyContract mc ON ms.year_month = mc.year_month -- 改名
             LEFT JOIN MonthlyUtilities mu ON ms.year_month = mu.year_month
             LEFT JOIN MonthlyAmortized ma ON ms.year_month = ma.year_month
             ORDER BY ms.year_month;
@@ -419,7 +418,7 @@ def get_monthly_financial_trend(dorm_id: int):
 
 def calculate_financial_summary_for_period(dorm_id: int, start_date: date, end_date: date):
     """
-    【v1.2 費用細分版】為指定的宿舍和自訂日期區間，計算平均每月收入、支出與損益。
+    【v1.3 合約項目擴充版】計算自訂區間平均損益，將月租改為通用合約費用。
     """
     try:
         monthly_df = get_monthly_financial_trend(dorm_id)
@@ -436,11 +435,10 @@ def calculate_financial_summary_for_period(dorm_id: int, start_date: date, end_d
         if period_df.empty:
             return {}
 
-        # 計算所有需要的平均值
         avg_income = period_df['總收入'].mean()
         avg_expense = period_df['總支出'].mean()
         avg_profit_loss = period_df['淨損益'].mean()
-        avg_rent = period_df['月租支出'].mean()
+        avg_contract = period_df['長期合約支出'].mean() # 改名
         avg_utilities = period_df['變動雜費'].mean()
         avg_amortized = period_df['長期攤銷'].mean()
 
@@ -448,7 +446,7 @@ def calculate_financial_summary_for_period(dorm_id: int, start_date: date, end_d
             "avg_monthly_income": int(avg_income),
             "avg_monthly_expense": int(avg_expense),
             "avg_monthly_profit_loss": int(avg_profit_loss),
-            "avg_monthly_rent": int(avg_rent),
+            "avg_monthly_contract": int(avg_contract),
             "avg_monthly_utilities": int(avg_utilities),
             "avg_monthly_amortized": int(avg_amortized),
         }
