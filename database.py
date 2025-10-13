@@ -64,6 +64,16 @@ def get_base_path():
 BASE_PATH = get_base_path()
 CONFIG_FILE = os.path.join(BASE_PATH, "config.ini")
 
+def get_general_config():
+    """從 config.ini 讀取通用設定。"""
+    if not os.path.exists(CONFIG_FILE):
+        return {} # 如果檔案不存在，回傳空字典
+    config = configparser.ConfigParser()
+    config.read(CONFIG_FILE, encoding='utf-8')
+    if 'General' in config:
+        return config['General']
+    return {} # 如果區塊不存在，回傳空字典
+
 def get_db_config():
     """從 config.ini 讀取資料庫設定。"""
     if not os.path.exists(CONFIG_FILE):
@@ -328,6 +338,7 @@ def create_all_tables_and_indexes():
                 "dorm_id" INTEGER,
                 "person_in_charge" TEXT,
                 "related_expense_id" INTEGER,
+                "related_income_id" INTEGER,
                 "notes" TEXT,
                 FOREIGN KEY ("item_id") REFERENCES "InventoryItems" ("id") ON DELETE CASCADE,
                 FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE SET NULL
