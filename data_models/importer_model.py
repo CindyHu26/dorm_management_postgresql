@@ -461,7 +461,7 @@ def batch_import_leases(df: pd.DataFrame):
     """
     success_count = 0
     failed_records = []
-    skipped_records = [] # 新增一個列表來存放被跳過的紀錄
+    skipped_records = [] 
     conn = database.get_db_connection()
     if not conn:
         error_df = df.copy()
@@ -474,6 +474,10 @@ def batch_import_leases(df: pd.DataFrame):
             original_addr_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
             normalized_addr_map = {d['normalized_address']: d['id'] for _, d in dorms_df.iterrows()}
             
+            # --- 【核心修改 1】預載廠商資料 ---
+            vendors_df = _execute_query_to_dataframe(conn, 'SELECT id, vendor_name FROM "Vendors"')
+            vendor_map = {v['vendor_name']: v['id'] for _, v in vendors_df.iterrows()}
+            
             for index, row in df.iterrows():
                 try:
                     address = row.get('宿舍地址')
@@ -485,23 +489,38 @@ def batch_import_leases(df: pd.DataFrame):
                     if not dorm_id:
                         raise ValueError(f"在資料庫中找不到對應的宿舍地址: {address}")
 
+                    # --- 【核心修改 2】找不到廠商時，明確拋出錯誤 ---
+                    vendor_id = None
+                    vendor_name = row.get('房東/廠商')
+                    if pd.notna(vendor_name) and str(vendor_name).strip():
+                        vendor_name_stripped = str(vendor_name).strip()
+                        vendor_id = vendor_map.get(vendor_name_stripped)
+                        # 如果 Excel 中有填寫廠商，但在資料庫找不到，就報錯
+                        if not vendor_id:
+                            raise ValueError(f"在廠商資料庫中找不到廠商: '{vendor_name_stripped}'，請先新增。")
+
                     def to_bool(val):
                         if pd.isna(val): return False
                         return str(val).strip().upper() in ['TRUE', '1', 'Y', 'YES', '是']
-
+                    
+                    # --- 【核心修改 3】將新欄位加入 details ---
                     details = {
                         "dorm_id": dorm_id,
+                        "vendor_id": vendor_id, # <-- 新增
+                        "contract_item": row.get('合約項目', '房租'),
                         "lease_start_date": pd.to_datetime(row.get('合約起始日')).strftime('%Y-%m-%d') if pd.notna(row.get('合約起始日')) else None,
                         "lease_end_date": pd.to_datetime(row.get('合約截止日')).strftime('%Y-%m-%d') if pd.notna(row.get('合約截止日')) else None,
                         "monthly_rent": int(pd.to_numeric(row.get('月租金'), errors='coerce')) if pd.notna(row.get('月租金')) else None,
                         "deposit": int(pd.to_numeric(row.get('押金'), errors='coerce')) if pd.notna(row.get('押金')) else None,
                         "utilities_included": to_bool(row.get('租金含水電')),
+                        "notes": str(row.get('備註', '')) # <-- 新增
                     }
                     
                     cursor.execute(
-                        'SELECT id FROM "Leases" WHERE dorm_id = %s AND lease_start_date = %s AND monthly_rent = %s',
-                        (details['dorm_id'], details['lease_start_date'], details['monthly_rent'])
+                        'SELECT id FROM "Leases" WHERE dorm_id = %s AND contract_item = %s AND lease_start_date = %s AND monthly_rent = %s',
+                        (details['dorm_id'], details['contract_item'], details['lease_start_date'], details['monthly_rent'])
                     )
+                    
                     if cursor.fetchone():
                         # --- 將跳過的紀錄加入 skipped_records ---
                         row['錯誤原因'] = "資料重複，已跳過"
@@ -834,12 +853,14 @@ def batch_import_vendors(df: pd.DataFrame):
 
     try:
         with conn.cursor() as cursor:
-            # 將 Excel 欄位名稱對應到資料庫欄位名稱
+            # --- 【核心修改 1】更新欄位對應 ---
             column_mapping = {
-                "修理項目": "service_category",
-                "廠商": "vendor_name",
+                "服務項目": "service_category",
+                "廠商名稱": "vendor_name",
                 "聯絡人": "contact_person",
-                "聯絡電話": "phone_number"
+                "聯絡電話": "phone_number",
+                "統一編號": "tax_id", # <-- 新增
+                "匯款資訊": "remittance_info" # <-- 新增
             }
             df.rename(columns=column_mapping, inplace=True)
 
@@ -850,13 +871,16 @@ def batch_import_vendors(df: pd.DataFrame):
                     service_category = str(row.get('service_category', '')).strip()
 
                     if not vendor_name and not service_category:
-                        raise ValueError("「廠商」和「修理項目」至少需要一項")
-
+                        raise ValueError("「廠商名稱」和「服務項目」至少需要一項")
+                    
+                    # --- 【核心修改 2】將新欄位加入 details 字典 ---
                     details = {
                         'service_category': service_category,
                         'vendor_name': vendor_name,
                         'contact_person': str(row.get('contact_person', '')).strip(),
                         'phone_number': str(row.get('phone_number', '')).strip(),
+                        'tax_id': str(row.get('tax_id', '')).strip(), # <-- 新增
+                        'remittance_info': str(row.get('remittance_info', '')).strip(), # <-- 新增
                         'notes': str(row.get('備註', '')).strip()
                     }
 

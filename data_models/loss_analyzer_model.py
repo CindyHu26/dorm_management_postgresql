@@ -35,7 +35,7 @@ def get_loss_making_dorms(period: str):
             # 年度查詢的邏輯可以之後再優化
             # 此處暫時回傳空值，讓你知道這部分需要未來擴充
             # return pd.DataFrame()
-            # (在此保留舊的年度查詢邏輯，但請注意它可能尚未完全適應新合約結構)
+
             query = """
                 WITH DateRange AS (
                     SELECT %(start_date)s::date as start_date, %(end_date)s::date as end_date
@@ -109,6 +109,7 @@ def get_loss_making_dorms(period: str):
                 )
                 SELECT
                     d.original_address AS "宿舍地址", COALESCE(di."總收入", 0)::int AS "總收入",
+                    -- 【核心修改 2】更新欄位名稱
                     COALESCE(dc."合約支出", 0)::int AS "合約支出",
                     COALESCE(du."雜費支出", 0)::int AS "雜費支出",
                     COALESCE(da."長期攤銷支出", 0)::int AS "長期攤銷支出",
@@ -116,6 +117,7 @@ def get_loss_making_dorms(period: str):
                     (COALESCE(di."總收入", 0) - (COALESCE(dc."合約支出", 0) + COALESCE(du."雜費支出", 0) + COALESCE(da."長期攤銷支出", 0)))::int AS "淨損益"
                 FROM "Dormitories" d
                 LEFT JOIN DormIncome di ON d.id = di.dorm_id 
+                -- 【核心修改 3】更新 JOIN 的對象
                 LEFT JOIN DormContracts dc ON d.id = dc.dorm_id
                 LEFT JOIN DormUtilities du ON d.id = du.dorm_id 
                 LEFT JOIN DormAmortized da ON d.id = da.dorm_id
@@ -190,8 +192,8 @@ def get_daily_loss_making_dorms(period: str):
                     WHERE TO_CHAR(w.accommodation_start_date, 'YYYY-MM') <= '{period}' AND (w.accommodation_end_date IS NULL OR TO_CHAR(w.accommodation_end_date, 'YYYY-MM') >= '{period}')
                     GROUP BY r.dorm_id
                 ),
-                DormRent AS (
-                    SELECT l.dorm_id, AVG(l.monthly_rent) as "月租金支出" 
+                DormContracts AS (
+                    SELECT l.dorm_id, SUM(l.monthly_rent) as "合約支出" 
                     FROM "Leases" l JOIN "Dormitories" d ON l.dorm_id = d.id
                     WHERE d.rent_payer = '我司' AND l.lease_start_date <= CURRENT_DATE AND (l.lease_end_date IS NULL OR l.lease_end_date >= CURRENT_DATE) GROUP BY l.dorm_id
                 ),
@@ -203,15 +205,17 @@ def get_daily_loss_making_dorms(period: str):
                 )
                 SELECT
                     d.original_address AS "宿舍地址", COALESCE(di."總收入", 0)::int AS "總收入",
-                    COALESCE(dr."月租金支出", 0)::int AS "月租金支出", COALESCE(du."雜費支出", 0)::int AS "雜費支出",
-                    (COALESCE(dr."月租金支出", 0) + COALESCE(du."雜費支出", 0))::int AS "總支出",
-                    (COALESCE(di."總收入", 0) - (COALESCE(dr."月租金支出", 0) + COALESCE(du."雜費支出", 0)))::int AS "淨損益"
+                    -- 【核心修改 5】更新欄位名稱
+                    COALESCE(dr."合約支出", 0)::int AS "合約支出", COALESCE(du."雜費支出", 0)::int AS "雜費支出",
+                    (COALESCE(dr."合約支出", 0) + COALESCE(du."雜費支出", 0))::int AS "總支出",
+                    (COALESCE(di."總收入", 0) - (COALESCE(dr."合約支出", 0) + COALESCE(du."雜費支出", 0)))::int AS "淨損益"
                 FROM "Dormitories" d
-                LEFT JOIN DormIncome di ON d.id = di.dorm_id LEFT JOIN DormRent dr ON d.id = dr.dorm_id
+                LEFT JOIN DormIncome di ON d.id = di.dorm_id 
+                LEFT JOIN DormContracts dr ON d.id = dr.dorm_id -- 更新 Join
                 LEFT JOIN DormUtilities du ON d.id = du.dorm_id
                 WHERE d.primary_manager = '我司'
-                GROUP BY d.original_address, di."總收入", dr."月租金支出", du."雜費支出"
-                HAVING (COALESCE(di."總收入", 0) - (COALESCE(dr."月租金支出", 0) + COALESCE(du."雜費支出", 0))) < 0
+                GROUP BY d.original_address, di."總收入", dr."合約支出", du."雜費支出"
+                HAVING (COALESCE(di."總收入", 0) - (COALESCE(dr."合約支出", 0) + COALESCE(du."雜費支出", 0))) < 0
                 ORDER BY "淨損益" ASC;
             """
             return _execute_query_to_dataframe(conn, query)

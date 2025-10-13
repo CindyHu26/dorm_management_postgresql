@@ -97,16 +97,15 @@ def get_financial_dashboard_data(year_month: str):
                   AND b.bill_end_date >= dp.first_day_of_month
                 GROUP BY b.dorm_id
             ),
-            MonthlyRent AS (
-                SELECT dorm_id, monthly_rent FROM (
-                    SELECT l.dorm_id, l.monthly_rent, ROW_NUMBER() OVER(PARTITION BY l.dorm_id ORDER BY l.lease_start_date DESC) as rn
-                    FROM "Leases" l
-                    JOIN "Dormitories" d ON l.dorm_id = d.id
-                    CROSS JOIN DateParams dp
-                    WHERE d.rent_payer = '我司' -- 【核心修正 1】只計算我司支付的租金
-                      AND l.lease_start_date <= dp.last_day_of_month
-                      AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month)
-                ) as sub_leases WHERE rn = 1
+            MonthlyContracts AS ( 
+                SELECT l.dorm_id, SUM(l.monthly_rent) as contract_expense
+                FROM "Leases" l
+                JOIN "Dormitories" d ON l.dorm_id = d.id
+                CROSS JOIN DateParams dp
+                WHERE d.rent_payer = '我司'
+                  AND l.lease_start_date <= dp.last_day_of_month
+                  AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month)
+                GROUP BY l.dorm_id -- 【核心修正】重新加入此 GROUP BY 子句
             ),
             ProratedUtilities AS (
                 SELECT b.dorm_id,
@@ -141,15 +140,15 @@ def get_financial_dashboard_data(year_month: str):
                 d.id,
                 d.original_address AS "宿舍地址",
                 (COALESCE(wi.total_income, 0) + COALESCE(pti.total_pass_through_income, 0))::int AS "預計總收入",
-                COALESCE(mr.monthly_rent, 0)::int AS "宿舍月租",
+                COALESCE(mc.contract_expense, 0)::int AS "長期合約支出",
                 ROUND(COALESCE(pu.total_utilities, 0))::int AS "變動雜費(我司支付)",
                 COALESCE(ae.total_amortized, 0)::int AS "長期攤銷",
-                (COALESCE(mr.monthly_rent, 0) + ROUND(COALESCE(pu.total_utilities, 0)) + COALESCE(ae.total_amortized, 0) + COALESCE(pti.total_pass_through_income, 0))::int AS "預計總支出",
-                (COALESCE(wi.total_income, 0) - (COALESCE(mr.monthly_rent, 0) + ROUND(COALESCE(pu.total_utilities, 0)) + COALESCE(ae.total_amortized, 0)))::int AS "預估損益"
+                (COALESCE(mc.contract_expense, 0) + ROUND(COALESCE(pu.total_utilities, 0)) + COALESCE(ae.total_amortized, 0) + COALESCE(pti.total_pass_through_income, 0))::int AS "預計總支出",
+                (COALESCE(wi.total_income, 0) - (COALESCE(mc.contract_expense, 0) + ROUND(COALESCE(pu.total_utilities, 0)) + COALESCE(ae.total_amortized, 0)))::int AS "預估損益"
             FROM "Dormitories" d
             LEFT JOIN WorkerIncome wi ON d.id = wi.dorm_id
             LEFT JOIN PassThroughIncome pti ON d.id = pti.dorm_id
-            LEFT JOIN MonthlyRent mr ON d.id = mr.dorm_id
+            LEFT JOIN MonthlyContracts mc ON d.id = mc.dorm_id
             LEFT JOIN ProratedUtilities pu ON d.id = pu.dorm_id
             LEFT JOIN AmortizedExpenses ae ON d.id = ae.dorm_id
             WHERE d.primary_manager = '我司'

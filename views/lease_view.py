@@ -4,7 +4,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
-from data_models import lease_model, dormitory_model
+from data_models import lease_model, dormitory_model, vendor_model
 
 def render():
     """渲染「長期合約管理」頁面"""
@@ -20,15 +20,22 @@ def render():
             dorms = dormitory_model.get_dorms_for_selection() or []
             dorm_options = {d['id']: d['original_address'] for d in dorms}
             
+            # --- 預先載入廠商列表 ---
+            vendors = vendor_model.get_vendors_for_view()
+            vendor_options = {v['id']: f"{v['服務項目']} - {v['廠商名稱']}" for _, v in vendors.iterrows()} if not vendors.empty else {}
+            
             selected_dorm_id = st.selectbox("選擇宿舍地址*", options=dorm_options.keys(), format_func=lambda x: dorm_options.get(x, "未知宿舍"))
             
-            # --- 合約項目欄位 ---
-            c1_item, c2_item = st.columns(2)
+            # --- 新增廠商選擇器和備註欄位 ---
+            c1_item, c2_item, c3_item = st.columns(3) 
             item_options = ["房租", "清運費", "其他...(手動輸入)"]
             selected_item = c1_item.selectbox("合約項目*", options=item_options)
             custom_item = c1_item.text_input("自訂項目名稱", help="若上方選擇「其他...」，請在此處填寫")
             
             monthly_rent = c2_item.number_input("每月固定金額*", min_value=0, step=1000)
+
+            # 將廠商選擇器放在第三欄
+            selected_vendor_id = c3_item.selectbox("房東/廠商 (選填)", options=[None] + list(vendor_options.keys()), format_func=lambda x: "未指定" if x is None else vendor_options.get(x))
 
             c1, c2 = st.columns(2)
             lease_start_date = c1.date_input("合約起始日", value=None, min_value=thirty_years_ago, max_value=thirty_years_from_now)
@@ -40,6 +47,8 @@ def render():
             deposit = c3.number_input("押金", min_value=0, step=1000)
             utilities_included = c4.checkbox("費用是否包含水電 (通常用於房租)")
 
+            notes = st.text_area("合約備註")
+
             submitted = st.form_submit_button("儲存新合約")
             if submitted:
                 final_item = custom_item if selected_item == "其他..." and custom_item else selected_item
@@ -48,12 +57,14 @@ def render():
                 else:
                     details = {
                         "dorm_id": selected_dorm_id,
+                        "vendor_id": selected_vendor_id,
                         "contract_item": final_item,
                         "lease_start_date": str(lease_start_date) if lease_start_date else None,
                         "lease_end_date": str(lease_end_date) if lease_end_date else None,
                         "monthly_rent": monthly_rent,
                         "deposit": deposit,
-                        "utilities_included": utilities_included
+                        "utilities_included": utilities_included,
+                        "notes": notes
                     }
                     success, message, _ = lease_model.add_lease(details)
                     if success:
@@ -89,6 +100,11 @@ def render():
     if leases_df.empty:
         st.info("目前沒有可供操作的合約紀錄。")
     else:
+        # --- 預先載入廠商列表以供編輯表單使用 ---
+        if 'vendor_options' not in locals():
+            vendors = vendor_model.get_vendors_for_view()
+            vendor_options = {v['id']: f"{v['服務項目']} - {v['廠商名稱']}" for _, v in vendors.iterrows()} if not vendors.empty else {}
+            
         if 'dorm_options' not in locals():
             dorms = dormitory_model.get_dorms_for_selection() or []
             dorm_options = {d['id']: d['original_address'] for d in dorms}
@@ -112,8 +128,10 @@ def render():
                 with st.form(f"edit_lease_form_{selected_lease_id}"):
                     st.text_input("宿舍地址", value=dorm_options.get(lease_details['dorm_id'], "未知"), disabled=True)
                     
-                    ec1_item, ec2_item = st.columns(2)
+                    # --- 新增廠商和備註的編輯欄位 ---
+                    ec1_item, ec2_item, ec3_item = st.columns(3) # 改為 3 欄
                     current_item = lease_details.get('contract_item', '')
+                    item_options = ["房租", "清運費", "其他...(手動輸入)"] # 確保 item_options 存在
                     if current_item in item_options:
                         default_index = item_options.index(current_item)
                         default_custom = ""
@@ -125,6 +143,14 @@ def render():
                     e_custom_item = ec1_item.text_input("自訂項目名稱", value=default_custom)
                     
                     e_monthly_rent = ec2_item.number_input("每月固定金額*", min_value=0, step=1000, value=int(lease_details.get('monthly_rent') or 0))
+
+                    current_vendor_id = lease_details.get('vendor_id')
+                    e_selected_vendor_id = ec3_item.selectbox(
+                        "房東/廠商 (選填)", 
+                        options=[None] + list(vendor_options.keys()), 
+                        index=([None] + list(vendor_options.keys())).index(current_vendor_id) if current_vendor_id in [None] + list(vendor_options.keys()) else 0,
+                        format_func=lambda x: "未指定" if x is None else vendor_options.get(x)
+                    )
 
                     ec1, ec2 = st.columns(2)
                     start_date_val = lease_details.get('lease_start_date')
@@ -139,6 +165,8 @@ def render():
                     e_deposit = ec3.number_input("押金", min_value=0, step=1000, value=int(lease_details.get('deposit') or 0))
                     e_utilities_included = ec4.checkbox("費用是否包含水電", value=bool(lease_details.get('utilities_included', False)))
 
+                    e_notes = st.text_area("合約備註", value=lease_details.get('notes', ''))
+
                     edit_submitted = st.form_submit_button("儲存變更")
                     if edit_submitted:
                         final_end_date = None
@@ -146,14 +174,17 @@ def render():
                             final_end_date = str(e_lease_end_date) if e_lease_end_date else None
                         
                         e_final_item = e_custom_item if e_selected_item == "其他..." and e_custom_item else e_selected_item
-
+                        
+                        # --- 將新欄位加入 updated_details 字典 ---
                         updated_details = {
+                            "vendor_id": e_selected_vendor_id, 
                             "contract_item": e_final_item,
                             "lease_start_date": str(e_lease_start_date) if e_lease_start_date else None,
                             "lease_end_date": final_end_date,
                             "monthly_rent": e_monthly_rent,
                             "deposit": e_deposit,
-                            "utilities_included": e_utilities_included
+                            "utilities_included": e_utilities_included,
+                            "notes": e_notes 
                         }
                         success, message = lease_model.update_lease(selected_lease_id, updated_details)
                         if success:

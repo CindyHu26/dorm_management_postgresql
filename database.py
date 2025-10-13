@@ -210,11 +210,14 @@ def create_all_tables_and_indexes():
             TABLES['Leases'] = """
             CREATE TABLE IF NOT EXISTS "Leases" (
                 "id" SERIAL PRIMARY KEY, "dorm_id" INTEGER NOT NULL, 
+                "vendor_id" INTEGER, 
                 "contract_item" VARCHAR(100) DEFAULT '房租',
                 "lease_start_date" DATE,
                 "lease_end_date" DATE, "monthly_rent" INTEGER, "deposit" INTEGER,
                 "utilities_included" BOOLEAN, "contract_scan_path" VARCHAR(255),
-                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE
+                "notes" TEXT,
+                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE,
+                FOREIGN KEY ("vendor_id") REFERENCES "Vendors" ("id") ON DELETE SET NULL
             );
             """
 
@@ -302,6 +305,8 @@ def create_all_tables_and_indexes():
                 "vendor_name" TEXT,
                 "contact_person" TEXT,
                 "phone_number" TEXT,
+                "tax_id" VARCHAR(20), -- 【核心修改 1】新增統一編號
+                "remittance_info" TEXT, -- 【核心修改 2】新增匯款資訊
                 "notes" TEXT
             );
             """

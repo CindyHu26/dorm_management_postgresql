@@ -25,13 +25,16 @@ def get_leases_for_view(dorm_id_filter=None):
                 l.id,
                 d.original_address AS "宿舍地址",
                 l.contract_item AS "合約項目",
+                v.vendor_name AS "房東/廠商", 
                 l.lease_start_date AS "合約起始日",
                 l.lease_end_date AS "合約截止日",
                 l.monthly_rent AS "月費金額",
                 l.deposit AS "押金",
-                CASE WHEN l.utilities_included THEN '是' ELSE '否' END AS "費用含水電"
+                CASE WHEN l.utilities_included THEN '是' ELSE '否' END AS "費用含水電",
+                l.notes AS "備註" 
             FROM "Leases" l
             JOIN "Dormitories" d ON l.dorm_id = d.id
+            LEFT JOIN "Vendors" v ON l.vendor_id = v.id 
         """
         params = []
         if dorm_id_filter:

@@ -139,8 +139,8 @@ def render():
                 hide_index=True,
                 column_config={
                     "預計總收入": st.column_config.NumberColumn(format="NT$ %d"),
-                    "宿舍月租": st.column_config.NumberColumn(format="NT$ %d"),
-                    "變動雜費(我司支付)": st.column_config.NumberColumn(format="NT$ %d"),
+                    "長期合約": st.column_config.NumberColumn(format="NT$ %d"),
+                    "變動雜費": st.column_config.NumberColumn(format="NT$ %d"),
                     "長期攤銷": st.column_config.NumberColumn(format="NT$ %d"),
                     "預計總支出": st.column_config.NumberColumn(format="NT$ %d"),
                     "預估損益": st.column_config.NumberColumn(format="NT$ %d")

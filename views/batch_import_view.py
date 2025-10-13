@@ -235,37 +235,38 @@ def render():
 
     st.markdown("---")
     with st.container(border=True):
-        st.subheader("📄 房租合約匯入")
+        st.subheader("📄 長期合約匯入")
         st.info("用於批次新增宿舍的租賃合約紀錄。")
         
         lease_template_df = pd.DataFrame({
             "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號"],
+            "合約項目": ["房租"],
+            "房東/廠商": ["範例廠商-王大明"],
             "合約起始日": ["2025-01-01"],
             "合約截止日": ["2026-12-31"],
             "月租金": [25000],
             "押金": [50000],
-            "租金含水電": ["False"]
+            "租金含水電": ["False"],
+            "備註": ["每半年付款一次"] 
         })
         st.download_button(
-            label="📥 下載房租合約匯入範本",
+            label="📥 下載長期合約匯入範本",
             data=to_excel(lease_template_df),
             file_name="lease_import_template.xlsx"
         )
-
-        uploaded_lease_file = st.file_uploader("上傳【房租合約】Excel 檔案", type=["xlsx"], key="lease_uploader")
+        uploaded_lease_file = st.file_uploader("上傳【長期合約】Excel 檔案", type=["xlsx"], key="lease_uploader")
 
         if uploaded_lease_file:
             try:
                 df_lease = pd.read_excel(uploaded_lease_file)
                 st.markdown("##### 檔案內容預覽：")
                 st.dataframe(df_lease.head())
-                if st.button("🚀 開始匯入房租合約", type="primary", key="lease_import_btn"):
-                    with st.spinner("正在處理與匯入房租合約..."):
+                if st.button("🚀 開始匯入長期合約", type="primary", key="lease_import_btn"):
+                    with st.spinner("正在處理與匯入長期合約..."):
                         success, failed_df, skipped_df = importer_model.batch_import_leases(df_lease)
                     
                     st.success(f"匯入完成！成功新增 {success} 筆。")
 
-                    # --- 新增顯示「跳過」紀錄的區塊 ---
                     if not skipped_df.empty:
                         st.warning(f"有 {len(skipped_df)} 筆資料因重複而跳過：")
                         st.dataframe(skipped_df)
@@ -370,6 +371,22 @@ def render():
         st.subheader("🔧 廠商資料匯入")
         st.info("用於將您現有的廠商聯絡人 Excel 檔案 (.xls 或 .xlsx) 批次匯入系統。")
         
+        # --- 【核心修改】新增範本下載按鈕 ---
+        vendor_template_df = pd.DataFrame({
+            "服務項目": ["範例：房東"],
+            "廠商名稱": ["王大明"],
+            "聯絡人": ["王大明"],
+            "聯絡電話": ["0912345678"],
+            "統一編號": ["12345678"],
+            "匯款資訊": ["XX銀行 YY分行\n帳號: 123-456-789012"],
+            "備註": ["僅收現金"]
+        })
+        st.download_button(
+            label="📥 下載廠商資料匯入範本",
+            data=to_excel(vendor_template_df),
+            file_name="vendor_import_template.xlsx"
+        )
+
         uploaded_vendor_file = st.file_uploader("上傳【廠商資料】Excel/XLS 檔案", type=["xlsx", "xls"], key="vendor_uploader")
 
         if uploaded_vendor_file:

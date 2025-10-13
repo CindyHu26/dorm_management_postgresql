@@ -12,11 +12,16 @@ def render():
     # --- 新增區塊 ---
     with st.expander("➕ 新增廠商聯絡資料", expanded=False):
         with st.form("new_vendor_form", clear_on_submit=True):
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2 = st.columns(2)
             service_category = c1.text_input("服務項目 (例如: 水電維修)")
             vendor_name = c2.text_input("廠商名稱 (例如: ABC 水電行)")
+            
+            c3, c4, c5 = st.columns(3) # 改為 3 欄
             contact_person = c3.text_input("聯絡人")
             phone_number = c4.text_input("聯絡電話")
+            tax_id = c5.text_input("統一編號") # <-- 新增
+            
+            remittance_info = st.text_area("匯款資訊") # <-- 新增
             notes = st.text_area("備註")
             
             submitted = st.form_submit_button("儲存新廠商")
@@ -27,6 +32,8 @@ def render():
                     details = {
                         'service_category': service_category, 'vendor_name': vendor_name,
                         'contact_person': contact_person, 'phone_number': phone_number,
+                        'tax_id': tax_id, # <-- 新增
+                        'remittance_info': remittance_info, # <-- 新增
                         'notes': notes
                     }
                     success, message = vendor_model.add_vendor(details)
@@ -70,11 +77,16 @@ def render():
             else:
                 with st.form(f"edit_vendor_form_{selected_vendor_id}"):
                     st.markdown(f"###### 正在編輯 ID: {selected_vendor_id} 的資料")
-                    ec1, ec2, ec3, ec4 = st.columns(4)
+                    ec1, ec2 = st.columns(2)
                     e_service_category = ec1.text_input("服務項目", value=vendor_details.get('service_category', ''))
                     e_vendor_name = ec2.text_input("廠商名稱", value=vendor_details.get('vendor_name', ''))
+                    
+                    ec3, ec4, ec5 = st.columns(3) # 改為 3 欄
                     e_contact_person = ec3.text_input("聯絡人", value=vendor_details.get('contact_person', ''))
                     e_phone_number = ec4.text_input("聯絡電話", value=vendor_details.get('phone_number', ''))
+                    e_tax_id = ec5.text_input("統一編號", value=vendor_details.get('tax_id', '')) # <-- 新增
+                    
+                    e_remittance_info = st.text_area("匯款資訊", value=vendor_details.get('remittance_info', '')) # <-- 新增
                     e_notes = st.text_area("備註", value=vendor_details.get('notes', ''))
                     
                     edit_submitted = st.form_submit_button("儲存變更")
@@ -82,6 +94,8 @@ def render():
                         updated_details = {
                             'service_category': e_service_category, 'vendor_name': e_vendor_name,
                             'contact_person': e_contact_person, 'phone_number': e_phone_number,
+                            'tax_id': e_tax_id, # <-- 新增
+                            'remittance_info': e_remittance_info, # <-- 新增
                             'notes': e_notes
                         }
                         success, message = vendor_model.update_vendor(selected_vendor_id, updated_details)
@@ -90,7 +104,7 @@ def render():
                             st.rerun()
                         else:
                             st.error(message)
-
+                            
                 st.markdown("---")
                 st.markdown("##### 危險操作區")
                 confirm_delete = st.checkbox("我了解並確認要刪除此筆廠商資料", key=f"delete_confirm_{selected_vendor_id}")

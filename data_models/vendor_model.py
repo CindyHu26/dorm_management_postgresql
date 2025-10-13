@@ -20,6 +20,7 @@ def get_vendors_for_view(search_term: str = None):
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
+        # --- 【核心修改】新增查詢欄位 ---
         query = """
             SELECT 
                 id, 
@@ -27,20 +28,23 @@ def get_vendors_for_view(search_term: str = None):
                 vendor_name AS "廠商名稱", 
                 contact_person AS "聯絡人",
                 phone_number AS "聯絡電話",
+                tax_id AS "統一編號",           -- <-- 新增此行
+                remittance_info AS "匯款資訊",  -- <-- 新增此行
                 notes AS "備註"
             FROM "Vendors"
         """
         params = []
         if search_term:
-            query += ' WHERE service_category ILIKE %s OR vendor_name ILIKE %s OR contact_person ILIKE %s OR phone_number ILIKE %s'
+            # --- 【核心修改】在搜尋條件中也加入新欄位 ---
+            query += ' WHERE service_category ILIKE %s OR vendor_name ILIKE %s OR contact_person ILIKE %s OR phone_number ILIKE %s OR tax_id ILIKE %s'
             term = f"%{search_term}%"
-            params.extend([term, term, term, term])
+            params.extend([term, term, term, term, term])
 
         query += " ORDER BY service_category, vendor_name"
         return _execute_query_to_dataframe(conn, query, params)
     finally:
         if conn: conn.close()
-
+        
 def get_single_vendor_details(vendor_id: int):
     """取得單一廠商的詳細資料。"""
     conn = database.get_db_connection()
