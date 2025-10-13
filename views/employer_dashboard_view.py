@@ -1,3 +1,5 @@
+# 檔案路徑: views/employer_dashboard_view.py
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -18,7 +20,6 @@ def render():
         st.warning("目前資料庫中沒有任何員工資料可供查詢。")
         return
 
-    # --- 【核心修改點 1】selectbox 改為 multiselect ---
     selected_employers = st.multiselect(
         "請選擇要分析的雇主 (可多選)：",
         options=employers_list
@@ -29,7 +30,6 @@ def render():
 
     st.markdown("---")
 
-    # --- 【核心修改點 2】判斷 selected_employers 是否為空 ---
     if selected_employers:
         
         @st.cache_data
@@ -51,7 +51,6 @@ def render():
 
             @st.cache_data
             def get_finance_summary(employers, period):
-                # --- 【核心修改點 3】傳遞整個列表 ---
                 return employer_dashboard_model.get_employer_financial_summary(employers, period)
 
             finance_df_month = get_finance_summary(selected_employers, year_month_str)
@@ -62,7 +61,8 @@ def render():
                 st.markdown(f"#### {year_month_str} 財務總覽")
                 finance_df_month['總收入'] = finance_df_month['收入(員工月費)'] + finance_df_month['分攤其他收入']
                 total_income = finance_df_month['總收入'].sum()
-                total_expense_by_us = finance_df_month['我司分攤月租'].sum() + finance_df_month['我司分攤雜費'].sum() + finance_df_month['我司分攤攤銷'].sum()
+                
+                total_expense_by_us = finance_df_month['我司分攤合約費'].sum() + finance_df_month['我司分攤雜費'].sum() + finance_df_month['我司分攤攤銷'].sum()
                 profit_loss = total_income - total_expense_by_us
 
                 f_col1, f_col2, f_col3 = st.columns(3)
@@ -73,9 +73,9 @@ def render():
                 st.markdown("##### 各宿舍收支詳情 (所選雇主)")
                 display_df = finance_df_month.copy()
                 display_df['淨損益'] = (display_df['收入(員工月費)'] + display_df['分攤其他收入']) - \
-                                    (display_df['我司分攤月租'] + display_df['我司分攤雜費'] + display_df['我司分攤攤銷'])
+                                    (display_df['我司分攤合約費'] + display_df['我司分攤雜費'] + display_df['我司分攤攤銷'])
                 
-                cols_to_display = ["宿舍地址", "淨損益", "收入(員工月費)", "分攤其他收入", "我司分攤月租", "我司分攤雜費", "我司分攤攤銷"]
+                cols_to_display = ["宿舍地址", "淨損益", "收入(員工月費)", "分攤其他收入", "我司分攤合約費", "我司分攤雜費", "我司分攤攤銷"]
                 cols_to_display_exist = [col for col in cols_to_display if col in display_df.columns]
                 
                 st.dataframe(display_df[cols_to_display_exist], width='stretch', hide_index=True,
@@ -110,9 +110,10 @@ def render():
         with tab2:
             st.subheader("年度財務總覽")
             
-            today = datetime.now()
-            selected_year_annual = st.selectbox("選擇年份", options=range(today.year - 2, today.year + 2), index=2, key="annual_year")
+            today_annual = datetime.now()
+            selected_year_annual = st.selectbox("選擇年份", options=range(today_annual.year - 2, today_annual.year + 2), index=2, key="annual_year")
 
+            # --- 【核心修正 7】更新函式名稱 ---
             @st.cache_data
             def get_finance_summary_annual(employers, year):
                 return employer_dashboard_model.get_employer_financial_summary_annual(employers, year)
@@ -125,7 +126,8 @@ def render():
                 st.markdown(f"#### {selected_year_annual} 年度財務總覽")
                 finance_df_annual['總收入'] = finance_df_annual['收入(員工月費)'] + finance_df_annual['分攤其他收入']
                 total_income_annual = finance_df_annual['總收入'].sum()
-                total_expense_by_us_annual = finance_df_annual['我司分攤月租'].sum() + finance_df_annual['我司分攤雜費'].sum() + finance_df_annual['我司分攤攤銷'].sum()
+                
+                total_expense_by_us_annual = finance_df_annual['我司分攤合約費'].sum() + finance_df_annual['我司分攤雜費'].sum() + finance_df_annual['我司分攤攤銷'].sum()
                 profit_loss_annual = total_income_annual - total_expense_by_us_annual
 
                 fa_col1, fa_col2, fa_col3 = st.columns(3)
@@ -136,11 +138,11 @@ def render():
                 st.markdown("##### 各宿舍年度收支詳情 (所選雇主)")
                 display_df_annual = finance_df_annual.copy()
                 display_df_annual['淨損益'] = (display_df_annual['收入(員工月費)'] + display_df_annual['分攤其他收入']) - \
-                                            (display_df_annual['我司分攤月租'] + display_df_annual['我司分攤雜費'] + display_df_annual['我司分攤攤銷'])
+                                            (display_df_annual['我司分攤合約費'] + display_df_annual['我司分攤雜費'] + display_df_annual['我司分攤攤銷'])
                 
                 cols_to_display_annual = [
                     "宿舍地址", "淨損益", "收入(員工月費)", "分攤其他收入", 
-                    "我司分攤月租", "我司分攤雜費", "我司分攤攤銷"
+                    "我司分攤合約費", "我司分攤雜費", "我司分攤攤銷"
                 ]
                 
                 cols_to_display_annual_exist = [col for col in cols_to_display_annual if col in display_df_annual.columns]

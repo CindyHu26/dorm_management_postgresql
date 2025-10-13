@@ -34,7 +34,7 @@ def render():
     vendors = vendor_model.get_vendors_for_view()
     vendor_options = {v['id']: f"{v['服務項目']} - {v['廠商名稱']}" for _, v in vendors.iterrows()} if not vendors.empty else {}
     
-    status_options = ["待處理", "進行中", "待付款", "已完成"]
+    status_options = ["待處理", "待尋廠商", "進行中", "待付款", "已完成"]
     item_type_options = ["維修", "定期保養", "更換耗材", "水電", "包通", "飲水機", "冷氣", "消防", "金城", "監視器", "水質檢測", "清運", "裝潢", "其他", "其他...(手動輸入)"]
 
     # --- 新增紀錄 ---
@@ -44,7 +44,6 @@ def render():
             c1, c2, c3 = st.columns(3)
             dorm_id = c1.selectbox("宿舍地址*", options=list(dorm_options.keys()), format_func=lambda x: dorm_options.get(x, "未選擇"), index=None, placeholder="請選擇宿舍...")
             
-            # 動態載入所選宿舍的設備
             equipment_in_dorm = equipment_model.get_equipment_for_dorm_as_df(dorm_id) if dorm_id else pd.DataFrame()
             equip_options = {row['id']: f"{row['設備名稱']} ({row.get('位置', 'N/A')})" for _, row in equipment_in_dorm.iterrows()} if not equipment_in_dorm.empty else {}
             
@@ -69,10 +68,12 @@ def render():
             )
             
             st.subheader("廠商與進度")
-            c6, c7, c8 = st.columns(3)
+            c6, c7, c8, c9_status = st.columns(4)
             vendor_id = c6.selectbox("維修廠商", options=[None] + list(vendor_options.keys()), format_func=lambda x: "未指定" if x is None else vendor_options.get(x))
             contacted_vendor_date = c7.date_input("聯絡廠商日期", value=None)
             completion_date = c8.date_input("廠商回報完成日期", value=None)
+            status = c9_status.selectbox("案件狀態*", options=status_options, help="若尚無合適廠商，請選擇「待尋廠商」以便追蹤。")
+
             key_info = st.text_input("鑰匙/備註 (如: 需房東帶、鑰匙在警衛室)")
             
             st.subheader("費用與款項")
@@ -107,6 +108,7 @@ def render():
                         'dorm_id': dorm_id, 
                         'equipment_id': equipment_id,
                         'vendor_id': vendor_id, 
+                        'status': status,
                         'notification_date': notification_date,
                         'reported_by': reported_by, 
                         'item_type': final_item_type, 
@@ -156,7 +158,11 @@ def render():
     st.markdown("---")
     st.subheader("編輯 / 刪除單筆維修紀錄")
     if not log_df.empty:
-        options_dict = {row['id']: f"ID:{row['id']} - {row['宿舍地址']} ({row['項目類型']})" for _, row in log_df.iterrows()}
+        # --- 【核心修改】更新下拉選單的顯示格式 ---
+        options_dict = {
+            row['id']: f"{row['通報日期']} - {row['細項說明']} ({row.get('內部提報人') or '無'})" 
+            for _, row in log_df.iterrows()
+        }
         selected_log_id = st.selectbox("選擇要操作的紀錄", options=[None] + list(options_dict.keys()), format_func=lambda x: "請選擇..." if x is None else options_dict.get(x), key="selectbox_log_selection")
 
         if selected_log_id:
@@ -253,6 +259,12 @@ def render():
                     if e_selected_item_type == "其他..." and not e_custom_item_type:
                         st.error("您選擇了「其他...」，請務必填寫「自訂項目類型」！")
                     else:
+                        final_status = e_status
+                        pre_completion_states = ["待處理", "待尋廠商", "進行中"]
+                        if e_completion_date and (details.get('status') in pre_completion_states):
+                            final_status = "待付款"
+                            st.toast("偵測到已填寫完成日期，案件狀態將自動更新為「待付款」。")
+
                         final_file_paths = [p for p in existing_files if p not in files_to_delete]
                         if new_files:
                             file_info_dict = {
@@ -267,7 +279,8 @@ def render():
 
                         update_data = {
                             'equipment_id': e_equipment_id,
-                            'status': e_status, 'vendor_id': e_vendor_id, 'notification_date': e_notification_date,
+                            'status': final_status,
+                            'vendor_id': e_vendor_id, 'notification_date': e_notification_date,
                             'reported_by': e_reported_by, 'item_type': e_final_item_type, 'description': e_description,
                             'contacted_vendor_date': e_contacted_vendor_date, 'completion_date': e_completion_date,
                             'key_info': e_key_info, 'cost': e_cost, 'payer': e_payer, 'invoice_date': e_invoice_date,
@@ -284,7 +297,23 @@ def render():
                         else:
                             st.error(message)
             
-            # --- (財務與刪除區塊維持不變) ---
+            st.markdown("---")
+            st.markdown("##### 結案操作")
+            
+            if details.get('status') == '待付款':
+                st.info("確認款項支付後，請點擊下方按鈕將案件結案。")
+                if st.button("✓ 標示為已付款並結案", type="primary"):
+                    success, message = maintenance_model.mark_as_paid_and_complete(selected_log_id)
+                    if success:
+                        st.success(message)
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(message)
+            else:
+                st.write("需將案件狀態設為「待付款」才能執行結案操作。")
+
+
             st.markdown("---")
             st.markdown("##### 財務操作")
             if details.get('is_archived_as_expense'):

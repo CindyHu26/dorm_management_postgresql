@@ -1,3 +1,5 @@
+# 檔案路徑: data_models/employer_dashboard_model.py
+
 import pandas as pd
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
@@ -116,14 +118,13 @@ def get_employer_financial_summary(employer_names: list, year_month: str):
             DormMonthlyExpenses AS (
                  SELECT
                     d.id as dorm_id, d.original_address,
-                    COALESCE(l.contract_expense, 0) AS contract_expense,,
+                    COALESCE(l.contract_expense, 0) AS contract_expense,
                     COALESCE(pu.pass_through_expense, 0) as pass_through_expense,
                     COALESCE(pu.company_expense, 0) as company_expense,
                     COALESCE(ae.total_amortized, 0) AS amortized_expense,
                     COALESCE(oi.total_other_income, 0) AS other_income
                 FROM "Dormitories" d
                 LEFT JOIN (
-                    -- 將所有合約費用加總
                     SELECT l.dorm_id, SUM(l.monthly_rent) as contract_expense
                     FROM "Leases" l
                     JOIN "Dormitories" d_filter ON l.dorm_id = d_filter.id
@@ -155,7 +156,7 @@ def get_employer_financial_summary(employer_names: list, year_month: str):
                 dme.original_address AS "宿舍地址",
                 dp.employer_income::int AS "收入(員工月費)",
                 ROUND(dme.other_income * dp.proration_ratio)::int AS "分攤其他收入",
-                ROUND(dme.contract_expense * dp.proration_ratio)::int AS "我司分攤合約費", -- 改名
+                ROUND(dme.contract_expense * dp.proration_ratio)::int AS "我司分攤合約費",
                 ROUND((dme.company_expense + dme.pass_through_expense) * dp.proration_ratio)::int AS "我司分攤雜費",
                 ROUND(dme.amortized_expense * dp.proration_ratio)::int AS "我司分攤攤銷"
             FROM DormProration dp
@@ -267,7 +268,7 @@ def get_employer_financial_summary_annual(employer_names: list, year: int):
                 d.original_address AS "宿舍地址",
                 dap.employer_annual_income::int AS "收入(員工月費)",
                 COALESCE(ROUND(aoi.total_income * dap.proration_ratio), 0)::int AS "分攤其他收入",
-                COALESCE(ROUND(ar.total_rent * dap.proration_ratio), 0)::int AS "我司分攤月租",
+                COALESCE(ROUND(ar.total_rent * dap.proration_ratio), 0)::int AS "我司分攤合約費",
                 COALESCE(ROUND(au.total_utils * dap.proration_ratio), 0)::int AS "我司分攤雜費",
                 COALESCE(ROUND(aa.total_amort * dap.proration_ratio), 0)::int AS "我司分攤攤銷"
             FROM DormAnnualProration dap
@@ -353,7 +354,6 @@ def get_employer_financial_details_for_dorm(employer_names: list, dorm_id: int, 
             WITH DateParams AS (
                 SELECT %(start_date)s::date as start_date, %(end_date)s::date as end_date
             )
-            -- 【核心修改】從 Leases 表中讀取 contract_item
             SELECT 
                 l.contract_item as "費用項目",
                 ROUND(l.monthly_rent * ((LEAST(COALESCE(l.lease_end_date, dp.end_date), dp.end_date)::date - GREATEST(l.lease_start_date, dp.start_date)::date + 1) / 30.4375))::numeric as "原始總額",

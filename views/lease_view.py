@@ -28,9 +28,9 @@ def render():
             
             # --- 新增廠商選擇器和備註欄位 ---
             c1_item, c2_item, c3_item = st.columns(3) 
-            item_options = ["房租", "清運費", "其他...(手動輸入)"]
+            item_options = ["房租", "清運費", "其他(手動輸入)"]
             selected_item = c1_item.selectbox("合約項目*", options=item_options)
-            custom_item = c1_item.text_input("自訂項目名稱", help="若上方選擇「其他...」，請在此處填寫")
+            custom_item = c1_item.text_input("自訂項目名稱", help="若上方選擇「其他(手動輸入)」，請在此處填寫")
             
             monthly_rent = c2_item.number_input("每月固定金額*", min_value=0, step=1000)
 
@@ -51,7 +51,7 @@ def render():
 
             submitted = st.form_submit_button("儲存新合約")
             if submitted:
-                final_item = custom_item if selected_item == "其他..." and custom_item else selected_item
+                final_item = custom_item if selected_item == "其他(手動輸入)" and custom_item else selected_item
                 if not final_item:
                     st.error("「合約項目」為必填欄位！")
                 else:
@@ -131,12 +131,12 @@ def render():
                     # --- 新增廠商和備註的編輯欄位 ---
                     ec1_item, ec2_item, ec3_item = st.columns(3) # 改為 3 欄
                     current_item = lease_details.get('contract_item', '')
-                    item_options = ["房租", "清運費", "其他...(手動輸入)"] # 確保 item_options 存在
+                    item_options = ["房租", "清運費", "其他(手動輸入)"] # 確保 item_options 存在
                     if current_item in item_options:
                         default_index = item_options.index(current_item)
                         default_custom = ""
                     else:
-                        default_index = item_options.index("其他...")
+                        default_index = item_options.index("其他(手動輸入)")
                         default_custom = current_item
                     
                     e_selected_item = ec1_item.selectbox("合約項目*", options=item_options, index=default_index)
@@ -173,7 +173,7 @@ def render():
                         if not clear_end_date:
                             final_end_date = str(e_lease_end_date) if e_lease_end_date else None
                         
-                        e_final_item = e_custom_item if e_selected_item == "其他..." and e_custom_item else e_selected_item
+                        e_final_item = e_custom_item if e_selected_item == "其他(手動輸入)" and e_custom_item else e_selected_item
                         
                         # --- 將新欄位加入 updated_details 字典 ---
                         updated_details = {

@@ -1,3 +1,5 @@
+# 檔案路徑: data_models/single_dorm_analyzer.py
+
 import pandas as pd
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
@@ -366,9 +368,9 @@ def get_monthly_financial_trend(dorm_id: int):
                 FROM "OtherIncome" WHERE dorm_id = %(dorm_id)s GROUP BY 1
             ),
             -- 將 MonthlyExpenses 拆分為三個獨立的 CTE
-            MonthlyContract AS
+            MonthlyContract AS (
                 SELECT TO_CHAR(generate_series(l.lease_start_date, COALESCE(l.lease_end_date, CURRENT_DATE), '1 month'::interval)::date, 'YYYY-MM') as year_month,
-                       SUM(l.monthly_rent) as contract_expense -- 從 AVG 改為 SUM 以處理多筆合約
+                       SUM(l.monthly_rent) as contract_expense
                 FROM "Leases" l JOIN "Dormitories" d ON l.dorm_id = d.id
                 WHERE l.dorm_id = %(dorm_id)s AND d.rent_payer = '我司'
                 GROUP BY 1
@@ -392,7 +394,7 @@ def get_monthly_financial_trend(dorm_id: int):
             SELECT
                 ms.year_month AS "月份",
                 COALESCE(mi.total_income, 0) + COALESCE(omi.total_other_income, 0) AS "總收入",
-                COALESCE(mc.contract_expense, 0) AS "長期合約支出", -- 改名
+                COALESCE(mc.contract_expense, 0) AS "長期合約支出",
                 COALESCE(mu.utility_expense, 0) AS "變動雜費",
                 COALESCE(ma.amortized_expense, 0) AS "長期攤銷",
                 (COALESCE(mc.contract_expense, 0) + COALESCE(mu.utility_expense, 0) + COALESCE(ma.amortized_expense, 0)) AS "總支出",
@@ -400,17 +402,17 @@ def get_monthly_financial_trend(dorm_id: int):
             FROM MonthSeries ms
             LEFT JOIN MonthlyIncome mi ON ms.year_month = mi.year_month
             LEFT JOIN OtherMonthlyIncome omi ON ms.year_month = omi.year_month
-            LEFT JOIN MonthlyContract mc ON ms.year_month = mc.year_month -- 改名
+            LEFT JOIN MonthlyContract mc ON ms.year_month = mc.year_month
             LEFT JOIN MonthlyUtilities mu ON ms.year_month = mu.year_month
             LEFT JOIN MonthlyAmortized ma ON ms.year_month = ma.year_month
             ORDER BY ms.year_month;
         """
         df = _execute_query_to_dataframe(conn, query, {"dorm_id": dorm_id})
         if not df.empty:
-            # 將所有數字欄位轉換為整數
-            num_cols = ["總收入", "月租支出", "變動雜費", "長期攤銷", "總支出", "淨損益"]
+            num_cols = ["總收入", "長期合約支出", "變動雜費", "長期攤銷", "總支出", "淨損益"]
             for col in num_cols:
-                df[col] = df[col].astype(float).round().astype(int)
+                if col in df.columns: # 檢查欄位是否存在
+                    df[col] = df[col].astype(float).round().astype(int)
         return df
 
     finally:
@@ -438,7 +440,7 @@ def calculate_financial_summary_for_period(dorm_id: int, start_date: date, end_d
         avg_income = period_df['總收入'].mean()
         avg_expense = period_df['總支出'].mean()
         avg_profit_loss = period_df['淨損益'].mean()
-        avg_contract = period_df['長期合約支出'].mean() # 改名
+        avg_contract = period_df['長期合約支出'].mean()
         avg_utilities = period_df['變動雜費'].mean()
         avg_amortized = period_df['長期攤銷'].mean()
 

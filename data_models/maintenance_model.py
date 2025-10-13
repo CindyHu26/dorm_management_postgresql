@@ -224,3 +224,22 @@ def get_unfinished_maintenance_logs():
         return _execute_query_to_dataframe(conn, query)
     finally:
         if conn: conn.close()
+
+def mark_as_paid_and_complete(log_id: int):
+    """將指定的維修紀錄狀態直接更新為「已完成」。"""
+    conn = database.get_db_connection()
+    if not conn: 
+        return False, "資料庫連線失敗。"
+    try:
+        with conn.cursor() as cursor:
+            # 簡單、直接地更新狀態
+            cursor.execute('UPDATE "MaintenanceLog" SET status = %s WHERE id = %s', ('已完成', log_id))
+        conn.commit()
+        return True, "案件已成功標示為完成並結案。"
+    except Exception as e:
+        if conn: 
+            conn.rollback()
+        return False, f"結案時發生錯誤: {e}"
+    finally:
+        if conn: 
+            conn.close()
