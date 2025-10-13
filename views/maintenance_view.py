@@ -160,7 +160,7 @@ def render():
     if not log_df.empty:
         # --- 【核心修改】更新下拉選單的顯示格式 ---
         options_dict = {
-            row['id']: f"{row['通報日期']} - {row['細項說明']} ({row.get('內部提報人') or '無'})" 
+            row['id']: f"{row['通報日期']} {row.get('內部提報人', 'N/A')}:{row['宿舍地址']}-{row['細項說明']}" 
             for _, row in log_df.iterrows()
         }
         selected_log_id = st.selectbox("選擇要操作的紀錄", options=[None] + list(options_dict.keys()), format_func=lambda x: "請選擇..." if x is None else options_dict.get(x), key="selectbox_log_selection")
@@ -279,7 +279,7 @@ def render():
 
                         update_data = {
                             'equipment_id': e_equipment_id,
-                            'status': final_status,
+                            'status': final_status, 
                             'vendor_id': e_vendor_id, 'notification_date': e_notification_date,
                             'reported_by': e_reported_by, 'item_type': e_final_item_type, 'description': e_description,
                             'contacted_vendor_date': e_contacted_vendor_date, 'completion_date': e_completion_date,
@@ -312,7 +312,6 @@ def render():
                         st.error(message)
             else:
                 st.write("需將案件狀態設為「待付款」才能執行結案操作。")
-
 
             st.markdown("---")
             st.markdown("##### 財務操作")
