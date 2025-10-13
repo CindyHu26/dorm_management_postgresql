@@ -23,12 +23,14 @@ def get_dorm_basic_info(dorm_id: int):
     if not conn: return None
     try:
         with conn.cursor() as cursor:
+            # --- 【核心修改】在 JOIN Leases 的條件中，新增 contract_item = '房租' ---
             query = """
                 SELECT 
                     d.primary_manager, d.rent_payer, d.utilities_payer,
                     l.lease_start_date, l.lease_end_date, l.monthly_rent
                 FROM "Dormitories" d
                 LEFT JOIN "Leases" l ON d.id = l.dorm_id
+                    AND l.contract_item = '房租' -- <-- 新增此行，明確指定只要房租合約
                     AND l.lease_start_date <= CURRENT_DATE
                     AND (l.lease_end_date IS NULL OR l.lease_end_date >= CURRENT_DATE)
                 WHERE d.id = %s
@@ -367,7 +369,6 @@ def get_monthly_financial_trend(dorm_id: int):
                 SELECT TO_CHAR(transaction_date, 'YYYY-MM') as year_month, SUM(amount) as total_other_income
                 FROM "OtherIncome" WHERE dorm_id = %(dorm_id)s GROUP BY 1
             ),
-            -- 將 MonthlyExpenses 拆分為三個獨立的 CTE
             MonthlyContract AS (
                 SELECT TO_CHAR(generate_series(l.lease_start_date, COALESCE(l.lease_end_date, CURRENT_DATE), '1 month'::interval)::date, 'YYYY-MM') as year_month,
                        SUM(l.monthly_rent) as contract_expense
@@ -411,7 +412,7 @@ def get_monthly_financial_trend(dorm_id: int):
         if not df.empty:
             num_cols = ["總收入", "長期合約支出", "變動雜費", "長期攤銷", "總支出", "淨損益"]
             for col in num_cols:
-                if col in df.columns: # 檢查欄位是否存在
+                if col in df.columns: 
                     df[col] = df[col].astype(float).round().astype(int)
         return df
 
@@ -448,7 +449,7 @@ def calculate_financial_summary_for_period(dorm_id: int, start_date: date, end_d
             "avg_monthly_income": int(avg_income),
             "avg_monthly_expense": int(avg_expense),
             "avg_monthly_profit_loss": int(avg_profit_loss),
-            "avg_monthly_contract": int(avg_contract),
+            "avg_monthly_contract": int(avg_contract), # 修正: 保持一致性
             "avg_monthly_utilities": int(avg_utilities),
             "avg_monthly_amortized": int(avg_amortized),
         }
