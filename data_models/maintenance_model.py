@@ -243,3 +243,48 @@ def mark_as_paid_and_complete(log_id: int):
     finally:
         if conn: 
             conn.close()
+
+def get_archivable_logs():
+    """查詢所有符合轉入年度費用條件的維修紀錄。"""
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        query = """
+            SELECT 
+                l.id, 
+                d.original_address AS "宿舍地址",
+                l.notification_date AS "通報日期",
+                l.item_type AS "項目類型",
+                l.description AS "細項說明",
+                l.cost AS "維修費用",
+                v.vendor_name AS "維修廠商"
+            FROM "MaintenanceLog" l
+            JOIN "Dormitories" d ON l.dorm_id = d.id
+            LEFT JOIN "Vendors" v ON l.vendor_id = v.id
+            WHERE 
+                l.status IN ('待付款', '已完成')
+                AND l.cost > 0
+                AND l.payer = '我司'
+                AND l.is_archived_as_expense = FALSE
+            ORDER BY l.notification_date ASC;
+        """
+        return _execute_query_to_dataframe(conn, query)
+    finally:
+        if conn: conn.close()
+
+def batch_archive_logs(log_ids: list):
+    """根據提供的 ID 列表，批次將維修紀錄轉為年度費用。"""
+    if not log_ids:
+        return 0, 0
+        
+    success_count = 0
+    failure_count = 0
+    for log_id in log_ids:
+        # 直接複用我們已經寫好的單筆歸檔函式
+        success, _ = archive_log_as_annual_expense(log_id)
+        if success:
+            success_count += 1
+        else:
+            failure_count += 1
+            
+    return success_count, failure_count

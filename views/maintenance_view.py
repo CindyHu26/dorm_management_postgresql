@@ -35,7 +35,7 @@ def render():
     vendor_options = {v['id']: f"{v['服務項目']} - {v['廠商名稱']}" for _, v in vendors.iterrows()} if not vendors.empty else {}
     
     status_options = ["待處理", "待尋廠商", "進行中", "待付款", "已完成"]
-    item_type_options = ["維修", "定期保養", "更換耗材", "水電", "包通", "飲水機", "冷氣", "消防", "金城", "監視器", "水質檢測", "清運", "裝潢", "其他", "其他...(手動輸入)"]
+    item_type_options = ["維修", "定期保養", "更換耗材", "水電", "包通", "飲水機", "冷氣", "消防", "金城", "監視器", "水質檢測", "清運", "裝潢", "其他", "其他(手動輸入)"]
 
     # --- 新增紀錄 ---
     with st.expander("➕ 新增維修紀錄"):
@@ -57,7 +57,7 @@ def render():
             
             with c4:
                 selected_item_type = st.selectbox("項目類型", options=item_type_options)
-                custom_item_type = st.text_input("自訂項目類型", help="若上方選擇「其他...」，請在此處填寫")
+                custom_item_type = st.text_input("自訂項目類型", help="若上方選擇「其他(手動輸入)」，請在此處填寫")
             
             description = c5.text_area("修理細項說明*")
             
@@ -85,12 +85,12 @@ def render():
             notes = st.text_area("其他備註")
 
             if st.form_submit_button("儲存紀錄"):
-                final_item_type = custom_item_type if selected_item_type == "其他..." else selected_item_type
+                final_item_type = custom_item_type if selected_item_type == "其他(手動輸入)" else selected_item_type
                 
                 if not dorm_id or not description:
                     st.error("「宿舍地址」和「修理細項說明」為必填欄位！")
-                elif selected_item_type == "其他..." and not custom_item_type:
-                    st.error("您選擇了「其他...」，請務必填寫「自訂項目類型」！")
+                elif selected_item_type == "其他(手動輸入)" and not custom_item_type:
+                    st.error("您選擇了「其他(手動輸入)」，請務必填寫「自訂項目類型」！")
                 else:
                     file_paths = []
                     if uploaded_files:
@@ -217,10 +217,10 @@ def render():
                         default_index = item_type_options.index(current_item_type)
                         default_custom_value = ""
                     else:
-                        default_index = item_type_options.index("其他...")
+                        default_index = item_type_options.index("其他(手動輸入)")
                         default_custom_value = current_item_type
                     e_selected_item_type = st.selectbox("項目類型", options=item_type_options, index=default_index, key=f"edit_item_type_{selected_log_id}")
-                    e_custom_item_type = st.text_input("自訂項目類型", value=default_custom_value, help="若上方選擇「其他...」，請在此處填寫", key=f"edit_custom_item_type_{selected_log_id}")
+                    e_custom_item_type = st.text_input("自訂項目類型", value=default_custom_value, help="若上方選擇「其他(手動輸入)」，請在此處填寫", key=f"edit_custom_item_type_{selected_log_id}")
 
                 e_description = edc2.text_area("修理細項說明", value=details.get('description'))
                 
@@ -254,10 +254,10 @@ def render():
                 e_notes = st.text_area("其他備註", value=details.get('notes'))
 
                 if st.form_submit_button("儲存變更"):
-                    e_final_item_type = e_custom_item_type if e_selected_item_type == "其他..." else e_selected_item_type
+                    e_final_item_type = e_custom_item_type if e_selected_item_type == "其他(手動輸入)" else e_selected_item_type
                     
-                    if e_selected_item_type == "其他..." and not e_custom_item_type:
-                        st.error("您選擇了「其他...」，請務必填寫「自訂項目類型」！")
+                    if e_selected_item_type == "其他(手動輸入)" and not e_custom_item_type:
+                        st.error("您選擇了「其他(手動輸入)」，請務必填寫「自訂項目類型」！")
                     else:
                         final_status = e_status
                         pre_completion_states = ["待處理", "待尋廠商", "進行中"]
@@ -342,3 +342,46 @@ def render():
                         st.error(message)
     else:
         st.info("目前沒有可供操作的紀錄。")
+
+
+    st.markdown("---")
+    st.subheader("批次轉入年度費用")
+    st.info("此區塊會列出所有已完成或待付款，且尚未歸檔的「我司」支付項目，方便您一次性轉入年度攤銷。")
+
+    @st.cache_data
+    def get_archivable_data():
+        return maintenance_model.get_archivable_logs()
+
+    archivable_df = get_archivable_data()
+
+    if archivable_df.empty:
+        st.success("目前沒有符合條件可批次轉入的維修費用。")
+    else:
+        # 使用 st.data_editor 讓 DataFrame 可以被勾選
+        archivable_df_with_selection = archivable_df.copy()
+        archivable_df_with_selection.insert(0, "選取", False)
+        
+        edited_df = st.data_editor(
+            archivable_df_with_selection,
+            hide_index=True,
+            column_config={"選取": st.column_config.CheckboxColumn(required=True)},
+            disabled=archivable_df.columns
+        )
+        
+        selected_rows = edited_df[edited_df.選取]
+        
+        if st.button("🚀 批次轉入選取的項目", type="primary", disabled=selected_rows.empty):
+            ids_to_archive = selected_rows['id'].tolist()
+            with st.spinner(f"正在批次處理 {len(ids_to_archive)} 筆資料..."):
+                success_count, failure_count = maintenance_model.batch_archive_logs(ids_to_archive)
+            
+            if success_count > 0:
+                st.success(f"成功將 {success_count} 筆費用轉入年度攤銷！")
+            if failure_count > 0:
+                st.error(f"有 {failure_count} 筆費用處理失敗，請檢查後台日誌。")
+            
+            # 清除快取以刷新頁面
+            st.cache_data.clear()
+            st.rerun()
+
+    st.markdown("---")
