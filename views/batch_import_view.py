@@ -413,55 +413,98 @@ def render():
 
     st.markdown("---")
     with st.container(border=True):
-        st.subheader("🛠️ 維修紀錄匯入")
-        st.info("用於將過往的維修案件紀錄，從 Excel 檔案批次匯入系統。")
+        st.subheader("🛠️ 維修紀錄批次處理")
         
-        maintenance_template_df = pd.DataFrame({
-            "收到通知日期": [date.today().strftime('%Y-%m-%d')],
-            "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號"],
-            "修理細項說明": ["A01房門鎖損壞"],
-            "項目類型": ["門窗"],
-            "維修廠商": ["範例廠商-金冠不鏽鋼"],
-            "公司內部通知人": ["王大明"],
-            "聯絡廠商日期": [None],
-            "鑰匙": ["警衛室領取"],
-            "廠商回報完成日期": [None],
-            "付款人": ["我司"],
-            "維修費用": [1500],
-            "請款日期": [None],
-            "發票": ["抬頭: XXX, 統編: 12345678"],
-            "備註": ["房客回報"],
-            "狀態": ["待處理"]
-        })
-        st.download_button(
-            label="📥 下載維修紀錄匯入範本",
-            data=to_excel(maintenance_template_df),
-            file_name="maintenance_import_template.xlsx"
-        )
+        # --- 使用頁籤來分隔兩個功能 ---
+        tab1, tab2 = st.tabs(["批次新增", "批次更新"])
 
-        uploaded_maintenance_file = st.file_uploader("上傳【維修紀錄】Excel 檔案", type=["xlsx", "xls"], key="maintenance_uploader")
+        with tab1:
+            st.info("用於將【全新】的維修案件紀錄，從 Excel 檔案批次匯入系統。若紀錄已存在將會自動跳過。")
+            
+            maintenance_template_df = pd.DataFrame({
+                "收到通知日期": [date.today().strftime('%Y-%m-%d')],
+                "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號"],
+                "修理細項說明": ["A01房門鎖損壞"],
+                "項目類型": ["門窗"],
+                "維修廠商": ["範例廠商-金冠不鏽鋼"],
+                "公司內部通知人": ["王大明"],
+                "聯絡廠商日期": [None],
+                "鑰匙": ["警衛室領取"],
+                "廠商回報完成日期": [None],
+                "付款人": ["我司"],
+                "維修費用": [1500],
+                "請款日期": [None],
+                "發票": ["抬頭: XXX, 統編: 12345678"],
+                "備註": ["房客回報"],
+                "狀態": ["待處理"]
+            })
+            st.download_button(
+                label="📥 下載新增維修紀錄範本",
+                data=to_excel(maintenance_template_df),
+                file_name="maintenance_import_template.xlsx"
+            )
 
-        if uploaded_maintenance_file:
-            try:
-                df_maintenance = pd.read_excel(uploaded_maintenance_file)
-                st.markdown("##### 檔案內容預覽：")
-                st.dataframe(df_maintenance.head())
-                if st.button("🚀 開始匯入維修紀錄", type="primary", key="maintenance_import_btn"):
-                    with st.spinner("正在處理與匯入維修紀錄..."):
-                        success, failed_df = importer_model.batch_import_maintenance_logs(df_maintenance)
-                    st.success(f"匯入完成！成功處理 {success} 筆維修紀錄。")
-                    if not failed_df.empty:
-                        st.error(f"有 {len(failed_df)} 筆資料匯入失敗：")
-                        st.dataframe(failed_df)
-                        st.download_button(
-                            label="📥 下載失敗紀錄報告",
-                            data=to_excel(failed_df),
-                            file_name="maintenance_import_failed_report.xlsx",
-                            key="failed_maintenance_download"
-                        )
-            except Exception as e:
-                st.error(f"處理檔案時發生錯誤：{e}")
+            uploaded_maintenance_file = st.file_uploader("上傳【新維修紀錄】Excel 檔案", type=["xlsx", "xls"], key="maintenance_uploader")
 
+            if uploaded_maintenance_file:
+                try:
+                    df_maintenance = pd.read_excel(uploaded_maintenance_file)
+                    st.markdown("##### 檔案內容預覽：")
+                    st.dataframe(df_maintenance.head())
+                    if st.button("🚀 開始新增維修紀錄", type="primary", key="maintenance_import_btn"):
+                        with st.spinner("正在處理與匯入維修紀錄..."):
+                            success, failed_df = importer_model.batch_insert_maintenance_logs(df_maintenance)
+                        st.success(f"匯入完成！成功新增 {success} 筆維修紀錄。")
+                        if not failed_df.empty:
+                            st.error(f"有 {len(failed_df)} 筆資料匯入失敗：")
+                            st.dataframe(failed_df)
+                            st.download_button(
+                                label="📥 下載失敗紀錄報告",
+                                data=to_excel(failed_df),
+                                file_name="maintenance_import_failed_report.xlsx",
+                                key="failed_maintenance_download"
+                            )
+                except Exception as e:
+                    st.error(f"處理檔案時發生錯誤：{e}")
+        
+        with tab2:
+            st.info("用於批次【更新】費用、發票等後續資訊。請先下載目前的維修紀錄，在 Excel 中填寫或修改資料後，再重新上傳。")
+
+            if st.button("📥 下載待更新的維修紀錄檔"):
+                with st.spinner("正在產生檔案..."):
+                    df_to_export = importer_model.export_maintenance_logs_for_update()
+                if df_to_export.empty:
+                    st.warning("目前沒有可供更新的維修紀錄。")
+                else:
+                    st.download_button(
+                        label="✅ 檔案已產生！點此下載",
+                        data=to_excel(df_to_export),
+                        file_name=f"maintenance_update_export_{date.today().strftime('%Y%m%d')}.xlsx"
+                    )
+
+            uploaded_update_file = st.file_uploader("上傳【已填寫的維修紀錄】Excel 檔案", type=["xlsx", "xls"], key="maintenance_updater")
+
+            if uploaded_update_file:
+                try:
+                    df_update = pd.read_excel(uploaded_update_file)
+                    st.markdown("##### 檔案內容預覽：")
+                    st.dataframe(df_update.head())
+                    if st.button("🚀 開始更新維修紀錄", type="primary", key="maintenance_update_btn"):
+                        with st.spinner("正在處理與更新維修紀錄..."):
+                            success, failed_df = importer_model.batch_update_maintenance_logs(df_update)
+                        st.success(f"更新完成！成功處理 {success} 筆維修紀錄。")
+                        if not failed_df.empty:
+                            st.error(f"有 {len(failed_df)} 筆資料更新失敗：")
+                            st.dataframe(failed_df)
+                            st.download_button(
+                                label="📥 下載失敗紀錄報告",
+                                data=to_excel(failed_df),
+                                file_name="maintenance_update_failed_report.xlsx",
+                                key="failed_maintenance_update_download"
+                            )
+                except Exception as e:
+                    st.error(f"處理檔案時發生錯誤：{e}")
+    st.markdown("---")
     with st.container(border=True):
         st.subheader("⚙️ 設備匯入")
         st.info("用於批次新增或更新宿舍內的各項設備資產。系統會以「宿舍地址 + 設備名稱 + 位置」來判斷是否為同一筆資料。")

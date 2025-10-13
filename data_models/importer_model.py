@@ -921,9 +921,11 @@ def batch_import_vendors(df: pd.DataFrame):
             
     return success_count, pd.DataFrame(failed_records)
 
-def batch_import_maintenance_logs(df: pd.DataFrame):
+# 【核心修改 1】新增一個專門用來「新增」維修紀錄的函式
+def batch_insert_maintenance_logs(df: pd.DataFrame):
     """
-    【新功能】批次匯入維修追蹤紀錄。
+    批次【新增】維修追蹤紀錄。
+    如果紀錄已存在 (根據內容判斷)，則會跳過。
     """
     success_count = 0
     failed_records = []
@@ -935,7 +937,6 @@ def batch_import_maintenance_logs(df: pd.DataFrame):
 
     try:
         with conn.cursor() as cursor:
-            # 預載對照表
             dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, original_address, normalized_address FROM "Dormitories"')
             original_addr_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
             normalized_addr_map = {d['normalized_address']: d['id'] for _, d in dorms_df.iterrows()}
@@ -945,7 +946,6 @@ def batch_import_maintenance_logs(df: pd.DataFrame):
 
             for index, row in df.iterrows():
                 try:
-                    # --- 查找宿舍 ID ---
                     address = row.get('宿舍地址')
                     if not address or pd.isna(address):
                         raise ValueError("宿舍地址為空")
@@ -954,18 +954,15 @@ def batch_import_maintenance_logs(df: pd.DataFrame):
                     if not dorm_id:
                         raise ValueError(f"找不到宿舍地址: '{addr_stripped}'")
 
-                    # --- 查找廠商 ID (選填) ---
                     vendor_id = None
                     vendor_name = row.get('維修廠商')
                     if pd.notna(vendor_name) and str(vendor_name).strip():
                         vendor_id = vendor_map.get(str(vendor_name).strip())
-                        # 如果找不到廠商，可以選擇報錯或忽略，這裡我們先忽略，讓紀錄可以先建立
 
-                    # --- 組合資料 ---
                     details = {
                         'dorm_id': dorm_id,
                         'vendor_id': vendor_id,
-                        'status': row.get('狀態', '已完成'), # 批次匯入的通常是舊資料，預設為已完成
+                        'status': row.get('狀態', '已完成'),
                         'notification_date': pd.to_datetime(row.get('收到通知日期')).date() if pd.notna(row.get('收到通知日期')) else None,
                         'reported_by': row.get('公司內部通知人'),
                         'item_type': row.get('項目類型'),
@@ -980,13 +977,11 @@ def batch_import_maintenance_logs(df: pd.DataFrame):
                         'notes': row.get('備註')
                     }
                     
-                    # 避免重複匯入簡單檢查
                     cursor.execute(
                         'SELECT id FROM "MaintenanceLog" WHERE dorm_id = %s AND description = %s AND notification_date = %s',
                         (details['dorm_id'], details['description'], details['notification_date'])
                     )
                     if cursor.fetchone():
-                        # 如果找到重複紀錄，可以選擇跳過
                         continue
 
                     columns = ', '.join(f'"{k}"' for k in details.keys())
@@ -1002,11 +997,118 @@ def batch_import_maintenance_logs(df: pd.DataFrame):
         conn.commit()
     except Exception as e:
         if conn: conn.rollback()
-        print(f"批次匯入維修紀錄時發生嚴重錯誤: {e}")
+        print(f"批次新增維修紀錄時發生嚴重錯誤: {e}")
     finally:
         if conn: conn.close()
             
     return success_count, pd.DataFrame(failed_records)
+
+# 【核心修改 2】將原函式更名，並專注於「更新」
+def batch_update_maintenance_logs(df: pd.DataFrame):
+    """
+    批次【更新】維修追蹤紀錄。
+    只會根據提供的 ID 更新現有紀錄，不會新增。
+    """
+    success_count = 0
+    failed_records = []
+    conn = database.get_db_connection()
+    if not conn:
+        error_df = df.copy()
+        error_df['錯誤原因'] = "無法連接到資料庫"
+        return 0, error_df
+
+    try:
+        with conn.cursor() as cursor:
+            vendors_df = _execute_query_to_dataframe(conn, 'SELECT id, vendor_name FROM "Vendors"')
+            vendor_map = {v['vendor_name']: v['id'] for _, v in vendors_df.iterrows()}
+
+            for index, row in df.iterrows():
+                try:
+                    log_id = int(pd.to_numeric(row.get('ID'), errors='coerce'))
+                    if not log_id:
+                        raise ValueError("Excel 中缺少 ID 欄位，無法進行更新。請下載最新的待更新檔案。")
+
+                    vendor_id = None
+                    vendor_name = row.get('維修廠商')
+                    if pd.notna(vendor_name) and str(vendor_name).strip():
+                        vendor_name_stripped = str(vendor_name).strip()
+                        vendor_id = vendor_map.get(vendor_name_stripped)
+
+                    details = {
+                        'vendor_id': vendor_id,
+                        'status': row.get('狀態'),
+                        'reported_by': row.get('公司內部通知人'),
+                        'item_type': row.get('項目類型'),
+                        'description': row.get('修理細項說明'),
+                        'contacted_vendor_date': pd.to_datetime(row.get('聯絡廠商日期')).date() if pd.notna(row.get('聯絡廠商日期')) else None,
+                        'key_info': row.get('鑰匙'),
+                        'completion_date': pd.to_datetime(row.get('廠商回報完成日期')).date() if pd.notna(row.get('廠商回報完成日期')) else None,
+                        'cost': int(pd.to_numeric(row.get('維修費用'), errors='coerce')) if pd.notna(row.get('維修費用')) else None,
+                        'payer': row.get('付款人'),
+                        'invoice_date': pd.to_datetime(row.get('請款日期')).date() if pd.notna(row.get('請款日期')) else None,
+                        'invoice_info': row.get('發票'),
+                        'notes': row.get('備註')
+                    }
+                    
+                    update_details = {k: v for k, v in details.items() if pd.notna(v)}
+
+                    if not update_details:
+                        continue
+
+                    fields = ', '.join([f'"{key}" = %s' for key in update_details.keys()])
+                    values = list(update_details.values()) + [log_id]
+                    sql = f'UPDATE "MaintenanceLog" SET {fields} WHERE id = %s'
+                    cursor.execute(sql, tuple(values))
+
+                    if cursor.rowcount == 0:
+                        raise ValueError(f"在資料庫中找不到對應的維修 ID: {log_id}")
+
+                    success_count += 1
+                except Exception as row_error:
+                    row['錯誤原因'] = str(row_error)
+                    failed_records.append(row)
+
+        conn.commit()
+    except Exception as e:
+        if conn: conn.rollback()
+        print(f"批次更新維修紀錄時發生嚴重錯誤: {e}")
+    finally:
+        if conn: conn.close()
+            
+    return success_count, pd.DataFrame(failed_records)
+
+def export_maintenance_logs_for_update():
+    """匯出所有尚未歸檔的維修紀錄，用於批次更新。"""
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        query = """
+            SELECT 
+                l.id AS "ID",
+                l.notification_date AS "收到通知日期",
+                d.original_address AS "宿舍地址",
+                l.description AS "修理細項說明",
+                l.item_type AS "項目類型",
+                v.vendor_name AS "維修廠商",
+                l.reported_by AS "公司內部通知人",
+                l.contacted_vendor_date AS "聯絡廠商日期",
+                l.key_info AS "鑰匙",
+                l.completion_date AS "廠商回報完成日期",
+                l.payer AS "付款人",
+                l.cost AS "維修費用",
+                l.invoice_date AS "請款日期",
+                l.invoice_info AS "發票",
+                l.notes AS "備註",
+                l.status AS "狀態"
+            FROM "MaintenanceLog" l
+            JOIN "Dormitories" d ON l.dorm_id = d.id
+            LEFT JOIN "Vendors" v ON l.vendor_id = v.id
+            WHERE l.is_archived_as_expense = FALSE
+            ORDER BY l.notification_date DESC;
+        """
+        return _execute_query_to_dataframe(conn, query)
+    finally:
+        if conn: conn.close()
 
 def batch_import_equipment(df: pd.DataFrame):
     """
