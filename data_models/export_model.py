@@ -1,3 +1,5 @@
+# data_models/export_model.py (修正版)
+
 import pandas as pd
 import os
 import gspread
@@ -25,7 +27,6 @@ def get_data_for_export():
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
-        # --- 核心修改點 ---
         query = """
             SELECT
                 d.primary_manager AS "主要管理人",
@@ -60,19 +61,20 @@ def get_equipment_for_export():
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
+        # --- 【核心修改】將 e.next_check_date 修正為 e.next_maintenance_date ---
         query = """
             SELECT
                 d.normalized_address AS "宿舍地址",
                 e.equipment_name AS "設備名稱",
                 e.location AS "位置",
-                TO_CHAR(e.next_check_date, 'YYYY-MM-DD') AS "下次更換/檢查日",
+                TO_CHAR(e.next_maintenance_date, 'YYYY-MM-DD') AS "下次更換/檢查日",
                 e.status AS "狀態",
                 e.report_path AS "文件路徑"
             FROM "DormitoryEquipment" e
             JOIN "Dormitories" d ON e.dorm_id = d.id
             WHERE d.primary_manager = '我司'
-              AND e.next_check_date IS NOT NULL
-            ORDER BY e.next_check_date ASC
+              AND e.next_maintenance_date IS NOT NULL
+            ORDER BY e.next_maintenance_date ASC
         """
         df = _execute_query_to_dataframe(conn, query)
         print(f"INFO: 查詢完成，共獲取 {len(df)} 筆設備資料。")
