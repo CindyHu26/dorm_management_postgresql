@@ -1,9 +1,10 @@
-# data_models/equipment_model.py
+# 檔案路徑: data_models/equipment_model.py
 
 import pandas as pd
 import database
 from datetime import date
 from dateutil.relativedelta import relativedelta
+from . import finance_model
 
 def _execute_query_to_dataframe(conn, query, params=None):
     """一個輔助函式，用來手動執行查詢並回傳 DataFrame。"""
@@ -17,22 +18,56 @@ def _execute_query_to_dataframe(conn, query, params=None):
         columns = [desc[0] for desc in cursor.description]
         return pd.DataFrame(records, columns=columns)
 
-def get_equipment_for_dorm_as_df(dorm_id: int):
-    """查詢指定宿舍下的所有設備。"""
+def get_equipment_for_view(filters: dict = None):
+    """【核心修改 1】查詢設備，並支援宿舍和分類的篩選。"""
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
         query = """
             SELECT 
-                id, equipment_name AS "設備名稱", equipment_category AS "分類", 
-                location AS "位置", brand_model AS "品牌型號",
-                next_maintenance_date AS "下次保養/檢查日",
-                status AS "狀態"
-            FROM "DormitoryEquipment"
-            WHERE dorm_id = %s
-            ORDER BY next_maintenance_date ASC NULLS LAST, equipment_name
+                e.id, 
+                d.original_address AS "宿舍地址",
+                e.equipment_name AS "設備名稱", 
+                e.equipment_category AS "分類", 
+                e.location AS "位置", 
+                e.brand_model AS "品牌型號",
+                e.next_maintenance_date AS "下次保養/檢查日",
+                e.status AS "狀態"
+            FROM "DormitoryEquipment" e
+            JOIN "Dormitories" d ON e.dorm_id = d.id
         """
-        return _execute_query_to_dataframe(conn, query, (dorm_id,))
+        params = []
+        where_clauses = []
+        
+        # 始終只顯示我司管理的宿舍設備
+        where_clauses.append("d.primary_manager = '我司'")
+
+        if filters:
+            if filters.get("dorm_id"):
+                where_clauses.append("e.dorm_id = %s")
+                params.append(filters["dorm_id"])
+            if filters.get("category"):
+                where_clauses.append("e.equipment_category = %s")
+                params.append(filters["category"])
+        
+        if where_clauses:
+            query += " WHERE " + " AND ".join(where_clauses)
+            
+        query += " ORDER BY d.original_address, e.equipment_category, e.equipment_name"
+        return _execute_query_to_dataframe(conn, query, params)
+    finally:
+        if conn: conn.close()
+
+def get_distinct_equipment_categories():
+    """【核心修改 2】獲取所有不重複的設備分類列表。"""
+    conn = database.get_db_connection()
+    if not conn: return []
+    try:
+        query = 'SELECT DISTINCT equipment_category FROM "DormitoryEquipment" WHERE equipment_category IS NOT NULL ORDER BY equipment_category'
+        with conn.cursor() as cursor:
+            cursor.execute(query)
+            records = cursor.fetchall()
+            return [row['equipment_category'] for row in records]
     finally:
         if conn: conn.close()
 
@@ -49,18 +84,36 @@ def get_single_equipment_details(record_id: int):
         if conn: conn.close()
 
 def add_equipment_record(details: dict):
-    """新增一筆設備紀錄。"""
+    """新增一筆設備紀錄，若有採購金額則同步新增一筆年度費用。"""
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed.", None
     try:
         with conn.cursor() as cursor:
+            purchase_cost = details.pop('purchase_cost', None)
+            
             columns = ', '.join(f'"{k}"' for k in details.keys())
             placeholders = ', '.join(['%s'] * len(details))
             sql = f'INSERT INTO "DormitoryEquipment" ({columns}) VALUES ({placeholders}) RETURNING id'
             cursor.execute(sql, tuple(details.values()))
             new_id = cursor.fetchone()['id']
+            
+            if purchase_cost and purchase_cost > 0:
+                payment_date = details.get('installation_date') or date.today()
+                expense_details = {
+                    "dorm_id": details['dorm_id'],
+                    "expense_item": f"設備採購-{details.get('equipment_name')}",
+                    "payment_date": payment_date,
+                    "total_amount": purchase_cost,
+                    "amortization_start_month": payment_date.strftime('%Y-%m'),
+                    "amortization_end_month": payment_date.strftime('%Y-%m'),
+                    "notes": f"來自設備紀錄ID:{new_id}"
+                }
+                success, message, _ = finance_model.add_annual_expense_record(expense_details)
+                if not success:
+                    raise Exception(f"設備已新增，但自動建立費用失敗: {message}")
+
         conn.commit()
-        return True, f"成功新增設備紀錄 (ID: {new_id})", new_id
+        return True, f"成功新增設備紀錄 (ID: {new_id})，並已同步建立費用。", new_id
     except Exception as e:
         if conn: conn.rollback()
         return False, f"新增設備紀錄時發生錯誤: {e}", None
@@ -107,7 +160,7 @@ def get_related_maintenance_logs(equipment_id: int):
     try:
         query = """
             SELECT 
-                l.id, -- 回傳 id 以便操作
+                l.id,
                 l.notification_date AS "通報日期",
                 l.item_type AS "項目類型",
                 l.description AS "細項說明",
@@ -153,7 +206,6 @@ def complete_maintenance_and_schedule_next(log_id: int):
     if not conn: return False, "資料庫連線失敗。"
     try:
         with conn.cursor() as cursor:
-            # 步驟 1: 取得維修紀錄和關聯的設備資訊
             cursor.execute("""
                 SELECT l.equipment_id, l.item_type, e.maintenance_interval_months
                 FROM "MaintenanceLog" l
@@ -164,10 +216,8 @@ def complete_maintenance_and_schedule_next(log_id: int):
 
             completion_date = date.today()
 
-            # 步驟 2: 更新維修紀錄狀態和完成日期
             cursor.execute("UPDATE \"MaintenanceLog\" SET status = '已完成', completion_date = %s WHERE id = %s", (completion_date, log_id))
 
-            # 如果沒有關聯設備，或這只是一次性維修，就到此為止
             if not info or not info['equipment_id']:
                 conn.commit()
                 return True, "維修紀錄已標示為完成。"
@@ -176,7 +226,6 @@ def complete_maintenance_and_schedule_next(log_id: int):
             interval = info['maintenance_interval_months']
             item_type = info['item_type']
             
-            # 步驟 3: 如果是「定期保養」或「更換耗材」，且設備有設定保養週期，則更新設備的下次保養日期
             if item_type in ["定期保養", "更換耗材"] and interval and interval > 0:
                 next_date = completion_date + relativedelta(months=interval)
                 cursor.execute(
