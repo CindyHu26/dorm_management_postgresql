@@ -65,7 +65,7 @@ PAGES = {
         "維修追蹤管理": maintenance_view,
         "資產與庫存管理": inventory_view,
         "長期合約管理": lease_view,
-        "長期合約總覽": contract_view,
+        "長期合約分項總覽": contract_view,
         "設備管理": equipment_view,
         "電水錶管理": meter_view,
         "廠商資料管理": vendor_view
