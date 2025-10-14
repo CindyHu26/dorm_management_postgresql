@@ -582,3 +582,30 @@ def get_bill_records_for_meter_as_df(meter_id: int):
         return _execute_query_to_dataframe(conn, query, (meter_id,))
     finally:
         if conn: conn.close()
+
+
+def delete_compliance_expense_record(compliance_id: int):
+    """
+    【交易】刪除一筆合規紀錄及其關聯的年度費用紀錄。
+    """
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗。"
+    try:
+        with conn.cursor() as cursor:
+            # 由於有外鍵關聯，我們先刪除參照別人的 AnnualExpenses 紀錄
+            cursor.execute('DELETE FROM "AnnualExpenses" WHERE compliance_record_id = %s', (compliance_id,))
+            
+            # 然後再刪除 ComplianceRecords 紀錄本身
+            cursor.execute('DELETE FROM "ComplianceRecords" WHERE id = %s', (compliance_id,))
+            
+            if cursor.rowcount == 0:
+                # 如果沒有任何紀錄被刪除，可能表示傳入的 ID 不存在
+                raise Exception("找不到指定的合規紀錄可刪除。")
+
+        conn.commit()
+        return True, "合規紀錄及其關聯費用已成功刪除。"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"刪除紀錄時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
