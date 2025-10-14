@@ -1,4 +1,4 @@
-# 檔案路徑: views/equipment_view.py
+# views/equipment_view.py (v2 - 修正表單按鈕錯誤)
 
 import streamlit as st
 import pandas as pd
@@ -21,6 +21,140 @@ def render():
 
     dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in my_dorms}
     
+    with st.expander("⚙️ 批次更新保養紀錄"):
+        st.info("此功能用於一次性為同一宿舍、同一類別的多台設備（例如：所有飲水機）登記保養紀錄。")
+        with st.form("batch_maintenance_form"):
+            batch_c1, batch_c2 = st.columns(2)
+            
+            batch_dorm_id = batch_c1.selectbox(
+                "選擇宿舍*", options=[None] + list(dorm_options.keys()),
+                format_func=lambda x: "請選擇..." if x is None else dorm_options.get(x), key="batch_dorm"
+            )
+            categories_for_batch = equipment_model.get_distinct_equipment_categories()
+            batch_category = batch_c2.selectbox(
+                "選擇設備分類*", options=[None] + categories_for_batch,
+                format_func=lambda x: "請選擇..." if x is None else x, key="batch_category"
+            )
+
+            equipment_to_batch = pd.DataFrame()
+            if batch_dorm_id and batch_category:
+                equipment_to_batch = equipment_model.get_equipment_for_view({
+                    "dorm_id": batch_dorm_id, "category": batch_category
+                })
+            
+            if not equipment_to_batch.empty:
+                equipment_to_batch["選取"] = True
+                edited_df = st.data_editor(
+                    equipment_to_batch, column_config={"選取": st.column_config.CheckboxColumn(required=True)},
+                    disabled=equipment_to_batch.columns, hide_index=True, key="batch_editor"
+                )
+                selected_equipment = edited_df[edited_df["選取"]]
+                
+                st.markdown("---")
+                st.markdown("##### 請填寫共同的保養資訊")
+                
+                vendors = vendor_model.get_vendors_for_view()
+                vendor_options = {v['id']: f"{v['服務項目']} - {v['廠商名稱']}" for _, v in vendors.iterrows()} if not vendors.empty else {}
+
+                batch_info_c1, batch_info_c2 = st.columns(2)
+                batch_item_type = batch_info_c1.selectbox("項目類型", ["定期保養", "更換耗材", "維修"], key="batch_item_type")
+                batch_description = batch_info_c1.text_input("細項說明 (必填)", placeholder="例如: 更換第一道RO濾心")
+                batch_completion_date = batch_info_c2.date_input("完成日期*", value=date.today(), key="batch_date")
+                batch_total_cost = batch_info_c2.number_input("總費用 (選填)", min_value=0, step=100, help="此金額將會平均分攤到所有選取的設備上。")
+                batch_vendor_id = st.selectbox("執行廠商 (選填)", options=[None] + list(vendor_options.keys()), format_func=lambda x: "未指定" if x is None else vendor_options.get(x), key="batch_vendor")
+            
+            elif batch_dorm_id and batch_category:
+                st.warning("在此宿舍中找不到符合此分類的設備。")
+
+            # --- 將按鈕移到 form 的最底層，並加入 disabled 參數 ---
+            batch_submitted = st.form_submit_button("🚀 執行批次更新", disabled=equipment_to_batch.empty)
+            
+            if batch_submitted:
+                if selected_equipment.empty:
+                    st.error("請至少選取一台設備！")
+                elif not batch_description:
+                    st.error("請填寫「細項說明」！")
+                else:
+                    equipment_ids = selected_equipment['id'].tolist()
+                    maintenance_info = {
+                        "dorm_id": batch_dorm_id, "vendor_id": batch_vendor_id,
+                        "item_type": batch_item_type, "description": batch_description,
+                        "completion_date": batch_completion_date, "cost": batch_total_cost
+                    }
+                    with st.spinner(f"正在為 {len(equipment_ids)} 台設備更新紀錄..."):
+                        success, message = equipment_model.batch_add_maintenance_logs(equipment_ids, maintenance_info)
+                    
+                    if success:
+                        st.success(message)
+                        st.cache_data.clear()
+                    else:
+                        st.error(message)
+
+    with st.expander("📜 批次新增合規紀錄 (如: 水質檢測)"):
+        st.info("此功能用於一次性為同一宿舍、同一類別的多台設備登記合規檢測紀錄。")
+        with st.form("batch_compliance_form"):
+            batch_comp_c1, batch_comp_c2 = st.columns(2)
+            
+            batch_comp_dorm_id = batch_comp_c1.selectbox(
+                "選擇宿舍*", options=[None] + list(dorm_options.keys()),
+                format_func=lambda x: "請選擇..." if x is None else dorm_options.get(x), key="batch_comp_dorm"
+            )
+            categories_for_batch_comp = equipment_model.get_distinct_equipment_categories()
+            batch_comp_category = batch_comp_c2.selectbox(
+                "選擇設備分類*", options=[None] + categories_for_batch_comp,
+                format_func=lambda x: "請選擇..." if x is None else x, key="batch_comp_category"
+            )
+
+            equipment_to_batch_comp = pd.DataFrame()
+            if batch_comp_dorm_id and batch_comp_category:
+                equipment_to_batch_comp = equipment_model.get_equipment_for_view({
+                    "dorm_id": batch_comp_dorm_id, "category": batch_comp_category
+                })
+            
+            if not equipment_to_batch_comp.empty:
+                equipment_to_batch_comp["選取"] = True
+                edited_comp_df = st.data_editor(
+                    equipment_to_batch_comp, column_config={"選取": st.column_config.CheckboxColumn(required=True)},
+                    disabled=equipment_to_batch_comp.columns, hide_index=True, key="batch_comp_editor"
+                )
+                selected_equipment_comp = edited_comp_df[edited_comp_df["選取"]]
+                
+                st.markdown("---")
+                st.markdown("##### 請填寫共同的檢測資訊")
+                
+                comp_info_c1, comp_info_c2 = st.columns(2)
+                batch_comp_item = comp_info_c1.text_input("申報/檢測項目*", placeholder="例如: 114年Q4水質檢測")
+                batch_comp_cert_date = comp_info_c1.date_input("收到憑證/完成日期*", value=date.today(), key="batch_comp_date")
+                batch_comp_total_cost = comp_info_c2.number_input("總費用 (選填)", min_value=0, step=100, help="此金額將會平均分攤到所有選取的設備上。")
+                batch_comp_payment_date = comp_info_c2.date_input("支付日期 (選填)", value=date.today(), key="batch_comp_payment")
+
+            elif batch_comp_dorm_id and batch_comp_category:
+                st.warning("在此宿舍中找不到符合此分類的設備。")
+
+            # --- 將按鈕移到 form 的最底層，並加入 disabled 參數 ---
+            batch_comp_submitted = st.form_submit_button("🚀 執行批次新增", disabled=equipment_to_batch_comp.empty)
+
+            if batch_comp_submitted:
+                if selected_equipment_comp.empty:
+                    st.error("請至少選取一台設備！")
+                elif not batch_comp_item:
+                    st.error("請填寫「申報/檢測項目」！")
+                else:
+                    equipment_ids = selected_equipment_comp['id'].tolist()
+                    compliance_info = {
+                        "dorm_id": batch_comp_dorm_id, "declaration_item": batch_comp_item,
+                        "certificate_date": batch_comp_cert_date, "total_amount": batch_comp_total_cost,
+                        "payment_date": batch_comp_payment_date, "record_type": batch_comp_category
+                    }
+                    with st.spinner(f"正在為 {len(equipment_ids)} 台設備新增合規紀錄..."):
+                        success, message = equipment_model.batch_add_compliance_logs(equipment_ids, compliance_info)
+                    
+                    if success:
+                        st.success(message)
+                        st.cache_data.clear()
+                    else:
+                        st.error(message)
+
     with st.expander("➕ 新增一筆設備紀錄"):
         selected_dorm_id_for_add = st.selectbox(
             "請選擇要新增設備的宿舍：",
@@ -35,27 +169,20 @@ def render():
                 equipment_name = c1.text_input("設備名稱 (必填)", placeholder="例如: 2F飲水機")
                 equipment_category = c2.selectbox("設備分類", ["消防設備", "電器用品", "飲水設備", "傢俱", "其他"])
                 location = c3.text_input("放置位置", placeholder="例如: 2F走廊, A01房")
-
                 c4, c5, c6 = st.columns(3)
                 brand_model = c4.text_input("品牌/型號")
                 serial_number = c5.text_input("序號/批號")
                 installation_date = c6.date_input("安裝/啟用日期", value=None, min_value=fifteen_years_ago)
-                
                 purchase_cost = st.number_input("採購金額 (選填)", min_value=0, step=100, help="若填寫此金額，系統將自動新增一筆對應的單次費用紀錄。")
-
                 st.subheader("保養與狀態")
                 c7, c8, c9 = st.columns(3)
                 maintenance_interval = c7.number_input("一般保養週期 (月)", min_value=0, step=1, help="例如更換濾心。填 0 代表不需定期保養。")
                 last_maintenance_date = c8.date_input("上次保養日期", value=None)
-                
                 calculated_next_date = None
                 if last_maintenance_date and maintenance_interval > 0:
                     calculated_next_date = last_maintenance_date + relativedelta(months=maintenance_interval)
-                
                 next_maintenance_date = c9.date_input("下次保養/檢查日期", value=calculated_next_date, help="若有填寫上次保養日和週期，此欄位會自動計算。")
-                
                 compliance_interval = st.number_input("合規檢測週期 (月)", min_value=0, step=1, help="例如水質檢測週期。填 0 代表不需定期檢測。")
-
                 status = st.selectbox("目前狀態", ["正常", "需保養", "維修中", "已報廢"])
                 notes = st.text_area("設備備註")
 
@@ -85,118 +212,68 @@ def render():
     st.markdown("---")
     
     st.subheader("現有設備總覽")
-
     f_col1, f_col2 = st.columns(2)
-    
-    selected_dorm_id_filter = f_col1.selectbox(
-        "依宿舍篩選：",
-        options=[None] + list(dorm_options.keys()),
-        format_func=lambda x: "所有宿舍" if x is None else dorm_options.get(x)
-    )
-    
+    selected_dorm_id_filter = f_col1.selectbox( "依宿舍篩選：", options=[None] + list(dorm_options.keys()), format_func=lambda x: "所有宿舍" if x is None else dorm_options.get(x))
     categories = equipment_model.get_distinct_equipment_categories()
-    selected_category_filter = f_col2.selectbox(
-        "依設備分類篩選：",
-        options=[None] + categories,
-        format_func=lambda x: "所有分類" if x is None else x
-    )
-
+    selected_category_filter = f_col2.selectbox("依設備分類篩選：", options=[None] + categories, format_func=lambda x: "所有分類" if x is None else x)
     if st.button("🔄 重新整理設備列表"):
         st.cache_data.clear()
-
     filters = {}
-    if selected_dorm_id_filter:
-        filters["dorm_id"] = selected_dorm_id_filter
-    if selected_category_filter:
-        filters["category"] = selected_category_filter
-
+    if selected_dorm_id_filter: filters["dorm_id"] = selected_dorm_id_filter
+    if selected_category_filter: filters["category"] = selected_category_filter
     @st.cache_data
     def get_equipment(filters):
         return equipment_model.get_equipment_for_view(filters)
-
     equipment_df = get_equipment(filters)
-
     if equipment_df.empty:
         st.info("在目前的篩選條件下，找不到任何設備紀錄。")
     else:
         st.dataframe(equipment_df, width="stretch", hide_index=True)
-        
         st.markdown("---")
         st.subheader("檢視設備詳細資料與歷史紀錄")
-        
         options_dict = {row['id']: f"ID:{row['id']} - {row['宿舍地址']} / {row['設備名稱']} ({row.get('位置', '')})" for _, row in equipment_df.iterrows()}
         selected_id = st.selectbox("請從上方總覽列表選擇要操作的設備：", [None] + list(options_dict.keys()), format_func=lambda x: "請選擇..." if x is None else options_dict.get(x))
-
         if selected_id:
             tab1, tab2, tab3 = st.tabs(["📝 編輯基本資料", "🔧 維修/保養歷史", "📜 合規紀錄"])
-
             with tab1:
                 details = equipment_model.get_single_equipment_details(selected_id)
                 if details:
                     with st.form(f"edit_equipment_form_{selected_id}"):
                         st.markdown(f"##### 正在編輯 ID: {details['id']} 的設備")
-                        
                         current_dorm_id = details.get('dorm_id')
                         dorm_keys = list(dorm_options.keys())
                         try:
                             current_index = dorm_keys.index(current_dorm_id)
                         except ValueError:
                             current_index = 0
-                        
-                        e_dorm_id = st.selectbox(
-                            "宿舍地址", 
-                            options=dorm_keys, 
-                            format_func=lambda x: dorm_options.get(x),
-                            index=current_index
-                        )
-                        
+                        e_dorm_id = st.selectbox("宿舍地址", options=dorm_keys, format_func=lambda x: dorm_options.get(x), index=current_index)
                         ec1, ec2, ec3 = st.columns(3)
                         e_equipment_name = ec1.text_input("設備名稱", value=details.get('equipment_name', ''))
                         e_equipment_category = ec2.selectbox("設備分類", ["消防設備", "電器用品", "飲水設備", "傢俱", "其他"], index=["消防設備", "電器用品", "飲水設備", "傢俱", "其他"].index(details.get('equipment_category')) if details.get('equipment_category') in ["消防設備", "電器用品", "飲水設備", "傢俱", "其他"] else 4)
                         e_location = ec3.text_input("放置位置", value=details.get('location', ''))
-                        
                         ec4, ec5, ec6 = st.columns(3)
                         e_brand_model = ec4.text_input("品牌/型號", value=details.get('brand_model', ''))
                         e_serial_number = ec5.text_input("序號/批號", value=details.get('serial_number', ''))
                         e_installation_date = ec6.date_input("安裝/啟用日期", value=details.get('installation_date'), min_value=fifteen_years_ago)
-
                         st.number_input("採購金額", value=details.get('purchase_cost') or 0, disabled=True, help="採購金額於新增時決定，若需調整請至年度費用頁面修改對應的費用紀錄。")
-
                         st.subheader("保養與狀態")
                         ec7, ec8, ec9 = st.columns(3)
                         e_maintenance_interval = ec7.number_input("一般保養週期 (月)", min_value=0, step=1, value=details.get('maintenance_interval_months') or 0)
                         e_last_maintenance_date = ec8.date_input("上次保養日期", value=details.get('last_maintenance_date'))
-                        
                         e_calculated_next_date = None
                         if e_last_maintenance_date and e_maintenance_interval > 0:
                             e_calculated_next_date = e_last_maintenance_date + relativedelta(months=e_maintenance_interval)
-                        
                         e_next_maintenance_date = ec9.date_input("下次保養/檢查日期", value=e_calculated_next_date or details.get('next_maintenance_date'))
-
                         e_compliance_interval = st.number_input("合規檢測週期 (月)", min_value=0, step=1, value=details.get('compliance_interval_months') or 0, help="例如水質檢測週期。")
-
                         e_status = st.selectbox("目前狀態", ["正常", "需保養", "維修中", "已報廢"], index=["正常", "需保養", "維修中", "已報廢"].index(details.get('status')) if details.get('status') in ["正常", "需保養", "維修中", "已報廢"] else 0)
                         e_notes = st.text_area("設備備註", value=details.get('notes', ''))
                         
                         edit_submitted = st.form_submit_button("儲存變更")
                         if edit_submitted:
-                            update_data = { 
-                                "dorm_id": e_dorm_id,
-                                "equipment_name": e_equipment_name, "equipment_category": e_equipment_category, 
-                                "location": e_location, "brand_model": e_brand_model, 
-                                "serial_number": e_serial_number, "installation_date": e_installation_date, 
-                                "maintenance_interval_months": e_maintenance_interval if e_maintenance_interval > 0 else None, 
-                                "compliance_interval_months": e_compliance_interval if e_compliance_interval > 0 else None, 
-                                "last_maintenance_date": e_last_maintenance_date, "next_maintenance_date": e_next_maintenance_date, 
-                                "status": e_status, "notes": e_notes 
-                            }
+                            update_data = { "dorm_id": e_dorm_id, "equipment_name": e_equipment_name, "equipment_category": e_equipment_category, "location": e_location, "brand_model": e_brand_model, "serial_number": e_serial_number, "installation_date": e_installation_date, "maintenance_interval_months": e_maintenance_interval if e_maintenance_interval > 0 else None, "compliance_interval_months": e_compliance_interval if e_compliance_interval > 0 else None, "last_maintenance_date": e_last_maintenance_date, "next_maintenance_date": e_next_maintenance_date, "status": e_status, "notes": e_notes }
                             success, message = equipment_model.update_equipment_record(selected_id, update_data)
-                            if success: 
-                                st.success(message)
-                                st.cache_data.clear()
-                                st.rerun()
-                            else: 
-                                st.error(message)
+                            if success: st.success(message); st.cache_data.clear(); st.rerun()
+                            else: st.error(message)
 
                     st.markdown("---")
                     st.markdown("##### 危險操作區")
@@ -212,65 +289,38 @@ def render():
                 vendors = vendor_model.get_vendors_for_view()
                 vendor_options = {v['id']: f"{v['服務項目']} - {v['廠商名稱']}" for _, v in vendors.iterrows()} if not vendors.empty else {}
                 with st.form(f"quick_add_maintenance_{selected_id}", clear_on_submit=True):
-                    # --- 調整版面並加入 cost 欄位 ---
                     m_c1, m_c2, m_c3 = st.columns(3)
                     item_type = m_c1.selectbox("項目類型", ["定期保養", "更換耗材", "維修"])
                     description = m_c2.text_input("細項說明 (必填)", placeholder="例如: 更換RO膜濾心")
                     cost = m_c3.number_input("本次費用", min_value=0, step=100) 
-
                     vendor_id = st.selectbox("執行廠商 (選填)", options=[None] + list(vendor_options.keys()), format_func=lambda x: "未指定" if x is None else vendor_options.get(x))
                     
                     submitted = st.form_submit_button("新增紀錄")
                     if submitted:
                         if not description: st.error("「細項說明」為必填欄位！")
                         else:
-                            # --- 【核心修改 2】將 cost 加入要儲存的資料中 ---
-                            log_details = { 
-                                'dorm_id': details['dorm_id'], 
-                                'equipment_id': selected_id, 
-                                'notification_date': date.today(), 
-                                'item_type': item_type, 
-                                'description': description, 
-                                'cost': cost if cost > 0 else None, # <-- 新增
-                                'vendor_id': vendor_id, 
-                                'status': '進行中' 
-                            }
+                            log_details = { 'dorm_id': details['dorm_id'], 'equipment_id': selected_id, 'notification_date': date.today(), 'item_type': item_type, 'description': description, 'cost': cost if cost > 0 else None, 'vendor_id': vendor_id, 'status': '進行中' }
                             success, message = maintenance_model.add_log(log_details)
-                            if success: 
-                                st.success(message)
-                                st.cache_data.clear()
-                                st.rerun()
-                            else: 
-                                st.error(message)
+                            if success: st.success(message); st.cache_data.clear(); st.rerun()
+                            else: st.error(message)
                 
                 st.markdown("##### 歷史紀錄")
                 maintenance_history = equipment_model.get_related_maintenance_logs(selected_id)
                 
                 if not maintenance_history.empty:
                     st.dataframe(maintenance_history, width="stretch", hide_index=True, column_config={"id": None})
-                    
                     st.markdown("##### 標示完成")
                     unfinished_logs = maintenance_history[maintenance_history['狀態'] != '已完成']
                     
                     if not unfinished_logs.empty:
-                        options_for_completion = {
-                            row['id']: f"ID:{row['id']} - {row['通報日期']} {row['項目類型']} ({row['細項說明']})" 
-                            for _, row in unfinished_logs.iterrows()
-                        }
-                        selected_log_ids = st.multiselect(
-                            "從上方列表中選擇要標示為「已完成」的項目：",
-                            options=list(options_for_completion.keys()),
-                            format_func=lambda x: options_for_completion.get(x)
-                        )
-
+                        options_for_completion = {row['id']: f"ID:{row['id']} - {row['通報日期']} {row['項目類型']} ({row['細項說明']})" for _, row in unfinished_logs.iterrows()}
+                        selected_log_ids = st.multiselect("從上方列表中選擇要標示為「已完成」的項目：", options=list(options_for_completion.keys()), format_func=lambda x: options_for_completion.get(x))
                         if st.button("✓ 將選取的紀錄標示為完成", disabled=not selected_log_ids):
                             completed_count = 0
                             for log_id in selected_log_ids:
                                 success, msg = equipment_model.complete_maintenance_and_schedule_next(log_id)
-                                if success:
-                                    completed_count += 1
-                                else:
-                                    st.error(f"更新紀錄 ID {log_id} 失敗: {msg}")
+                                if success: completed_count += 1
+                                else: st.error(f"更新紀錄 ID {log_id} 失敗: {msg}")
                             if completed_count > 0:
                                 st.success(f"成功將 {completed_count} 筆紀錄標示為完成，並已自動更新保養排程！")
                                 st.cache_data.clear()
@@ -288,18 +338,11 @@ def render():
                         co1, co2, co3 = st.columns(3)
                         declaration_item = co1.text_input("申報項目", value="水質檢測")
                         certificate_date = co2.date_input("收到憑證/完成日期", value=date.today())
-                        
                         compliance_interval = details.get('compliance_interval_months')
                         calculated_next_compliance_date = None
                         if certificate_date and compliance_interval and compliance_interval > 0:
                             calculated_next_compliance_date = certificate_date + relativedelta(months=compliance_interval)
-
-                        next_declaration_start = co3.date_input(
-                            "下次申報/檢測日期", 
-                            value=calculated_next_compliance_date, 
-                            help="若設備已設定合規檢測週期，此欄位會自動計算。"
-                        )
-                        
+                        next_declaration_start = co3.date_input("下次申報/檢測日期", value=calculated_next_compliance_date, help="若設備已設定合規檢測週期，此欄位會自動計算。")
                         st.markdown("##### 相關費用 (選填)")
                         co4, co5 = st.columns(2)
                         payment_date = co4.date_input("支付日期", value=None)
@@ -307,16 +350,8 @@ def render():
                         
                         compliance_submitted = st.form_submit_button("儲存檢測紀錄")
                         if compliance_submitted:
-                            record_details = {
-                                "dorm_id": details['dorm_id'], "equipment_id": selected_id,
-                                "details": { "declaration_item": declaration_item, "certificate_date": certificate_date, "next_declaration_start": next_declaration_start }
-                            }
-                            expense_details = {
-                                "dorm_id": details['dorm_id'], "expense_item": f"{declaration_item}",
-                                "payment_date": payment_date, "total_amount": total_amount,
-                                "amortization_start_month": payment_date.strftime('%Y-%m') if payment_date else None,
-                                "amortization_end_month": payment_date.strftime('%Y-%m') if payment_date else None,
-                            }
+                            record_details = { "dorm_id": details['dorm_id'], "equipment_id": selected_id, "details": { "declaration_item": declaration_item, "certificate_date": certificate_date, "next_declaration_start": next_declaration_start } }
+                            expense_details = { "dorm_id": details['dorm_id'], "expense_item": f"{declaration_item}", "payment_date": payment_date, "total_amount": total_amount, "amortization_start_month": payment_date.strftime('%Y-%m') if payment_date else None, "amortization_end_month": payment_date.strftime('%Y-%m') if payment_date else None, }
                             success, message, _ = finance_model.add_compliance_record('水質檢測', record_details, expense_details if total_amount > 0 else None)
                             if success:
                                 st.success(message); st.cache_data.clear(); st.rerun()

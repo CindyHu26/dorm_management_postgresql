@@ -260,3 +260,162 @@ def complete_maintenance_and_schedule_next(log_id: int):
         return False, f"更新保養排程時發生錯誤: {e}"
     finally:
         if conn: conn.close()
+
+def batch_add_maintenance_logs(equipment_ids: list, maintenance_info: dict):
+    """
+    為多個設備批次新增維修/保養紀錄，並更新下次保養日期。
+    所有操作都在一個交易中完成。
+    """
+    if not equipment_ids:
+        return False, "沒有選擇任何設備。"
+
+    conn = database.get_db_connection()
+    if not conn:
+        return False, "資料庫連線失敗。"
+
+    try:
+        with conn.cursor() as cursor:
+            # 計算每台設備應分攤的費用
+            total_cost = maintenance_info.get('cost', 0)
+            cost_per_item = (total_cost / len(equipment_ids)) if total_cost > 0 else 0
+
+            for eq_id in equipment_ids:
+                # 步驟 1: 新增一筆 MaintenanceLog 紀錄
+                log_details = {
+                    'equipment_id': eq_id,
+                    'dorm_id': maintenance_info['dorm_id'],
+                    'vendor_id': maintenance_info.get('vendor_id'),
+                    'item_type': maintenance_info.get('item_type', '定期保養'),
+                    'description': maintenance_info.get('description', ''),
+                    'completion_date': maintenance_info.get('completion_date', date.today()),
+                    'cost': int(cost_per_item) if cost_per_item > 0 else None,
+                    'payer': '我司' if cost_per_item > 0 else None,
+                    'status': '已完成' # 批次處理預設為已完成
+                }
+
+                log_columns = ', '.join(f'"{k}"' for k in log_details.keys())
+                log_placeholders = ', '.join(['%s'] * len(log_details))
+                log_sql = f'INSERT INTO "MaintenanceLog" ({log_columns}) VALUES ({log_placeholders})'
+                cursor.execute(log_sql, tuple(log_details.values()))
+
+                # 步驟 2: 查詢該設備的保養週期
+                cursor.execute(
+                    'SELECT maintenance_interval_months FROM "DormitoryEquipment" WHERE id = %s',
+                    (eq_id,)
+                )
+                equipment = cursor.fetchone()
+                interval = equipment.get('maintenance_interval_months') if equipment else None
+
+                # 步驟 3: 更新設備的上次與下次保養日期
+                next_date = None
+                if interval and interval > 0:
+                    next_date = log_details['completion_date'] + relativedelta(months=interval)
+                
+                cursor.execute(
+                    'UPDATE "DormitoryEquipment" SET last_maintenance_date = %s, next_maintenance_date = %s WHERE id = %s',
+                    (log_details['completion_date'], next_date, eq_id)
+                )
+
+        conn.commit()
+        return True, f"成功為 {len(equipment_ids)} 台設備新增保養紀錄並更新時程。"
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return False, f"批次更新時發生錯誤: {e}"
+    finally:
+        if conn:
+            conn.close()
+
+def batch_add_compliance_logs(equipment_ids: list, compliance_info: dict):
+    """
+    為多個設備批次新增合規紀錄 (例如水質檢測)，並可選地關聯費用。
+    """
+    if not equipment_ids:
+        return False, "沒有選擇任何設備。"
+
+    success_count = 0
+    failed_ids = []
+    error_messages = []
+    
+    total_amount = compliance_info.get('total_amount', 0)
+    amount_per_item = (total_amount / len(equipment_ids)) if total_amount > 0 else 0
+    
+    # 這個迴圈會逐一呼叫一個處理單筆紀錄的函式
+    # 雖然不是單一資料庫交易，但可以簡化邏輯並重用現有程式碼
+    for eq_id in equipment_ids:
+        try:
+            # 為了計算下次日期，我們需要單獨查詢每台設備的週期設定
+            conn = database.get_db_connection()
+            if not conn:
+                raise Exception("無法取得資料庫連線")
+            
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    'SELECT compliance_interval_months FROM "DormitoryEquipment" WHERE id = %s',
+                    (eq_id,)
+                )
+                equipment = cursor.fetchone()
+                interval = equipment.get('compliance_interval_months') if equipment else None
+            conn.close()
+
+            certificate_date = compliance_info.get('certificate_date', date.today())
+            next_declaration_start = None
+            if interval and interval > 0:
+                next_declaration_start = certificate_date + relativedelta(months=interval)
+
+            # 準備傳給 finance_model 的資料
+            record_details = {
+                "dorm_id": compliance_info['dorm_id'],
+                "equipment_id": eq_id,
+                "details": {
+                    "declaration_item": compliance_info.get('declaration_item'),
+                    "certificate_date": certificate_date,
+                    "next_declaration_start": next_declaration_start
+                }
+            }
+
+            expense_details = None
+            if amount_per_item > 0:
+                payment_date = compliance_info.get('payment_date') or certificate_date
+                expense_details = {
+                    "dorm_id": compliance_info['dorm_id'],
+                    "expense_item": f"{compliance_info.get('declaration_item')}",
+                    "payment_date": payment_date,
+                    "total_amount": int(amount_per_item),
+                    "amortization_start_month": payment_date.strftime('%Y-%m'),
+                    "amortization_end_month": payment_date.strftime('%Y-%m'),
+                }
+
+            # 呼叫現有函式來新增紀錄
+            success, message, _ = finance_model.add_compliance_record(
+                compliance_info.get('record_type', '合規檢測'), 
+                record_details, 
+                expense_details
+            )
+
+            if success:
+                # 成功新增後，回頭更新設備的下次檢查日期
+                conn_update = database.get_db_connection()
+                if not conn_update:
+                    raise Exception("無法取得資料庫連線來更新設備下次檢查日")
+                with conn_update.cursor() as cursor_update:
+                    if next_declaration_start:
+                        cursor_update.execute(
+                            'UPDATE "DormitoryEquipment" SET next_maintenance_date = %s WHERE id = %s',
+                            (next_declaration_start, eq_id)
+                        )
+                conn_update.commit()
+                conn_update.close()
+                success_count += 1
+            else:
+                failed_ids.append(eq_id)
+                error_messages.append(f"ID {eq_id}: {message}")
+
+        except Exception as item_error:
+            failed_ids.append(eq_id)
+            error_messages.append(f"ID {eq_id}: {str(item_error)}")
+
+    if not failed_ids:
+        return True, f"成功為 {success_count} 台設備新增合規紀錄並更新時程。"
+    else:
+        return False, f"處理完成。成功 {success_count} 筆，失敗 {len(failed_ids)} 筆。錯誤: {'; '.join(error_messages)}"
