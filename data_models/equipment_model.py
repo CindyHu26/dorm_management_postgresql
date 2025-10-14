@@ -419,3 +419,42 @@ def batch_add_compliance_logs(equipment_ids: list, compliance_info: dict):
         return True, f"成功為 {success_count} 台設備新增合規紀錄並更新時程。"
     else:
         return False, f"處理完成。成功 {success_count} 筆，失敗 {len(failed_ids)} 筆。錯誤: {'; '.join(error_messages)}"
+    
+def get_equipment_for_view(filters: dict = None):
+    """【v2.0 廠商關聯版】查詢設備，並支援宿舍和分類的篩選，同時顯示供應廠商。"""
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        query = """
+            SELECT 
+                e.id, 
+                d.original_address AS "宿舍地址",
+                e.equipment_name AS "設備名稱", 
+                v.vendor_name AS "供應廠商", -- 【核心修改】查詢廠商名稱
+                e.equipment_category AS "分類", 
+                e.location AS "位置", 
+                e.brand_model AS "品牌型號",
+                e.next_maintenance_date AS "下次保養/檢查日",
+                e.status AS "狀態"
+            FROM "DormitoryEquipment" e
+            JOIN "Dormitories" d ON e.dorm_id = d.id
+            LEFT JOIN "Vendors" v ON e.vendor_id = v.id -- 【核心修改】JOIN Vendors 表
+        """
+        params = []
+        where_clauses = ["d.primary_manager = '我司'"]
+
+        if filters:
+            if filters.get("dorm_id"):
+                where_clauses.append("e.dorm_id = %s")
+                params.append(filters["dorm_id"])
+            if filters.get("category"):
+                where_clauses.append("e.equipment_category = %s")
+                params.append(filters["category"])
+        
+        if where_clauses:
+            query += " WHERE " + " AND ".join(where_clauses)
+            
+        query += " ORDER BY d.original_address, e.equipment_category, e.equipment_name"
+        return _execute_query_to_dataframe(conn, query, params)
+    finally:
+        if conn: conn.close()

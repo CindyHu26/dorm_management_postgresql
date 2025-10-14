@@ -183,6 +183,7 @@ def create_all_tables_and_indexes():
             CREATE TABLE IF NOT EXISTS "DormitoryEquipment" (
                 "id" SERIAL PRIMARY KEY,
                 "dorm_id" INTEGER NOT NULL,
+                "vendor_id" INTEGER, -- 【核心修改】新增廠商關聯 ID
                 "equipment_name" VARCHAR(100) NOT NULL,
                 "equipment_category" VARCHAR(50),
                 "location" VARCHAR(100),
@@ -197,7 +198,8 @@ def create_all_tables_and_indexes():
                 "status" VARCHAR(50),
                 "notes" TEXT,
                 "report_path" VARCHAR(255),
-                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE
+                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE,
+                FOREIGN KEY ("vendor_id") REFERENCES "Vendors" ("id") ON DELETE SET NULL
             );
             """
 
