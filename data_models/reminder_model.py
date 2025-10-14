@@ -83,25 +83,31 @@ def get_upcoming_reminders(days_ahead: int = 90):
         
         # 5. 查詢合規紀錄
         compliance_query = """
+            WITH ComplianceNextDate AS (
+                SELECT
+                    id,
+                    dorm_id,
+                    record_type,
+                    details,
+                    -- 使用 COALESCE 自動選擇存在的日期欄位
+                    COALESCE(
+                        (details ->> 'next_check_date')::date,
+                        (details ->> 'next_declaration_start')::date
+                    ) as next_date
+                FROM "ComplianceRecords"
+            )
             SELECT
                 d.original_address AS "宿舍地址",
                 cr.record_type AS "申報類型",
                 cr.details ->> 'declaration_item' AS "申報項目",
-                CASE
-                    WHEN cr.record_type = '消防安檢' THEN (cr.details ->> 'next_check_date')::date
-                    WHEN cr.record_type = '建物申報' THEN (cr.details ->> 'next_declaration_start')::date
-                    ELSE NULL
-                END AS "下次申報/檢查日"
-            FROM "ComplianceRecords" cr
+                cr.next_date AS "下次申報/檢查日"
+            FROM ComplianceNextDate cr
             JOIN "Dormitories" d ON cr.dorm_id = d.id
-            WHERE 
-                (
-                    (cr.record_type = '消防安檢' AND (cr.details ->> 'next_check_date')::date BETWEEN %s AND %s) OR
-                    (cr.record_type = '建物申報' AND (cr.details ->> 'next_declaration_start')::date BETWEEN %s AND %s)
-                )
+            -- 只要 next_date 存在且在我們的時間範圍內，就抓出來
+            WHERE cr.next_date BETWEEN %s AND %s
             ORDER BY "下次申報/檢查日" ASC;
         """
-        compliance_df = _execute_query_to_dataframe(conn, compliance_query, (start_date, end_date, start_date, end_date))
+        compliance_df = _execute_query_to_dataframe(conn, compliance_query, (start_date, end_date))
 
         return {
             "leases": leases_df, "workers": workers_df,

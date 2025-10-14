@@ -25,83 +25,126 @@ def render():
 
     # --- 批次操作區塊 ---
     with st.expander("⚙️ 批次更新保養紀錄"):
-        with st.form("batch_maintenance_form"):
-            batch_c1, batch_c2 = st.columns(2)
-            batch_dorm_id = batch_c1.selectbox("選擇宿舍*", options=[None] + list(dorm_options.keys()), format_func=lambda x: "請選擇..." if x is None else dorm_options.get(x), key="batch_dorm")
-            categories_for_batch = equipment_model.get_distinct_equipment_categories()
-            batch_category = batch_c2.selectbox("選擇設備分類*", options=[None] + categories_for_batch, format_func=lambda x: "請選擇..." if x is None else x, key="batch_category")
-            equipment_to_batch = pd.DataFrame()
-            if batch_dorm_id and batch_category:
-                equipment_to_batch = equipment_model.get_equipment_for_view({"dorm_id": batch_dorm_id, "category": batch_category})
-            if not equipment_to_batch.empty:
-                equipment_to_batch["選取"] = True
-                edited_df = st.data_editor(equipment_to_batch, column_config={"選取": st.column_config.CheckboxColumn(required=True)}, disabled=equipment_to_batch.columns, hide_index=True, key="batch_editor")
-                selected_equipment = edited_df[edited_df["選取"]]
+        st.info("此功能用於一次性為同一宿舍、同一類別的多台設備（例如：所有飲水機）登記保養紀錄。")
+        
+        batch_c1, batch_c2 = st.columns(2)
+        batch_dorm_id = batch_c1.selectbox(
+            "步驟一：選擇宿舍*", options=[None] + list(dorm_options.keys()),
+            format_func=lambda x: "請選擇..." if x is None else dorm_options.get(x), key="batch_dorm"
+        )
+        categories_for_batch = equipment_model.get_distinct_equipment_categories()
+        batch_category = batch_c2.selectbox(
+            "步驟二：選擇設備分類*", options=[None] + categories_for_batch,
+            format_func=lambda x: "請選擇..." if x is None else x, key="batch_category"
+        )
+
+        equipment_to_batch = pd.DataFrame()
+        if batch_dorm_id and batch_category:
+            equipment_to_batch = equipment_model.get_equipment_for_view({
+                "dorm_id": batch_dorm_id, "category": batch_category
+            })
+
+        if not equipment_to_batch.empty:
+            with st.form("batch_maintenance_form"):
+                st.markdown("##### 步驟三：勾選要更新的設備")
+                # 【核心修正 1】不再手動重置 "選取" 欄位，而是讓 data_editor 自己處理
+                equipment_to_batch.insert(0, "選取", True)
+                edited_df = st.data_editor(
+                    equipment_to_batch,
+                    hide_index=True,
+                    # disabled 參數只禁用原始資料欄位，讓 "選取" 欄位可以被編輯
+                    disabled=equipment_to_batch.columns.drop("選取"), 
+                    key="batch_editor"
+                )
+                
                 st.markdown("---")
-                st.markdown("##### 請填寫共同的保養資訊")
+                st.markdown("##### 步驟四：填寫共同的保養資訊")
+                
                 batch_info_c1, batch_info_c2 = st.columns(2)
                 batch_item_type = batch_info_c1.selectbox("項目類型", ["定期保養", "更換耗材", "維修"], key="batch_item_type")
                 batch_description = batch_info_c1.text_input("細項說明 (必填)", placeholder="例如: 更換第一道RO濾心")
                 batch_completion_date = batch_info_c2.date_input("完成日期*", value=date.today(), key="batch_date")
                 batch_total_cost = batch_info_c2.number_input("總費用 (選填)", min_value=0, step=100, help="此金額將會平均分攤到所有選取的設備上。")
                 batch_vendor_id = st.selectbox("執行廠商 (選填)", options=[None] + list(vendor_options.keys()), format_func=lambda x: "未指定" if x is None else vendor_options.get(x), key="batch_vendor")
-            elif batch_dorm_id and batch_category:
-                st.warning("在此宿舍中找不到符合此分類的設備。")
-            batch_submitted = st.form_submit_button("🚀 執行批次更新", disabled=equipment_to_batch.empty)
-            if batch_submitted:
-                if selected_equipment.empty:
-                    st.error("請至少選取一台設備！")
-                elif not batch_description:
-                    st.error("請填寫「細項說明」！")
-                else:
-                    equipment_ids = selected_equipment['id'].tolist()
-                    maintenance_info = {"dorm_id": batch_dorm_id, "vendor_id": batch_vendor_id, "item_type": batch_item_type, "description": batch_description, "completion_date": batch_completion_date, "cost": batch_total_cost}
-                    with st.spinner(f"正在為 {len(equipment_ids)} 台設備更新紀錄..."):
-                        success, message = equipment_model.batch_add_maintenance_logs(equipment_ids, maintenance_info)
-                    if success:
-                        st.success(message)
-                        st.cache_data.clear()
+
+                batch_submitted = st.form_submit_button("🚀 執行批次更新")
+                if batch_submitted:
+                    selected_equipment = edited_df[edited_df["選取"]]
+                    if selected_equipment.empty:
+                        st.error("請至少選取一台設備！")
+                    elif not batch_description:
+                        st.error("請填寫「細項說明」！")
                     else:
-                        st.error(message)
+                        equipment_ids = selected_equipment['id'].tolist()
+                        maintenance_info = {"dorm_id": batch_dorm_id, "vendor_id": batch_vendor_id, "item_type": batch_item_type, "description": batch_description, "completion_date": batch_completion_date, "cost": batch_total_cost}
+                        with st.spinner(f"正在為 {len(equipment_ids)} 台設備更新紀錄..."):
+                            success, message = equipment_model.batch_add_maintenance_logs(equipment_ids, maintenance_info)
+                        if success:
+                            st.success(message); st.cache_data.clear(); st.rerun()
+                        else:
+                            st.error(message)
+        elif batch_dorm_id and batch_category:
+            st.warning("在此宿舍中找不到符合此分類的設備。")
+
 
     with st.expander("📜 批次新增合規紀錄 (如: 水質檢測)"):
-        with st.form("batch_compliance_form"):
-            batch_comp_c1, batch_comp_c2 = st.columns(2)
-            batch_comp_dorm_id = batch_comp_c1.selectbox("選擇宿舍*", options=[None] + list(dorm_options.keys()), format_func=lambda x: "請選擇..." if x is None else dorm_options.get(x), key="batch_comp_dorm")
-            categories_for_batch_comp = equipment_model.get_distinct_equipment_categories()
-            batch_comp_category = batch_comp_c2.selectbox("選擇設備分類*", options=[None] + categories_for_batch_comp, format_func=lambda x: "請選擇..." if x is None else x, key="batch_comp_category")
-            equipment_to_batch_comp = pd.DataFrame()
-            if batch_comp_dorm_id and batch_comp_category:
-                equipment_to_batch_comp = equipment_model.get_equipment_for_view({"dorm_id": batch_comp_dorm_id, "category": batch_comp_category})
-            if not equipment_to_batch_comp.empty:
-                equipment_to_batch_comp["選取"] = True
-                edited_comp_df = st.data_editor(equipment_to_batch_comp, column_config={"選取": st.column_config.CheckboxColumn(required=True)}, disabled=equipment_to_batch_comp.columns, hide_index=True, key="batch_comp_editor")
-                selected_equipment_comp = edited_comp_df[edited_comp_df["選取"]]
+        st.info("此功能用於一次性為同一宿舍、同一類別的多台設備登記合規檢測紀錄。")
+
+        batch_comp_c1, batch_comp_c2 = st.columns(2)
+        batch_comp_dorm_id = batch_comp_c1.selectbox(
+            "步驟一：選擇宿舍*", options=[None] + list(dorm_options.keys()),
+            format_func=lambda x: "請選擇..." if x is None else dorm_options.get(x), key="batch_comp_dorm"
+        )
+        categories_for_batch_comp = equipment_model.get_distinct_equipment_categories()
+        batch_comp_category = batch_comp_c2.selectbox(
+            "步驟二：選擇設備分類*", options=[None] + categories_for_batch_comp,
+            format_func=lambda x: "請選擇..." if x is None else x, key="batch_comp_category"
+        )
+
+        equipment_to_batch_comp = pd.DataFrame()
+        if batch_comp_dorm_id and batch_comp_category:
+            equipment_to_batch_comp = equipment_model.get_equipment_for_view({
+                "dorm_id": batch_comp_dorm_id, "category": batch_comp_category
+            })
+        
+        if not equipment_to_batch_comp.empty:
+            with st.form("batch_compliance_form"):
+                st.markdown("##### 步驟三：勾選要更新的設備")
+                # 【核心修正 2】同樣的邏輯應用於此處
+                equipment_to_batch_comp.insert(0, "選取", True)
+                edited_comp_df = st.data_editor(
+                    equipment_to_batch_comp,
+                    hide_index=True,
+                    disabled=equipment_to_batch_comp.columns.drop("選取"),
+                    key="batch_comp_editor"
+                )
+                
                 st.markdown("---")
-                st.markdown("##### 請填寫共同的檢測資訊")
+                st.markdown("##### 步驟四：填寫共同的檢測資訊")
                 comp_info_c1, comp_info_c2 = st.columns(2)
                 batch_comp_item = comp_info_c1.text_input("申報/檢測項目*", placeholder="例如: 114年Q4水質檢測")
                 batch_comp_cert_date = comp_info_c1.date_input("收到憑證/完成日期*", value=date.today(), key="batch_comp_date")
                 batch_comp_total_cost = comp_info_c2.number_input("總費用 (選填)", min_value=0, step=100, help="此金額將會平均分攤到所有選取的設備上。")
                 batch_comp_payment_date = comp_info_c2.date_input("支付日期 (選填)", value=date.today(), key="batch_comp_payment")
-            elif batch_comp_dorm_id and batch_comp_category:
-                st.warning("在此宿舍中找不到符合此分類的設備。")
-            batch_comp_submitted = st.form_submit_button("🚀 執行批次新增", disabled=equipment_to_batch_comp.empty)
-            if batch_comp_submitted:
-                if selected_equipment_comp.empty:
-                    st.error("請至少選取一台設備！")
-                elif not batch_comp_item:
-                    st.error("請填寫「申報/檢測項目」！")
-                else:
-                    equipment_ids = selected_equipment_comp['id'].tolist()
-                    compliance_info = {"dorm_id": batch_comp_dorm_id, "declaration_item": batch_comp_item, "certificate_date": batch_comp_cert_date, "total_amount": batch_comp_total_cost, "payment_date": batch_comp_payment_date, "record_type": batch_comp_category}
-                    with st.spinner(f"正在為 {len(equipment_ids)} 台設備新增合規紀錄..."):
-                        success, message = equipment_model.batch_add_compliance_logs(equipment_ids, compliance_info)
-                    if success:
-                        st.success(message)
-                        st.cache_data.clear()
+
+                batch_comp_submitted = st.form_submit_button("🚀 執行批次新增")
+                if batch_comp_submitted:
+                    selected_equipment_comp = edited_comp_df[edited_comp_df["選取"]]
+                    if selected_equipment_comp.empty:
+                        st.error("請至少選取一台設備！")
+                    elif not batch_comp_item:
+                        st.error("請填寫「申報/檢測項目」！")
                     else:
-                        st.error(message)
+                        equipment_ids = selected_equipment_comp['id'].tolist()
+                        compliance_info = {"dorm_id": batch_comp_dorm_id, "declaration_item": batch_comp_item, "certificate_date": batch_comp_cert_date, "total_amount": batch_comp_total_cost, "payment_date": batch_comp_payment_date, "record_type": batch_comp_category}
+                        with st.spinner(f"正在為 {len(equipment_ids)} 台設備新增合規紀錄..."):
+                            success, message = equipment_model.batch_add_compliance_logs(equipment_ids, compliance_info)
+                        if success:
+                            st.success(message); st.cache_data.clear(); st.rerun()
+                        else:
+                            st.error(message)
+        elif batch_comp_dorm_id and batch_comp_category:
+            st.warning("在此宿舍中找不到符合此分類的設備。")
 
     with st.expander("🔢 批次新增編號設備"):
         st.info("用於一次性新增多台名稱有連續編號的設備（例如：飲水機1號、飲水機2號...），所有設備將共用下方填寫的規格、日期與費用等資訊。")
