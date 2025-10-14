@@ -40,7 +40,7 @@ def load_config():
         config.read(config_path, encoding='utf-8')
     return config
 
-# --- 將頁面結構化 ---
+# 頁面結構化 (維持不變)
 PAGES = {
     "總覽與報表": {
         "儀表板": dashboard_view,
@@ -76,6 +76,13 @@ PAGES = {
     }
 }
 
+# 輔助函式：根據頁面名稱反查其所屬的群組
+def find_group_by_page(page_name):
+    for group, pages in PAGES.items():
+        if page_name in pages:
+            return group
+    return None
+
 def main():
     """主應用程式"""
     st.set_page_config(layout="wide", page_title="宿舍與移工綜合管理系統")
@@ -84,38 +91,78 @@ def main():
         st.session_state.log_messages = []
 
     config = load_config()
+
+    # --- 【核心修改：狀態管理邏輯】 ---
+
+    # 1. 首次執行時，從 URL 初始化 session_state
+    if 'page' not in st.session_state:
+        query_page = st.query_params.get("page")
+        # 檢查 URL 的頁面是否合法，不合法就用預設值
+        if query_page and find_group_by_page(query_page):
+            st.session_state.page = query_page
+        else:
+            st.session_state.page = "儀表板" # 預設首頁
+        # 第一次也需要設定 URL
+        st.query_params["page"] = st.session_state.page
+
+    # 2. 建立回呼函式，用於在使用者操作時更新狀態
+    def on_group_change():
+        # 當群組改變時，自動跳到該群組的第一個頁面
+        new_group = st.session_state.group_selector
+        st.session_state.page = list(PAGES[new_group].keys())[0]
+        # 更新 URL
+        st.query_params["page"] = st.session_state.page
+
+    def on_page_change():
+        # 當頁面改變時，直接更新 session_state 和 URL
+        st.session_state.page = st.session_state.page_selector
+        st.query_params["page"] = st.session_state.page
+        
+    # 3. 根據 session_state 來決定元件的預設值
+    current_page = st.session_state.page
+    current_group = find_group_by_page(current_page)
     
-    # --- 全新的階層式導航 ---
+    # 如果狀態出錯（例如頁面被移除），則重置回首頁
+    if not current_group:
+        current_group = list(PAGES.keys())[0]
+        current_page = list(PAGES[current_group].keys())[0]
+        st.session_state.page = current_page
+        st.query_params["page"] = current_page
+
+    group_options = list(PAGES.keys())
+    page_options = list(PAGES[current_group].keys())
+
+    # --- 側邊欄導航 ---
     with st.sidebar:
         st.title("宿舍管理系統")
         
-        # 步驟一：選擇功能群組
-        group_options = list(PAGES.keys())
-        selected_group = st.selectbox("選擇功能群組：", group_options)
+        st.selectbox(
+            "選擇功能群組：", 
+            group_options,
+            index=group_options.index(current_group),
+            key="group_selector",
+            on_change=on_group_change
+        )
         
         st.markdown("---")
         
-        # 步驟二：根據選擇的群組，顯示對應的頁面選項
-        if selected_group:
-            page_options = list(PAGES[selected_group].keys())
-            selected_page = st.radio(
-                f"{selected_group} - 頁面列表",
-                page_options,
-                label_visibility="collapsed"
-            )
+        st.radio(
+            f"{current_group} - 頁面列表",
+            page_options,
+            index=page_options.index(current_page),
+            label_visibility="collapsed",
+            key="page_selector",
+            on_change=on_page_change
+        )
     
-    # --- 根據選擇的頁面，渲染對應的UI元件 ---
-    if selected_group and selected_page:
-        st.title(selected_page)
-        
-        # 取得要執行的 render 函式
-        page_to_render = PAGES[selected_group][selected_page]
-
-        # 檢查是否需要傳遞 config
-        if selected_page == "系統爬取":
-            page_to_render.render(config)
-        else:
-            page_to_render.render()
+    # --- 渲染頁面 ---
+    page_to_render = PAGES[current_group][current_page]
+    st.title(current_page)
+    
+    if current_page == "系統爬取":
+        page_to_render.render(config)
+    else:
+        page_to_render.render()
 
 if __name__ == "__main__":
     main()
