@@ -84,13 +84,15 @@ def get_single_equipment_details(record_id: int):
         if conn: conn.close()
 
 def add_equipment_record(details: dict):
-    """新增一筆設備紀錄，若有採購金額則同步新增一筆年度費用。"""
+    """新增一筆設備紀錄，若有採購金額或上次保養日期，則同步新增對應紀錄。"""
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed.", None
     try:
         with conn.cursor() as cursor:
             purchase_cost = details.pop('purchase_cost', None)
-            
+            # --- 【核心修改 2】取出上次保養日期，並從 details 中暫時移除 ---
+            last_maintenance_date = details.get('last_maintenance_date')
+
             columns = ', '.join(f'"{k}"' for k in details.keys())
             placeholders = ', '.join(['%s'] * len(details))
             sql = f'INSERT INTO "DormitoryEquipment" ({columns}) VALUES ({placeholders}) RETURNING id'
@@ -111,9 +113,26 @@ def add_equipment_record(details: dict):
                 success, message, _ = finance_model.add_annual_expense_record(expense_details)
                 if not success:
                     raise Exception(f"設備已新增，但自動建立費用失敗: {message}")
+            
+            # --- 【核心修改 3】如果存在上次保養日期，則自動建立一筆已完成的保養歷史紀錄 ---
+            if last_maintenance_date:
+                log_details = {
+                    'dorm_id': details['dorm_id'],
+                    'equipment_id': new_id,
+                    'status': '已完成',
+                    'notification_date': last_maintenance_date,
+                    'completion_date': last_maintenance_date,
+                    'item_type': '定期保養',
+                    'payer': '我司'
+                }
+                # 直接在這裡執行 INSERT，確保在同一個交易中完成
+                log_columns = ', '.join(f'"{k}"' for k in log_details.keys())
+                log_placeholders = ', '.join(['%s'] * len(log_details))
+                log_sql = f'INSERT INTO "MaintenanceLog" ({log_columns}) VALUES ({log_placeholders})'
+                cursor.execute(log_sql, tuple(log_details.values()))
 
         conn.commit()
-        return True, f"成功新增設備紀錄 (ID: {new_id})，並已同步建立費用。", new_id
+        return True, f"成功新增設備紀錄 (ID: {new_id})，並已同步建立相關紀錄。", new_id
     except Exception as e:
         if conn: conn.rollback()
         return False, f"新增設備紀錄時發生錯誤: {e}", None
