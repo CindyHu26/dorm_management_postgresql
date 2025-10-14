@@ -20,14 +20,18 @@ def render():
     # --- 區塊一：變動費用匯入 ---
     with st.container(border=True):
         st.subheader("💧 變動費用匯入 (水電、網路等)")
-        st.info("用於匯入水電、網路等每月變動的費用帳單。")
+        st.info(
+            """
+            用於匯入水電、網路等每月變動的費用帳單。
+            - **更新方式**：系統會以「宿舍地址 + 費用類型 + 帳單起始日 + 對應錶號」來判斷是否為同一筆紀錄。若紀錄已存在，則會**覆蓋**舊資料；若不存在，則會新增。
+            """
+        )
         
-        # 在範本中加入「用量(度/噸)」
         expense_template_df = pd.DataFrame({
             "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號"],
             "費用類型": ["電費"],
             "帳單金額": [6500],
-            "用量(度/噸)": [1850.5], # 新增欄位
+            "用量(度/噸)": [1850.5],
             "帳單起始日": ["2025-06-15"],
             "帳單結束日": ["2025-08-14"],
             "對應錶號": ["07-12-3333-44-5"],
@@ -68,7 +72,12 @@ def render():
     # --- 區塊二：一般年度費用匯入 ---
     with st.container(border=True):
         st.subheader("📋 一般年度費用匯入")
-        st.info("用於匯入維修、消防安檢、傢俱等一次性支付，但效益橫跨多個月份的費用。")
+        st.info(
+            """
+            用於匯入維修、消防安檢、傢俱等一次性支付，但效益橫跨多個月份的費用。
+            - **更新方式**：系統會以「宿舍地址 + 費用項目 + 支付日期」來判斷是否為同一筆紀錄。若紀錄已存在，則會**覆蓋**舊資料。
+            """
+        )
         
         annual_template_df = pd.DataFrame({
             "宿舍地址": ["範例：彰化縣鹿港鎮成功路123號"],
@@ -105,7 +114,13 @@ def render():
     # --- 區塊三：建物申報匯入 ---
     with st.container(border=True):
         st.subheader("🏗️ 建物申報匯入")
-        st.info("請下載建物申報專用範本，依照欄位填寫後上傳。")
+        # --- 【核心修改 1】更新說明文字 ---
+        st.info(
+            """
+            請下載建物申報專用範本，依照欄位填寫後上傳。
+            - **更新方式**：系統會以「宿舍地址 + 申報項目 + 此次申報核准起日期」來判斷是否重複。若紀錄已存在，則會**跳過**不處理。
+            """
+        )
         
         permit_template_df = pd.DataFrame({
             "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號"],
@@ -134,8 +149,15 @@ def render():
                 st.dataframe(df_permit.head())
                 if st.button("🚀 開始匯入建物申報", type="primary", key="permit_import_btn"):
                     with st.spinner("正在處理與匯入建物申報資料..."):
-                        success, failed_df = importer_model.batch_import_building_permits(df_permit)
-                    st.success(f"匯入完成！成功 {success} 筆。")
+                        # --- 【核心修改 2】接收三個回傳值 ---
+                        success, failed_df, skipped_df = importer_model.batch_import_building_permits(df_permit)
+                    st.success(f"匯入完成！成功新增 {success} 筆。")
+                    
+                    # --- 【核心修改 3】顯示跳過的紀錄 ---
+                    if not skipped_df.empty:
+                        st.warning(f"有 {len(skipped_df)} 筆資料因重複而跳過：")
+                        st.dataframe(skipped_df)
+
                     if not failed_df.empty:
                         st.error(f"有 {len(failed_df)} 筆資料匯入失敗：")
                         st.dataframe(failed_df)
@@ -149,7 +171,12 @@ def render():
 
     with st.container(border=True):
         st.subheader("🔥 消防安檢匯入")
-        st.info("用於批次新增消防安檢的費用與憑證紀錄。")
+        st.info(
+            """
+            用於批次新增消防安檢的費用與憑證紀錄。
+            - **更新方式**：系統會以「宿舍地址 + 支付日期 + 支付總金額」來判斷是否重複。若紀錄已存在，則會**跳過**不處理。
+            """
+        )
 
         fire_safety_template_df = pd.DataFrame({
             "宿舍地址": ["範例：彰化縣鹿港鎮成功路123號"],
@@ -193,9 +220,13 @@ def render():
     # --- 區塊四：住宿分配匯入 ---
     with st.container(border=True):
         st.subheader("🏠 住宿分配/異動匯入")
-        st.info("用於批次分配或更新人員的實際住宿房間與床位。")
+        st.info(
+            """
+            用於批次分配或更新人員的實際住宿房間與床位。
+            - **更新方式**：系統會自動判斷應更新舊住宿紀錄的結束日期，或為人員新增一筆換宿紀錄。
+            """
+        )
         
-        # --- 核心修改點：更新範本欄位名稱 ---
         accommodation_template_df = pd.DataFrame({
             "雇主": ["範例：ABC公司"],
             "姓名": ["阮文雄"],
@@ -236,7 +267,12 @@ def render():
     st.markdown("---")
     with st.container(border=True):
         st.subheader("📄 長期合約匯入")
-        st.info("用於批次新增宿舍的租賃合約紀錄。")
+        st.info(
+            """
+            用於批次新增宿舍的租賃合約紀錄。
+            - **更新方式**：系統會以「宿舍地址 + 合約項目 + 合約起始日 + 月租金」來判斷是否重複。若紀錄已存在，則會**跳過**不處理。
+            """
+        )
         
         lease_template_df = pd.DataFrame({
             "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號"],
@@ -290,7 +326,12 @@ def render():
     st.markdown("---")
     with st.container(border=True):
         st.subheader("💰 其他收入匯入")
-        st.info("用於匯入冷氣卡儲值、販賣機等非房租的零星收入。")
+        st.info(
+            """
+            用於匯入冷氣卡儲值、販賣機等非房租的零星收入。
+            - **更新方式**：系統會以「宿舍地址 + 收入項目 + 收入日期」來判斷是否為同一筆紀錄。若紀錄已存在，則會**覆蓋**舊資料。
+            """
+        )
         
         other_income_template_df = pd.DataFrame({
             "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號"],
@@ -326,9 +367,13 @@ def render():
     st.markdown("---")
     with st.container(border=True):
             st.subheader("🏢 宿舍房間資訊匯入")
-            st.info("用於更新現有宿舍的房間資訊，或為已存在的宿舍批次新增房間。請確保 Excel 中的『宿舍地址』已存在於系統中，否則相關的所有房間資料將會匯入失敗。")
+            st.info(
+                """
+                用於更新現有宿舍的房間資訊，或為已存在的宿舍批次新增房間。
+                - **更新方式**：請確保 Excel 中的「宿舍地址」已存在於系統中。系統會以「宿舍地址 + 房號」判斷紀錄。若房間已存在，則**覆蓋**舊資料；若不存在，則會在該宿舍下新增此房間。
+                """
+            )
             
-            # --- 移除宿舍層級的欄位，讓範本更簡潔 ---
             dorm_room_template_df = pd.DataFrame({
                 "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號", "範例：彰化縣鹿港鎮中山路100號", "範例：雲林縣麥寮鄉工業路1號"],
                 "房號": ["A01", "A02", "101"],
@@ -369,9 +414,13 @@ def render():
     st.markdown("---")
     with st.container(border=True):
         st.subheader("🔧 廠商資料匯入")
-        st.info("用於將您現有的廠商聯絡人 Excel 檔案 (.xls 或 .xlsx) 批次匯入系統。")
+        st.info(
+            """
+            用於將您現有的廠商聯絡人 Excel 檔案批次匯入系統。
+            - **更新方式**：系統會以「廠商名稱 + 服務項目」來判斷是否為同一筆紀錄。若紀錄已存在，則會**覆蓋**舊資料。
+            """
+        )
         
-        # --- 【核心修改】新增範本下載按鈕 ---
         vendor_template_df = pd.DataFrame({
             "服務項目": ["範例：房東"],
             "廠商名稱": ["王大明"],
@@ -391,7 +440,6 @@ def render():
 
         if uploaded_vendor_file:
             try:
-                # 使用 pandas 讀取 .xls 或 .xlsx 檔案
                 df_vendor = pd.read_excel(uploaded_vendor_file)
                 st.markdown("##### 檔案內容預覽：")
                 st.dataframe(df_vendor.head())
@@ -415,11 +463,15 @@ def render():
     with st.container(border=True):
         st.subheader("🛠️ 維修紀錄批次處理")
         
-        # --- 使用頁籤來分隔兩個功能 ---
         tab1, tab2 = st.tabs(["批次新增", "批次更新"])
 
         with tab1:
-            st.info("用於將【全新】的維修案件紀錄，從 Excel 檔案批次匯入系統。若紀錄已存在將會自動跳過。")
+            st.info(
+                """
+                用於將【全新】的維修案件紀錄，從 Excel 檔案批次匯入系統。
+                - **更新方式**：系統會以「宿舍地址 + 修理細項說明 + 收到通知日期」判斷是否重複。若紀錄已存在，將會自動**跳過**。
+                """
+            )
             
             maintenance_template_df = pd.DataFrame({
                 "收到通知日期": [date.today().strftime('%Y-%m-%d')],
@@ -468,7 +520,12 @@ def render():
                     st.error(f"處理檔案時發生錯誤：{e}")
         
         with tab2:
-            st.info("用於批次【更新】費用、發票等後續資訊。請先下載目前的維修紀錄，在 Excel 中填寫或修改資料後，再重新上傳。")
+            st.info(
+                """
+                用於批次【更新】費用、發票等後續資訊。
+                - **更新方式**：請先下載目前的維修紀錄，系統會以檔案中的 **ID** 欄位為基準，**覆蓋**您在 Excel 中修改的欄位資料。
+                """
+            )
 
             if st.button("📥 下載待更新的維修紀錄檔"):
                 with st.spinner("正在產生檔案..."):
@@ -507,13 +564,19 @@ def render():
     st.markdown("---")
     with st.container(border=True):
         st.subheader("⚙️ 設備匯入")
-        st.info("用於批次新增或更新宿舍內的各項設備資產。系統會以「宿舍地址 + 設備名稱 + 位置」來判斷是否為同一筆資料。")
+        st.info(
+            """
+            用於批次新增或更新宿舍內的各項設備資產。
+            - **更新方式**：系統會以「宿舍地址 + 設備名稱 + 位置」來判斷是否為同一筆資料。若紀錄已存在，則會**覆蓋**舊資料；若不存在，則會新增。
+            """
+        )
         
         equipment_template_df = pd.DataFrame({
             "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號"],
             "設備名稱": ["2F飲水機"],
             "設備分類": ["飲水設備"],
             "位置": ["2F走廊"],
+            "供應廠商": ["範例廠商-賀眾牌"],
             "品牌/型號": ["賀眾牌 UR-123"],
             "序號/批號": ["SN-98765"],
             "安裝/啟用日期": [date(2025, 1, 15).strftime('%Y-%m-%d')],

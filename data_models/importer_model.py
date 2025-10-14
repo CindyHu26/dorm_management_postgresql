@@ -230,15 +230,17 @@ def batch_import_annual_expenses(df: pd.DataFrame):
 
 def batch_import_building_permits(df: pd.DataFrame):
     """
-    批次匯入【建物申報】的核心邏輯。
+    【v1.1 修改版】批次匯入【建物申報】的核心邏輯。
+    新增重複檢查，若紀錄已存在則會跳過。
     """
     success_count = 0
     failed_records = []
+    skipped_records = []  # 新增一個列表來存放跳過的紀錄
     conn = database.get_db_connection()
     if not conn:
         error_df = df.copy()
         error_df['錯誤原因'] = "無法連接到資料庫"
-        return 0, error_df
+        return 0, error_df, pd.DataFrame() # 修改回傳值
 
     try:
         with conn.cursor() as cursor:
@@ -266,10 +268,8 @@ def batch_import_building_permits(df: pd.DataFrame):
                     if not dorm_id:
                         raise ValueError(f"在資料庫中找不到對應的宿舍地址: {original_address}")
                     
-                    # 處理布林值
                     def to_bool(val):
                         if pd.isna(val): return None
-                        # 處理 'TRUE', 'FALSE', 1, 0, 'Y', 'N' 等情況
                         return str(val).strip().upper() in ['TRUE', '1', 'Y', 'YES', '是']
 
                     permit_details = {
@@ -303,7 +303,26 @@ def batch_import_building_permits(df: pd.DataFrame):
                         "amortization_end_month": pd.to_datetime(row.get('攤提結束月')).strftime('%Y-%m') if pd.notna(row.get('攤提結束月')) else None,
                     }
 
-                    # 【核心修改】在轉換為 JSON 前，清洗 NaN 值
+                    # --- 【核心修改 1】新增重複檢查 ---
+                    approval_start_date_str = permit_details.get("approval_start_date")
+                    if not approval_start_date_str:
+                        raise ValueError("「此次申報核准起日期」為判斷重複的必要欄位，不可為空")
+
+                    check_query = """
+                        SELECT id FROM "ComplianceRecords"
+                        WHERE dorm_id = %s
+                          AND record_type = '建物申報'
+                          AND details ->> 'declaration_item' = %s
+                          AND details ->> 'approval_start_date' = %s
+                    """
+                    cursor.execute(check_query, (dorm_id, permit_details.get("declaration_item"), approval_start_date_str))
+                    
+                    if cursor.fetchone():
+                        row['錯誤原因'] = "資料重複，已跳過"
+                        skipped_records.append(row)
+                        continue # 跳到下一筆資料
+
+                    # --- 若不重複，才執行新增 ---
                     cleaned_permit_details = clean_nan_for_json(permit_details)
                     details_json = json.dumps(cleaned_permit_details, ensure_ascii=False)
 
@@ -329,7 +348,7 @@ def batch_import_building_permits(df: pd.DataFrame):
     finally:
         if conn: conn.close()
             
-    return success_count, pd.DataFrame(failed_records)
+    return success_count, pd.DataFrame(failed_records), pd.DataFrame(skipped_records) # 修改回傳值
 
 def batch_import_accommodation(df: pd.DataFrame):
     """
@@ -1112,8 +1131,8 @@ def export_maintenance_logs_for_update():
 
 def batch_import_equipment(df: pd.DataFrame):
     """
-    【v1.3 終極版】批次匯入【設備】的核心邏輯。
-    可同時建立設備、採購費用、首次合規紀錄。
+    【v2.0 廠商關聯版】批次匯入【設備】的核心邏輯。
+    可同時建立設備、採購費用、首次合規紀錄，並關聯供應廠商。
     """
     success_count = 0
     failed_records = []
@@ -1125,12 +1144,16 @@ def batch_import_equipment(df: pd.DataFrame):
 
     try:
         with conn.cursor() as cursor:
+            # --- 【核心修改 1】預先載入所有需要的資料以供比對 ---
             dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, original_address, normalized_address FROM "Dormitories"')
             original_addr_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
             normalized_addr_map = {d['normalized_address']: d['id'] for _, d in dorms_df.iterrows()}
             
             equip_df = _execute_query_to_dataframe(conn, 'SELECT id, dorm_id, equipment_name, location FROM "DormitoryEquipment"')
             equip_map = {(row['dorm_id'], row['equipment_name'], str(row['location'] or '')): row['id'] for _, row in equip_df.iterrows()}
+
+            vendors_df = _execute_query_to_dataframe(conn, 'SELECT id, vendor_name FROM "Vendors"')
+            vendor_map = {v['vendor_name']: v['id'] for _, v in vendors_df.iterrows()}
 
             for index, row in df.iterrows():
                 try:
@@ -1148,6 +1171,15 @@ def batch_import_equipment(df: pd.DataFrame):
                     if pd.isna(equipment_name) or not str(equipment_name).strip():
                         raise ValueError("設備名稱為必填欄位")
                     
+                    # --- 【核心修改 2】處理供應廠商欄位 ---
+                    vendor_id = None
+                    vendor_name = row.get('供應廠商')
+                    if pd.notna(vendor_name) and str(vendor_name).strip():
+                        vendor_name_stripped = str(vendor_name).strip()
+                        vendor_id = vendor_map.get(vendor_name_stripped)
+                        if not vendor_id:
+                            raise ValueError(f"在廠商資料庫中找不到廠商: '{vendor_name_stripped}'，請先新增或確認名稱是否完全相符。")
+
                     def to_int_or_none(val):
                         if pd.isna(val) or val == '': return None
                         return int(val)
@@ -1158,6 +1190,7 @@ def batch_import_equipment(df: pd.DataFrame):
 
                     details = {
                         "dorm_id": dorm_id,
+                        "vendor_id": vendor_id, # 將 vendor_id 加入
                         "equipment_name": str(equipment_name).strip(),
                         "equipment_category": str(row.get('設備分類', '')).strip() or None,
                         "location": str(row.get('位置', '')).strip() or None,
@@ -1190,7 +1223,6 @@ def batch_import_equipment(df: pd.DataFrame):
                         cursor.execute(insert_sql, tuple(details.values()))
                         new_equipment_id = cursor.fetchone()['id']
                     
-                    # 檢查並新增關聯的「首次合規紀錄」
                     first_compliance_date = to_date_or_none(row.get('首次合規檢測日期'))
                     compliance_cost = to_int_or_none(row.get('首次合規檢測費用'))
 
