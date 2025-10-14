@@ -2,12 +2,12 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
-from data_models import finance_model, dormitory_model
+from data_models import finance_model, dormitory_model, vendor_model 
 
 def render():
     """渲染「年度費用管理」頁面"""
     st.header("我司管理宿舍 - 長期攤銷費用管理")
-    
+
     my_dorms = dormitory_model.get_my_company_dorms_for_selection()
     if not my_dorms:
         st.warning("目前資料庫中沒有主要管理人為「我司」的宿舍。")
@@ -21,7 +21,7 @@ def render():
     )
     if not selected_dorm_id: return
     st.markdown("---")
-    
+
     st.subheader(f"歷史費用總覽: {dorm_options.get(selected_dorm_id)}")
     if st.button("🔄 重新整理費用列表"):
         st.cache_data.clear()
@@ -43,9 +43,7 @@ def render():
             on_select="rerun",
             selection_mode="multi-row"
         )
-        
         selected_rows = all_expenses_df.iloc[selection.selection.rows]
-
         if not selected_rows.empty:
             st.markdown("---")
             st.subheader(f"批次操作已選取的 {len(selected_rows)} 筆紀錄")
@@ -77,57 +75,140 @@ def render():
         )
 
         if selected_expense_id:
+            # --- 預先載入廠商資料 ---
+            vendors_df = vendor_model.get_vendors_for_view()
+            vendor_names = [""] + list(vendors_df['廠商名稱'].unique()) if not vendors_df.empty else [""]
+
             expense_details = finance_model.get_single_annual_expense_details(selected_expense_id)
             expense_type = all_expenses_df.loc[all_expenses_df['id'] == selected_expense_id, '費用類型'].iloc[0]
 
             if not expense_details:
                 st.error("找不到選定的費用資料，可能已被刪除。")
-            else:
-                with st.form(f"edit_annual_expense_{selected_expense_id}"):
-                    st.markdown(f"###### 正在編輯 ID: {expense_details['id']} ({expense_type})")
-                    is_general_expense = (expense_type == '一般費用')
+                return
 
-                    edit_expense_item = st.text_input(
-                        "費用項目",
-                        value=expense_details.get('expense_item', ''),
-                        disabled=not is_general_expense,
-                        help="關聯到建物申報或保險的費用項目為自動產生，無法直接修改。"
-                    )
+            if expense_type == '一般費用':
+                with st.form(f"edit_general_expense_{selected_expense_id}"):
+                    st.markdown(f"###### 正在編輯 ID: {expense_details['id']} ({expense_type})")
+                    edit_expense_item = st.text_input("費用項目", value=expense_details.get('expense_item', ''))
                     e_c1, e_c2 = st.columns(2)
                     edit_payment_date = e_c1.date_input("實際支付日期", value=expense_details.get('payment_date'))
                     edit_total_amount = e_c2.number_input("支付總金額", min_value=0, step=1000, value=expense_details.get('total_amount', 0))
-
                     st.markdown("###### 攤提期間")
                     e_sc1, e_sc2 = st.columns(2)
                     edit_amort_start = e_sc1.text_input("攤提起始月 (YYYY-MM)", value=expense_details.get('amortization_start_month', ''))
                     edit_amort_end = e_sc2.text_input("攤提結束月 (YYYY-MM)", value=expense_details.get('amortization_end_month', ''))
+                    edit_notes = st.text_area("備註", value=expense_details.get('notes', ''))
 
-                    edit_notes = st.text_area(
-                        "備註",
-                        value=expense_details.get('notes', ''),
-                        disabled=not is_general_expense,
-                        help="關聯到建物申報或保險的備註為自動產生，無法直接修改。"
-                    )
-
-                    submitted = st.form_submit_button("儲存變更")
-                    if submitted:
+                    if st.form_submit_button("儲存一般費用變更"):
                         update_data = {
-                            "payment_date": edit_payment_date,
-                            "total_amount": edit_total_amount,
-                            "amortization_start_month": edit_amort_start,
-                            "amortization_end_month": edit_amort_end,
+                            "expense_item": edit_expense_item, "notes": edit_notes,
+                            "payment_date": edit_payment_date, "total_amount": edit_total_amount,
+                            "amortization_start_month": edit_amort_start, "amortization_end_month": edit_amort_end,
                         }
-                        if is_general_expense:
-                            update_data["expense_item"] = edit_expense_item
-                            update_data["notes"] = edit_notes
-
                         success, message = finance_model.update_annual_expense_record(selected_expense_id, update_data)
-                        if success:
-                            st.success(message)
-                            st.cache_data.clear()
-                            st.rerun()
-                        else:
-                            st.error(message)
+                        if success: st.success(message); st.cache_data.clear(); st.rerun()
+                        else: st.error(message)
+            else:
+                compliance_id = expense_details.get('compliance_record_id')
+                if not compliance_id:
+                    st.error("資料錯誤：找不到與此費用關聯的詳細紀錄。")
+                    return
+                
+                compliance_details = finance_model.get_single_compliance_details(compliance_id)
+                if not compliance_details:
+                    st.error("資料錯誤：讀取關聯的詳細紀錄時失敗。")
+                    return
+
+                with st.form(f"edit_compliance_expense_{selected_expense_id}"):
+                    st.markdown(f"###### 正在編輯 ID: {expense_details['id']} ({expense_type})")
+                    
+                    st.markdown("##### 財務資訊")
+                    fin_c1, fin_c2 = st.columns(2)
+                    e_payment_date = fin_c1.date_input("實際支付日期", value=expense_details.get('payment_date'))
+                    e_total_amount = fin_c2.number_input("支付總金額", min_value=0, value=expense_details.get('total_amount', 0))
+                    
+                    st.markdown("##### 攤提期間")
+                    am_c1, am_c2 = st.columns(2)
+                    e_amort_start = am_c1.text_input("攤提起始月 (YYYY-MM)", value=expense_details.get('amortization_start_month', ''))
+                    e_amort_end = am_c2.text_input("攤提結束月 (YYYY-MM)", value=expense_details.get('amortization_end_month', ''))
+                    
+                    st.markdown("---")
+                    st.markdown("##### 詳細資料")
+
+                    if expense_type == '建物申報':
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            # --- 將建築師改為下拉選單 ---
+                            current_architect = compliance_details.get('architect_name', '')
+                            architect_index = vendor_names.index(current_architect) if current_architect in vendor_names else 0
+                            e_architect_name = st.selectbox("建築師", options=vendor_names, index=architect_index)
+                            
+                            e_declaration_item = st.text_input("申報項目", value=compliance_details.get('declaration_item', ''))
+                            e_area_legal = st.text_input("申報面積(合法)", value=compliance_details.get('area_legal', ''))
+                            e_area_total = st.text_input("申報面積(合法+違規)", value=compliance_details.get('area_total', ''))
+                            e_submission_date = st.date_input("申報文件送出日期", value=compliance_details.get('submission_date'))
+                        with col2:
+                            e_gov_doc = st.checkbox("政府是否發文", value=compliance_details.get('gov_document_exists', False))
+                            e_improvements = st.checkbox("現場是否改善", value=compliance_details.get('improvements_made', False))
+                            e_next_start = st.date_input("下次申報起始日期", value=compliance_details.get('next_declaration_start'))
+                            e_next_end = st.date_input("下次申報結束日期", value=compliance_details.get('next_declaration_end'))
+                    
+                    elif expense_type == '消防安檢':
+                        fs_c1, fs_c2 = st.columns(2)
+                        # --- 將廠商改為下拉選單 ---
+                        current_vendor = compliance_details.get('vendor', '')
+                        vendor_index = vendor_names.index(current_vendor) if current_vendor in vendor_names else 0
+                        e_fs_vendor = fs_c1.selectbox("支出對象/廠商", options=vendor_names, index=vendor_index)
+
+                        e_fs_item = fs_c2.text_input("申報項目", value=compliance_details.get('declaration_item', ''))
+                        st.date_input("收到憑證日期", value=compliance_details.get('certificate_date'), key="certificate_date_widget")
+                        e_fs_next_start = st.date_input("下次申報起始日期", value=compliance_details.get('next_declaration_start'))
+
+                    elif expense_type == '保險':
+                        ins_c1, ins_c2 = st.columns(2)
+                        # --- 將保險公司改為下拉選單 ---
+                        current_insurer = compliance_details.get('vendor', '')
+                        insurer_index = vendor_names.index(current_insurer) if current_insurer in vendor_names else 0
+                        e_ins_vendor = ins_c1.selectbox("保險公司", options=vendor_names, index=insurer_index)
+                        
+                        e_ins_start = ins_c2.date_input("保險起始日", value=compliance_details.get('insurance_start_date'))
+                        e_ins_end = ins_c2.date_input("保險截止日", value=compliance_details.get('insurance_end_date'))
+                    
+                    if st.form_submit_button("儲存變更"):
+                        updated_expense_data = {
+                            "payment_date": e_payment_date, "total_amount": e_total_amount,
+                            "amortization_start_month": e_amort_start, "amortization_end_month": e_amort_end,
+                        }
+                        
+                        updated_compliance_data = {}
+                        if expense_type == '建物申報':
+                            updated_compliance_data = {
+                                "architect_name": e_architect_name, "declaration_item": e_declaration_item,
+                                "area_legal": e_area_legal, "area_total": e_area_total,
+                                "submission_date": e_submission_date, "gov_document_exists": e_gov_doc,
+                                "improvements_made": e_improvements, "next_declaration_start": e_next_start,
+                                "next_declaration_end": e_next_end
+                            }
+                        elif expense_type == '消防安檢':
+                            updated_compliance_data = {
+                                "vendor": e_fs_vendor, "declaration_item": e_fs_item,
+                                "certificate_date": st.session_state.get('certificate_date_widget'),
+                                "next_declaration_start": e_fs_next_start
+                            }
+                        elif expense_type == '保險':
+                             updated_compliance_data = {
+                                "vendor": e_ins_vendor, 
+                                "insurance_start_date": e_ins_start,
+                                "insurance_end_date": e_ins_end
+                            }
+                        
+                        success, message = finance_model.update_compliance_expense_record(
+                            selected_expense_id, updated_expense_data, 
+                            compliance_id, updated_compliance_data,
+                            expense_type
+                        )
+                        if success: st.success(message); st.cache_data.clear(); st.rerun()
+                        else: st.error(message)
 
     st.markdown("---")
     
@@ -236,7 +317,7 @@ def render():
                 success, message, _ = finance_model.add_building_permit_record(permit_details, expense_details)
                 if success: st.success(message); st.cache_data.clear(); st.rerun()
                 else: st.error(message)
-                
+
     with tab3:
         st.subheader("新增消防安檢紀錄")
         with st.form("new_fire_safety_form", clear_on_submit=True):
@@ -245,7 +326,6 @@ def render():
             fs_payment_date = fsc1.date_input("支付日期", value=datetime.now(), key="fs_payment")
             fs_amount = fsc2.number_input("支付總金額", min_value=0, key="fs_amount")
             
-            # --- 【核心修改】將財務與攤銷欄位都加入 ---
             st.markdown("##### 攤提期間")
             fs_am_c1, fs_am_c2, fs_am_c3 = st.columns(3)
             fs_amort_start = fs_am_c1.date_input("攤提起始日", value=fs_payment_date, key="fs_amort_start")
@@ -294,7 +374,6 @@ def render():
         st.markdown("---")
         
         st.subheader("新增保險紀錄")
-        # ... (保險紀錄表單維持不變) ...
         with st.form("new_insurance_form", clear_on_submit=True):
             insc1, insc2, insc3 = st.columns(3)
             ins_payment_date = insc1.date_input("支付日期", value=datetime.now(), key="ins_payment")

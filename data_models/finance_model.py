@@ -490,6 +490,56 @@ def get_single_annual_expense_details(expense_id: int):
     finally:
         if conn: conn.close()
 
+def get_single_compliance_details(compliance_record_id: int):
+    """取得單筆合規紀錄的詳細資料。"""
+    conn = database.get_db_connection()
+    if not conn: return None
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute('SELECT * FROM "ComplianceRecords" WHERE id = %s', (compliance_record_id,))
+            record = cursor.fetchone()
+            if record and record.get('details'):
+                # 將 JSONB 欄位直接解析為 Python 字典
+                details_dict = record['details']
+                # 將解析後的字典合併回主紀錄中
+                record.update(details_dict)
+            return dict(record) if record else None
+    finally:
+        if conn: conn.close()
+
+def update_compliance_expense_record(expense_id: int, expense_details: dict, compliance_id: int, compliance_details: dict, record_type: str):
+    """
+    【交易】同時更新一筆年度費用及其關聯的合規紀錄。
+    """
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗。"
+    try:
+        with conn.cursor() as cursor:
+            # 步驟 1: 更新 AnnualExpenses 表
+            # 安全性措施：不允許透過此函式修改關聯ID
+            expense_details.pop('compliance_record_id', None)
+            expense_fields = ', '.join([f'"{key}" = %s' for key in expense_details.keys()])
+            expense_values = list(expense_details.values()) + [expense_id]
+            sql_expense = f'UPDATE "AnnualExpenses" SET {expense_fields} WHERE id = %s'
+            cursor.execute(sql_expense, tuple(expense_values))
+
+            # 步驟 2: 更新 ComplianceRecords 表的 details 欄位
+            # 為了讓 reminder_model 能查詢到，我們在 JSON 中也存一份
+            if record_type == '消防安檢' and compliance_details.get('next_declaration_start'):
+                 compliance_details['next_check_date'] = compliance_details['next_declaration_start']
+
+            sql_compliance = 'UPDATE "ComplianceRecords" SET details = %s WHERE id = %s'
+            # 將 Python 字典轉為 JSON 字串進行儲存
+            cursor.execute(sql_compliance, (json.dumps(compliance_details, ensure_ascii=False, default=str), compliance_id))
+
+        conn.commit()
+        return True, "費用與合規紀錄更新成功！"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"更新紀錄時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
+
 def update_annual_expense_record(expense_id: int, details: dict):
     """更新一筆已存在的年度費用紀錄。"""
     conn = database.get_db_connection()
