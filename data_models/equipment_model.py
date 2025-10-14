@@ -2,7 +2,7 @@
 
 import pandas as pd
 import database
-from datetime import date
+from datetime import date, timedelta
 from dateutil.relativedelta import relativedelta
 from . import finance_model
 
@@ -59,7 +59,7 @@ def get_equipment_for_view(filters: dict = None):
         if conn: conn.close()
 
 def get_distinct_equipment_categories():
-    """【核心修改 2】獲取所有不重複的設備分類列表。"""
+    """ 獲取所有不重複的設備分類列表。"""
     conn = database.get_db_connection()
     if not conn: return []
     try:
@@ -90,7 +90,6 @@ def add_equipment_record(details: dict):
     try:
         with conn.cursor() as cursor:
             purchase_cost = details.pop('purchase_cost', None)
-            # --- 【核心修改 2】取出上次保養日期，並從 details 中暫時移除 ---
             last_maintenance_date = details.get('last_maintenance_date')
 
             columns = ', '.join(f'"{k}"' for k in details.keys())
@@ -114,18 +113,20 @@ def add_equipment_record(details: dict):
                 if not success:
                     raise Exception(f"設備已新增，但自動建立費用失敗: {message}")
             
-            # --- 【核心修改 3】如果存在上次保養日期，則自動建立一筆已完成的保養歷史紀錄 ---
             if last_maintenance_date:
+                # --- 計算完成日期 ---
+                completion_date_for_log = last_maintenance_date + timedelta(days=14)
+                
                 log_details = {
                     'dorm_id': details['dorm_id'],
                     'equipment_id': new_id,
                     'status': '已完成',
                     'notification_date': last_maintenance_date,
-                    'completion_date': last_maintenance_date,
+                    'completion_date': completion_date_for_log, # <-- 使用計算後的新日期
                     'item_type': '定期保養',
+                    'description': '來自設備新增',
                     'payer': '我司'
                 }
-                # 直接在這裡執行 INSERT，確保在同一個交易中完成
                 log_columns = ', '.join(f'"{k}"' for k in log_details.keys())
                 log_placeholders = ', '.join(['%s'] * len(log_details))
                 log_sql = f'INSERT INTO "MaintenanceLog" ({log_columns}) VALUES ({log_placeholders})'

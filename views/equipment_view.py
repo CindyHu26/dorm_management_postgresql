@@ -11,16 +11,14 @@ def render():
     st.header("我司管理宿舍 - 設備管理")
     st.info("用於登錄、追蹤宿舍內的消防、電器、飲水等各類設備及其完整的生命週期紀錄。")
 
-    # --- 【核心修改 1】將宿舍選擇移到篩選器中 ---
     my_dorms = dormitory_model.get_my_company_dorms_for_selection()
     if not my_dorms:
         st.warning("目前資料庫中沒有主要管理人為「我司」的宿舍。")
         return
+
     dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in my_dorms}
     
-    # --- 新增區塊：新增設備 ---
     with st.expander("➕ 新增一筆設備紀錄"):
-        # 在新增區塊內，我們仍然需要一個獨立的宿舍選擇器
         selected_dorm_id_for_add = st.selectbox(
             "請選擇要新增設備的宿舍：",
             options=list(dorm_options.keys()),
@@ -85,17 +83,14 @@ def render():
     
     st.subheader("現有設備總覽")
 
-    # --- 【核心修改 2】建立篩選器 ---
     f_col1, f_col2 = st.columns(2)
     
-    # 篩選器 1: 依宿舍
     selected_dorm_id_filter = f_col1.selectbox(
         "依宿舍篩選：",
         options=[None] + list(dorm_options.keys()),
         format_func=lambda x: "所有宿舍" if x is None else dorm_options.get(x)
     )
     
-    # 篩選器 2: 依設備分類
     categories = equipment_model.get_distinct_equipment_categories()
     selected_category_filter = f_col2.selectbox(
         "依設備分類篩選：",
@@ -106,7 +101,6 @@ def render():
     if st.button("🔄 重新整理設備列表"):
         st.cache_data.clear()
 
-    # 組合篩選條件
     filters = {}
     if selected_dorm_id_filter:
         filters["dorm_id"] = selected_dorm_id_filter
@@ -115,7 +109,6 @@ def render():
 
     @st.cache_data
     def get_equipment(filters):
-        # 呼叫更新後的函式
         return equipment_model.get_equipment_for_view(filters)
 
     equipment_df = get_equipment(filters)
@@ -140,14 +133,12 @@ def render():
                     with st.form(f"edit_equipment_form_{selected_id}"):
                         st.markdown(f"##### 正在編輯 ID: {details['id']} 的設備")
                         
-                        # --- 【核心修改 1】新增宿舍地址的下拉選單 ---
                         current_dorm_id = details.get('dorm_id')
-                        # 確保即使 dorm_id 不在選項中也能正常顯示
                         dorm_keys = list(dorm_options.keys())
                         try:
                             current_index = dorm_keys.index(current_dorm_id)
                         except ValueError:
-                            current_index = 0 # 如果找不到，預設為第一個
+                            current_index = 0
                         
                         e_dorm_id = st.selectbox(
                             "宿舍地址", 
@@ -186,7 +177,6 @@ def render():
                         
                         edit_submitted = st.form_submit_button("儲存變更")
                         if edit_submitted:
-                            # --- 【核心修改 2】將 dorm_id 加入要更新的資料中 ---
                             update_data = { 
                                 "dorm_id": e_dorm_id,
                                 "equipment_name": e_equipment_name, "equipment_category": e_equipment_category, 
@@ -212,6 +202,7 @@ def render():
                         success, message = equipment_model.delete_equipment_record(selected_id)
                         if success: st.success(message); st.cache_data.clear(); st.rerun()
                         else: st.error(message)
+
             with tab2:
                 st.markdown("##### 新增維修/保養紀錄")
                 st.info("可在此快速為這台設備建立一筆維修或保養紀錄。")
@@ -231,35 +222,46 @@ def render():
                             success, message = maintenance_model.add_log(log_details)
                             if success: st.success(message); st.cache_data.clear(); st.rerun()
                             else: st.error(message)
+                
                 st.markdown("##### 歷史紀錄")
                 maintenance_history = equipment_model.get_related_maintenance_logs(selected_id)
                 
-                edited_df = st.data_editor(
-                    maintenance_history, width="stretch", hide_index=True,
-                    column_config={
-                        "id": st.column_config.CheckboxColumn(
-                            "完成此項?",
-                            help="勾選狀態為「進行中」的保養紀錄，並點擊下方按鈕來完成它。",
-                            default=False,
+                if not maintenance_history.empty:
+                    # --- 【核心修正】移除 data_editor，改用 dataframe + multiselect ---
+                    st.dataframe(maintenance_history, width="stretch", hide_index=True, column_config={"id": None})
+                    
+                    st.markdown("##### 標示完成")
+                    # 篩選出尚未完成的紀錄
+                    unfinished_logs = maintenance_history[maintenance_history['狀態'] != '已完成']
+                    
+                    if not unfinished_logs.empty:
+                        # 建立選項
+                        options_for_completion = {
+                            row['id']: f"ID:{row['id']} - {row['通報日期']} {row['項目類型']} ({row['細項說明']})" 
+                            for _, row in unfinished_logs.iterrows()
+                        }
+                        selected_log_ids = st.multiselect(
+                            "從上方列表中選擇要標示為「已完成」的項目：",
+                            options=list(options_for_completion.keys()),
+                            format_func=lambda x: options_for_completion.get(x)
                         )
-                    },
-                    key=f"maintenance_table_{selected_id}"
-                )
-                
-                selected_log_ids = [row['id'] for i, row in edited_df.iterrows() if row['id']]
 
-                if st.button("✓ 將勾選的紀錄標示為完成", disabled=not selected_log_ids):
-                    completed_count = 0
-                    for log_id in selected_log_ids:
-                        success, msg = equipment_model.complete_maintenance_and_schedule_next(log_id)
-                        if success:
-                            completed_count += 1
-                        else:
-                            st.error(f"更新紀錄 ID {log_id} 失敗: {msg}")
-                    if completed_count > 0:
-                        st.success(f"成功將 {completed_count} 筆紀錄標示為完成，並已自動更新保養排程！")
-                        st.cache_data.clear()
-                        st.rerun()
+                        if st.button("✓ 將選取的紀錄標示為完成", disabled=not selected_log_ids):
+                            completed_count = 0
+                            for log_id in selected_log_ids:
+                                success, msg = equipment_model.complete_maintenance_and_schedule_next(log_id)
+                                if success:
+                                    completed_count += 1
+                                else:
+                                    st.error(f"更新紀錄 ID {log_id} 失敗: {msg}")
+                            if completed_count > 0:
+                                st.success(f"成功將 {completed_count} 筆紀錄標示為完成，並已自動更新保養排程！")
+                                st.cache_data.clear()
+                                st.rerun()
+                    else:
+                        st.info("此設備目前沒有待處理的維修/保養項目。")
+                else:
+                    st.info("此設備尚無維修/保養歷史紀錄。")
             
             with tab3:
                 st.info("此區塊用於記錄需政府或第三方單位認證的紀錄，例如飲水機的水質檢測報告。")
