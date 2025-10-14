@@ -103,6 +103,66 @@ def render():
                     else:
                         st.error(message)
 
+    with st.expander("🔢 批次新增編號設備"):
+        st.info("用於一次性新增多台名稱有連續編號的設備（例如：飲水機1號、飲水機2號...），所有設備將共用下方填寫的規格、日期與費用等資訊。")
+        with st.form("batch_create_numbered_form", clear_on_submit=True):
+            st.markdown("##### 步驟一：選擇位置與命名規則")
+            bc_c1, bc_c2, bc_c3, bc_c4 = st.columns(4)
+            batch_create_dorm_id = bc_c1.selectbox("選擇宿舍*", options=list(dorm_options.keys()), format_func=lambda x: dorm_options.get(x, "未知宿舍"), key="bc_dorm")
+            batch_create_base_name = bc_c2.text_input("設備基本名稱*", placeholder="例如: 飲水機")
+            batch_create_quantity = bc_c3.number_input("數量*", min_value=1, step=1, value=1)
+            batch_create_start_num = bc_c4.number_input("起始編號*", min_value=1, step=1, value=1)
+            
+            st.markdown("##### 步驟二：填寫共同的設備資訊")
+            bc_c5, bc_c6, bc_c7 = st.columns(3)
+            batch_create_category = bc_c5.selectbox("設備分類", ["消防設備", "電器用品", "飲水設備", "傢俱", "其他"], key="bc_category")
+            batch_create_location = bc_c6.text_input("共同放置位置", placeholder="例如: 2F走廊")
+            batch_create_vendor_id = bc_c7.selectbox("供應廠商", options=[None] + list(vendor_options.keys()), format_func=lambda x: "未指定" if x is None else vendor_options.get(x), key="bc_vendor")
+            
+            bc_c8, bc_c9, bc_c10 = st.columns(3)
+            batch_create_cost = bc_c8.number_input("單台採購金額 (選填)", min_value=0, step=100, help="這是「每一台」設備的成本，系統會為每台設備建立一筆費用紀錄。")
+            batch_create_install_date = bc_c9.date_input("安裝/啟用日期", value=None)
+            batch_last_maintenance_date = bc_c10.date_input("上次保養日期 (選填)", value=None)
+
+            st.markdown("##### 步驟三：設定週期 (選填)")
+            bc_c11, bc_c12 = st.columns(2)
+            batch_maintenance_interval = bc_c11.number_input("一般保養週期 (月)", min_value=0, step=1, help="例如更換濾心。填 0 代表不需定期保養。")
+            batch_compliance_interval = bc_c12.number_input("合規檢測週期 (月)", min_value=0, step=1, help="例如水質檢測週期。填 0 代表不需定期檢測。")
+
+            bc_submitted = st.form_submit_button("🚀 執行批次新增")
+            if bc_submitted:
+                if not batch_create_base_name:
+                    st.error("請填寫「設備基本名稱」！")
+                else:
+                    # 自動計算下次保養日
+                    next_maintenance_date = None
+                    if batch_last_maintenance_date and batch_maintenance_interval > 0:
+                        next_maintenance_date = batch_last_maintenance_date + relativedelta(months=batch_maintenance_interval)
+                    
+                    base_details = {
+                        "dorm_id": batch_create_dorm_id,
+                        "equipment_name": batch_create_base_name,
+                        "equipment_category": batch_create_category,
+                        "location": batch_create_location,
+                        "vendor_id": batch_create_vendor_id,
+                        "purchase_cost": batch_create_cost,
+                        "installation_date": batch_create_install_date,
+                        "status": "正常",
+                        "maintenance_interval_months": batch_maintenance_interval if batch_maintenance_interval > 0 else None,
+                        "compliance_interval_months": batch_compliance_interval if batch_compliance_interval > 0 else None,
+                        "last_maintenance_date": batch_last_maintenance_date,
+                        "next_maintenance_date": next_maintenance_date
+                    }
+                    with st.spinner(f"正在批次新增 {batch_create_quantity} 台設備..."):
+                        success_count, message = equipment_model.batch_create_numbered_equipment(
+                            base_details, batch_create_quantity, batch_create_start_num
+                        )
+                    if success_count > 0:
+                        st.success(message)
+                        st.cache_data.clear()
+                    else:
+                        st.error(message)
+
     with st.expander("➕ 新增一筆設備紀錄"):
         selected_dorm_id_for_add = st.selectbox("請選擇要新增設備的宿舍：", options=list(dorm_options.keys()), format_func=lambda x: dorm_options.get(x, "未知宿舍"), key="add_dorm_select")
         if selected_dorm_id_for_add:

@@ -458,3 +458,73 @@ def get_equipment_for_view(filters: dict = None):
         return _execute_query_to_dataframe(conn, query, params)
     finally:
         if conn: conn.close()
+
+def batch_create_numbered_equipment(details: dict, quantity: int, start_number: int):
+    """
+    【v1.1 週期設定版】批次新增帶有連續編號的設備。
+    新增支援共通的保養與合規週期設定。
+    """
+    if quantity <= 0:
+        return 0, "數量必須大於 0。"
+
+    conn = database.get_db_connection()
+    if not conn:
+        return 0, "資料庫連線失敗。"
+
+    base_name = details.get("equipment_name")
+    success_count = 0
+    
+    try:
+        with conn.cursor() as cursor:
+            for i in range(quantity):
+                item_details = details.copy()
+                item_name = f"{base_name}{start_number + i}號"
+                item_details["equipment_name"] = item_name
+
+                purchase_cost = item_details.pop('purchase_cost', None)
+                last_maintenance_date = item_details.get('last_maintenance_date')
+
+                columns = ', '.join(f'"{k}"' for k in item_details.keys())
+                placeholders = ', '.join(['%s'] * len(item_details))
+                sql = f'INSERT INTO "DormitoryEquipment" ({columns}) VALUES ({placeholders}) RETURNING id'
+                cursor.execute(sql, tuple(item_details.values()))
+                new_id = cursor.fetchone()['id']
+                
+                if purchase_cost and purchase_cost > 0:
+                    payment_date = item_details.get('installation_date') or date.today()
+                    expense_details = {
+                        "dorm_id": item_details['dorm_id'],
+                        "expense_item": f"設備採購-{item_name}",
+                        "payment_date": payment_date,
+                        "total_amount": purchase_cost,
+                        "amortization_start_month": payment_date.strftime('%Y-%m'),
+                        "amortization_end_month": payment_date.strftime('%Y-%m'),
+                        "notes": f"來自批次新增設備(ID:{new_id})"
+                    }
+                    exp_cols = ', '.join(f'"{k}"' for k in expense_details.keys())
+                    exp_placeholders = ', '.join(['%s'] * len(expense_details))
+                    exp_sql = f'INSERT INTO "AnnualExpenses" ({exp_cols}) VALUES ({exp_placeholders})'
+                    cursor.execute(exp_sql, tuple(expense_details.values()))
+                
+                if last_maintenance_date:
+                    completion_date_for_log = last_maintenance_date + timedelta(days=14)
+                    log_details = {
+                        'dorm_id': item_details['dorm_id'], 'equipment_id': new_id, 'status': '已完成',
+                        'notification_date': last_maintenance_date, 'completion_date': completion_date_for_log,
+                        'item_type': '定期保養', 'description': '來自設備批次新增', 'payer': '我司'
+                    }
+                    log_columns = ', '.join(f'"{k}"' for k in log_details.keys())
+                    log_placeholders = ', '.join(['%s'] * len(log_details))
+                    log_sql = f'INSERT INTO "MaintenanceLog" ({log_columns}) VALUES ({log_placeholders})'
+                    cursor.execute(log_sql, tuple(log_details.values()))
+
+                success_count += 1
+        
+        conn.commit()
+        return success_count, f"成功批次新增 {success_count} 台設備。"
+
+    except Exception as e:
+        if conn: conn.rollback()
+        return 0, f"批次新增時發生嚴重錯誤，所有操作已復原: {e}"
+    finally:
+        if conn: conn.close()
