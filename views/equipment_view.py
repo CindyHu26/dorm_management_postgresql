@@ -1,4 +1,4 @@
-# views/equipment_view.py
+# 檔案路徑: views/equipment_view.py
 
 import streamlit as st
 import pandas as pd
@@ -53,8 +53,7 @@ def render():
                 calculated_next_date = last_maintenance_date + relativedelta(months=maintenance_interval)
             
             next_maintenance_date = c9.date_input("下次保養/檢查日期", value=calculated_next_date, help="若有填寫上次保養日和週期，此欄位會自動計算。")
-
-            # --- 新增合規檢測週期欄位 ---
+            
             compliance_interval = st.number_input("合規檢測週期 (月)", min_value=0, step=1, help="例如水質檢測週期。填 0 代表不需定期檢測。")
 
             status = st.selectbox("目前狀態", ["正常", "需保養", "維修中", "已報廢"])
@@ -72,7 +71,7 @@ def render():
                         "purchase_cost": purchase_cost,
                         "installation_date": installation_date,
                         "maintenance_interval_months": maintenance_interval if maintenance_interval > 0 else None,
-                        "compliance_interval_months": compliance_interval if compliance_interval > 0 else None, # <-- 新增
+                        "compliance_interval_months": compliance_interval if compliance_interval > 0 else None,
                         "last_maintenance_date": last_maintenance_date,
                         "next_maintenance_date": next_maintenance_date,
                         "status": status, "notes": notes
@@ -137,7 +136,6 @@ def render():
                         
                         e_next_maintenance_date = ec9.date_input("下次保養/檢查日期", value=e_calculated_next_date or details.get('next_maintenance_date'))
 
-                        # --- 【核心修改 2】在編輯表單中也加入合規週期 ---
                         e_compliance_interval = st.number_input("合規檢測週期 (月)", min_value=0, step=1, value=details.get('compliance_interval_months') or 0, help="例如水質檢測週期。")
 
                         e_status = st.selectbox("目前狀態", ["正常", "需保養", "維修中", "已報廢"], index=["正常", "需保養", "維修中", "已報廢"].index(details.get('status')) if details.get('status') in ["正常", "需保養", "維修中", "已報廢"] else 0)
@@ -179,19 +177,20 @@ def render():
                 st.markdown("##### 歷史紀錄")
                 maintenance_history = equipment_model.get_related_maintenance_logs(selected_id)
                 
-                # --- 新增「完成保養」的按鈕 ---
-                st.dataframe(maintenance_history, width="stretch", hide_index=True,
+                edited_df = st.data_editor(
+                    maintenance_history, width="stretch", hide_index=True,
                     column_config={
                         "id": st.column_config.CheckboxColumn(
                             "完成此項?",
                             help="勾選狀態為「進行中」的保養紀錄，並點擊下方按鈕來完成它。",
-                            disabled=False,
+                            default=False,
                         )
                     },
                     key=f"maintenance_table_{selected_id}"
                 )
-
-                selected_log_ids = st.session_state[f"maintenance_table_{selected_id}"].get("id", [])
+                
+                # --- 【核心修正】使用 .get() 安全地訪問 session_state ---
+                selected_log_ids = [row['id'] for i, row in edited_df.iterrows() if row['id']]
 
                 if st.button("✓ 將勾選的紀錄標示為完成", disabled=not selected_log_ids):
                     completed_count = 0
@@ -213,8 +212,19 @@ def render():
                         st.markdown("##### 檢測資訊")
                         co1, co2, co3 = st.columns(3)
                         declaration_item = co1.text_input("申報項目", value="水質檢測")
-                        certificate_date = co2.date_input("收到憑證日期", value=date.today())
-                        next_declaration_start = co3.date_input("下次申報起始日期", value=None)
+                        certificate_date = co2.date_input("收到憑證/完成日期", value=date.today())
+                        
+                        compliance_interval = details.get('compliance_interval_months')
+                        calculated_next_compliance_date = None
+                        if certificate_date and compliance_interval and compliance_interval > 0:
+                            calculated_next_compliance_date = certificate_date + relativedelta(months=compliance_interval)
+
+                        next_declaration_start = co3.date_input(
+                            "下次申報/檢測日期", 
+                            value=calculated_next_compliance_date, 
+                            help="若設備已設定合規檢測週期，此欄位會自動計算。"
+                        )
+                        
                         st.markdown("##### 相關費用 (選填)")
                         co4, co5 = st.columns(2)
                         payment_date = co4.date_input("支付日期", value=None)
