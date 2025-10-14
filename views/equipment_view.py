@@ -132,7 +132,6 @@ def render():
         selected_id = st.selectbox("請從上方總覽列表選擇要操作的設備：", [None] + list(options_dict.keys()), format_func=lambda x: "請選擇..." if x is None else options_dict.get(x))
 
         if selected_id:
-            # 後續的 tab1, tab2, tab3 編輯區塊的程式碼完全維持不變
             tab1, tab2, tab3 = st.tabs(["📝 編輯基本資料", "🔧 維修/保養歷史", "📜 合規紀錄"])
 
             with tab1:
@@ -140,10 +139,28 @@ def render():
                 if details:
                     with st.form(f"edit_equipment_form_{selected_id}"):
                         st.markdown(f"##### 正在編輯 ID: {details['id']} 的設備")
+                        
+                        # --- 【核心修改 1】新增宿舍地址的下拉選單 ---
+                        current_dorm_id = details.get('dorm_id')
+                        # 確保即使 dorm_id 不在選項中也能正常顯示
+                        dorm_keys = list(dorm_options.keys())
+                        try:
+                            current_index = dorm_keys.index(current_dorm_id)
+                        except ValueError:
+                            current_index = 0 # 如果找不到，預設為第一個
+                        
+                        e_dorm_id = st.selectbox(
+                            "宿舍地址", 
+                            options=dorm_keys, 
+                            format_func=lambda x: dorm_options.get(x),
+                            index=current_index
+                        )
+                        
                         ec1, ec2, ec3 = st.columns(3)
                         e_equipment_name = ec1.text_input("設備名稱", value=details.get('equipment_name', ''))
                         e_equipment_category = ec2.selectbox("設備分類", ["消防設備", "電器用品", "飲水設備", "傢俱", "其他"], index=["消防設備", "電器用品", "飲水設備", "傢俱", "其他"].index(details.get('equipment_category')) if details.get('equipment_category') in ["消防設備", "電器用品", "飲水設備", "傢俱", "其他"] else 4)
                         e_location = ec3.text_input("放置位置", value=details.get('location', ''))
+                        
                         ec4, ec5, ec6 = st.columns(3)
                         e_brand_model = ec4.text_input("品牌/型號", value=details.get('brand_model', ''))
                         e_serial_number = ec5.text_input("序號/批號", value=details.get('serial_number', ''))
@@ -166,12 +183,27 @@ def render():
 
                         e_status = st.selectbox("目前狀態", ["正常", "需保養", "維修中", "已報廢"], index=["正常", "需保養", "維修中", "已報廢"].index(details.get('status')) if details.get('status') in ["正常", "需保養", "維修中", "已報廢"] else 0)
                         e_notes = st.text_area("設備備註", value=details.get('notes', ''))
+                        
                         edit_submitted = st.form_submit_button("儲存變更")
                         if edit_submitted:
-                            update_data = { "equipment_name": e_equipment_name, "equipment_category": e_equipment_category, "location": e_location, "brand_model": e_brand_model, "serial_number": e_serial_number, "installation_date": e_installation_date, "maintenance_interval_months": e_maintenance_interval if e_maintenance_interval > 0 else None, "compliance_interval_months": e_compliance_interval if e_compliance_interval > 0 else None, "last_maintenance_date": e_last_maintenance_date, "next_maintenance_date": e_next_maintenance_date, "status": e_status, "notes": e_notes }
+                            # --- 【核心修改 2】將 dorm_id 加入要更新的資料中 ---
+                            update_data = { 
+                                "dorm_id": e_dorm_id,
+                                "equipment_name": e_equipment_name, "equipment_category": e_equipment_category, 
+                                "location": e_location, "brand_model": e_brand_model, 
+                                "serial_number": e_serial_number, "installation_date": e_installation_date, 
+                                "maintenance_interval_months": e_maintenance_interval if e_maintenance_interval > 0 else None, 
+                                "compliance_interval_months": e_compliance_interval if e_compliance_interval > 0 else None, 
+                                "last_maintenance_date": e_last_maintenance_date, "next_maintenance_date": e_next_maintenance_date, 
+                                "status": e_status, "notes": e_notes 
+                            }
                             success, message = equipment_model.update_equipment_record(selected_id, update_data)
-                            if success: st.success(message); st.cache_data.clear(); st.rerun()
-                            else: st.error(message)
+                            if success: 
+                                st.success(message)
+                                st.cache_data.clear()
+                                st.rerun()
+                            else: 
+                                st.error(message)
 
                     st.markdown("---")
                     st.markdown("##### 危險操作區")
@@ -180,7 +212,6 @@ def render():
                         success, message = equipment_model.delete_equipment_record(selected_id)
                         if success: st.success(message); st.cache_data.clear(); st.rerun()
                         else: st.error(message)
-
             with tab2:
                 st.markdown("##### 新增維修/保養紀錄")
                 st.info("可在此快速為這台設備建立一筆維修或保養紀錄。")
