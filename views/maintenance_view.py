@@ -29,7 +29,7 @@ def render():
 
     # --- 準備下拉選單用的資料 ---
     dorms = dormitory_model.get_dorms_for_selection()
-    dorm_options = {d['id']: d.get('original_address', '') for d in dorms} if dorms else {}
+    dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms} if dorms else {}
     
     vendors = vendor_model.get_vendors_for_view()
     vendor_options = {v['id']: f"{v['服務項目']} - {v['廠商名稱']}" for _, v in vendors.iterrows()} if not vendors.empty else {}

@@ -18,12 +18,12 @@ def render():
         st.warning("目前資料庫中沒有主要管理人為「我司」的宿舍，無法進行管理。")
         return
 
-    dorm_options = {d['id']: d['original_address'] for d in my_dorms}
-    
+    dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in my_dorms}
+
     selected_dorm_id = st.selectbox(
         "請選擇要管理的宿舍：",
         options=list(dorm_options.keys()),
-        format_func=lambda x: dorm_options[x]
+        format_func=lambda x: dorm_options.get(x, "未知宿舍") # format_func 參數更新
     )
 
     if not selected_dorm_id:

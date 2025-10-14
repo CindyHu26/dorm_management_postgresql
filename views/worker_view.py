@@ -19,7 +19,7 @@ def render():
             arc_number = c3.text_input("居留證號")
             st.subheader("住宿與費用")
             dorms = dormitory_model.get_dorms_for_selection() or []
-            dorm_options = {d['id']: d['original_address'] for d in dorms}
+            dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms}
             
             sc1, sc2, sc3 = st.columns(3)
             selected_dorm_id_new = sc1.selectbox("宿舍地址", [None] + list(dorm_options.keys()), format_func=lambda x: "未分配" if x is None else dorm_options.get(x), key="new_dorm_select")
@@ -223,7 +223,7 @@ def render():
                     ac1, ac2, ac3 = st.columns(3)
                     
                     all_dorms = dormitory_model.get_dorms_for_selection() or []
-                    all_dorm_options = {d['id']: d['original_address'] for d in all_dorms}
+                    all_dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in all_dorms}
                     
                     selected_dorm_id_ac = ac1.selectbox("新宿舍地址", options=all_dorm_options.keys(), format_func=lambda x: all_dorm_options.get(x), key="ac_dorm_select")
                     
@@ -505,7 +505,7 @@ def render():
         return dormitory_model.get_dorms_for_selection()
 
     dorms = get_dorms_list() or []
-    dorm_options = {d['id']: d['original_address'] for d in dorms}
+    dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms}
     
     f_c1_view, f_c2_view, f_c3_view = st.columns(3)
     st.session_state.worker_view_filters['name_search'] = f_c1_view.text_input(

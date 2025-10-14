@@ -243,13 +243,21 @@ def delete_room_by_id(room_id: int):
     finally:
         if conn: conn.close()
 
-def get_dorms_for_selection():
-    """取得 (id, 地址) 的列表，用於下拉選單。"""
+def get_dorms_for_selection(search_term: str = None):
+    """【核心修改 1】取得 (id, 地址, 編號) 的列表，用於下拉選單，並支援搜尋。"""
     conn = database.get_db_connection()
     if not conn: return []
     try:
         with conn.cursor() as cursor:
-            cursor.execute('SELECT id, original_address FROM "Dormitories" ORDER BY original_address')
+            query = 'SELECT id, original_address, legacy_dorm_code FROM "Dormitories"'
+            params = []
+            if search_term:
+                query += " WHERE original_address ILIKE %s OR legacy_dorm_code ILIKE %s OR normalized_address ILIKE %s"
+                term = f"%{search_term}%"
+                params.extend([term, term, term])
+
+            query += " ORDER BY legacy_dorm_code, original_address"
+            cursor.execute(query, tuple(params))
             records = cursor.fetchall()
             return [dict(row) for row in records]
     finally:
@@ -284,20 +292,20 @@ def get_dorm_id_from_room_id(room_id: int):
         if conn: conn.close()
 
 def get_my_company_dorms_for_selection(search_term: str = None):
-    """只取得「我司」管理的宿舍列表，並支援關鍵字搜尋。"""
+    """【核心修改 2】只取得「我司」管理的宿舍列表，並支援編號和地址搜尋。"""
     conn = database.get_db_connection()
     if not conn: return []
     try:
         with conn.cursor() as cursor:
-            query = 'SELECT id, original_address FROM "Dormitories" WHERE primary_manager = %s'
+            query = 'SELECT id, original_address, legacy_dorm_code FROM "Dormitories" WHERE primary_manager = %s'
             params = ['我司']
             
             if search_term:
-                query += " AND (original_address ILIKE %s OR normalized_address ILIKE %s)"
+                query += " AND (original_address ILIKE %s OR legacy_dorm_code ILIKE %s OR normalized_address ILIKE %s)"
                 term = f"%{search_term}%"
-                params.extend([term, term])
+                params.extend([term, term, term])
                 
-            query += " ORDER BY original_address"
+            query += " ORDER BY legacy_dorm_code, original_address"
             
             cursor.execute(query, tuple(params))
             records = cursor.fetchall()

@@ -16,7 +16,7 @@ def render():
         st.warning("目前資料庫中沒有主要管理人為「我司」的宿舍。")
         return
 
-    dorm_options = {d['id']: d['original_address'] for d in my_dorms}
+    dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in my_dorms}
     selected_dorm_id = st.selectbox(
         "請選擇要管理的宿舍：",
         options=list(dorm_options.keys()),
@@ -189,7 +189,7 @@ def render():
                     key=f"maintenance_table_{selected_id}"
                 )
                 
-                # --- 【核心修正】使用 .get() 安全地訪問 session_state ---
+                # --- 使用 .get() 安全地訪問 session_state ---
                 selected_log_ids = [row['id'] for i, row in edited_df.iterrows() if row['id']]
 
                 if st.button("✓ 將勾選的紀錄標示為完成", disabled=not selected_log_ids):

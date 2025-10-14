@@ -17,7 +17,7 @@ def render():
 
     my_dorms = get_my_dorms()
     
-    # --- 【核心修改 1】增加日期選擇器，並調整排版 ---
+    # --- 增加日期選擇器，並調整排版 ---
     c1, c2, c3 = st.columns(3)
     
     with c1:
@@ -33,7 +33,7 @@ def render():
             help="系統將會查詢在此日期當天有空床位的房間。"
         )
     
-    dorm_options = {d['id']: d['original_address'] for d in my_dorms} if my_dorms else {}
+    dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in my_dorms} if my_dorms else {}
     
     with c3:
         selected_dorm_ids = st.multiselect(

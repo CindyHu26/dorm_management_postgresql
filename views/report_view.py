@@ -181,7 +181,7 @@ def render():
             if not my_dorms:
                 st.warning("目前沒有「我司管理」的宿舍可供選擇。")
             else:
-                dorm_options = {d['id']: d['original_address'] for d in my_dorms}
+                dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in my_dorms}
                 selected_dorm_id = st.selectbox(
                     "請選擇要匯出報表的宿舍：", 
                     options=list(dorm_options.keys()), 
@@ -249,7 +249,7 @@ def render():
             selected_dorm_id_cf = cf_c1.selectbox("選擇宿舍地址", options=list(dorm_options.keys()), format_func=lambda x: dorm_options.get(x), key="cf_dorm_select")
             selected_employer_cf = cf_c2.selectbox("選擇雇主", options=all_employers, index=chingfong_index, key="cf_employer_select")
             
-            # --- 【核心修改點 1】將年月選擇器改為日期範圍選擇器 ---
+            # --- 將年月選擇器改為日期範圍選擇器 ---
             st.markdown("##### 請選擇要搜尋的帳單迄日範圍")
             range_c1, range_c2 = st.columns(2)
             today = datetime.now().date()

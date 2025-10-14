@@ -12,14 +12,14 @@ def render():
         st.warning("目前沒有「我司管理」的宿舍可供操作。")
         return
 
-    dorm_options = {d['id']: d['original_address'] for d in my_dorms}
+    dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in my_dorms}
     selected_dorm_id = st.selectbox("請選擇宿舍：", options=list(dorm_options.keys()), format_func=lambda x: dorm_options.get(x))
 
     if not selected_dorm_id: return
     st.markdown("---")
     
     with st.expander("📝 新增一筆收入紀錄"):
-        # --- 【核心修改 1】在這裡先獲取房間列表並進行檢查 ---
+        # --- 在這裡先獲取房間列表並進行檢查 ---
         rooms_in_dorm = dormitory_model.get_rooms_for_selection(selected_dorm_id) or []
         # 只顯示真實的房號（過濾掉系統預設的）
         room_options = {r['id']: r['room_number'] for r in rooms_in_dorm if r['room_number'] != '[未分配房間]'}

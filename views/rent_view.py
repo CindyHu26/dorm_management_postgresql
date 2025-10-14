@@ -26,7 +26,7 @@ def render():
     if not my_dorms:
         st.warning("目前資料庫中沒有主要管理人為「我司」的宿舍。")
         return
-    dorm_options = {d['id']: d['original_address'] for d in my_dorms}
+    dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in my_dorms}
     selected_dorm_ids = col1.multiselect(
         "篩選宿舍地址 (可不選，或多選)",
         options=list(dorm_options.keys()),

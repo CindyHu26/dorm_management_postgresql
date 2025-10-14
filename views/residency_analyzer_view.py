@@ -12,7 +12,7 @@ def render():
 
     # --- 篩選器區塊 ---
     dorms = dormitory_model.get_dorms_for_selection()
-    dorm_options = {d['id']: d['original_address'] for d in dorms} if dorms else {}
+    dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms} if dorms else {}
 
     st.markdown("##### 篩選條件")
     c1, c2, c3 = st.columns([1, 1, 2])

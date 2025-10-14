@@ -18,7 +18,7 @@ def render():
     with st.expander("➕ 新增長期合約"):
         with st.form("new_lease_form", clear_on_submit=True):
             dorms = dormitory_model.get_dorms_for_selection() or []
-            dorm_options = {d['id']: d['original_address'] for d in dorms}
+            dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms}
             
             # --- 預先載入廠商列表 ---
             vendors = vendor_model.get_vendors_for_view()
@@ -79,7 +79,7 @@ def render():
     st.subheader("現有合約總覽")
     
     dorms_for_filter = dormitory_model.get_dorms_for_selection() or []
-    dorm_filter_options = {0: "所有宿舍"} | {d['id']: d['original_address'] for d in dorms_for_filter}
+    dorm_filter_options = {0: "所有宿舍"} | {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms_for_filter}
     dorm_id_filter = st.selectbox("篩選宿舍", options=list(dorm_filter_options.keys()), format_func=lambda x: dorm_filter_options.get(x))
 
     @st.cache_data

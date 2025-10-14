@@ -14,7 +14,7 @@ def render():
         st.warning("目前沒有「我司管理」的宿舍可供分析。")
         return
 
-    dorm_options = {d['id']: d['original_address'] for d in my_dorms}
+    dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in my_dorms}
     selected_dorm_id = st.selectbox(
         "請選擇要分析的宿舍：",
         options=list(dorm_options.keys()),

@@ -11,7 +11,7 @@ def render():
     st.info("此頁面用於管理公司的庫存品項（如床墊、鑰匙），並追蹤其採購、發放、借還的流動紀錄。")
 
     dorms = dormitory_model.get_dorms_for_selection()
-    dorm_options = {d['id']: d['original_address'] for d in dorms} if dorms else {}
+    dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms} if dorms else {}
 
     tab1, tab2 = st.tabs(["📦 品項總覽與庫存管理", "📜 歷史異動紀錄"])
 
