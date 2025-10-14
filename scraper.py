@@ -59,7 +59,7 @@ def download_all_reports(
     log_callback(f"INFO: 將使用基準日期: {base_date_str} 進行查詢。")
 
     for i, (start_code, end_code) in enumerate(query_ranges):
-        log_callback(f"INFO: 正在下載第 {i+1}/{total_ranges} 批: {start_code} - {end_code} ...")
+        # log_callback(f"INFO: 正在下載第 {i+1}/{total_ranges} 批: {start_code} - {end_code} ...")
         
         # --- 【核心修改 2】更新 payload 以符合新版系統的表單欄位 ---
         payload = {

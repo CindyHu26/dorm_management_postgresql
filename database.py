@@ -184,16 +184,18 @@ def create_all_tables_and_indexes():
                 "id" SERIAL PRIMARY KEY,
                 "dorm_id" INTEGER NOT NULL,
                 "equipment_name" VARCHAR(100) NOT NULL,
-                "equipment_category" VARCHAR(50), -- 新增：分類 (如: 消防設備, 電器, 飲水設備)
+                "equipment_category" VARCHAR(50),
                 "location" VARCHAR(100),
-                "brand_model" VARCHAR(100), -- 新增：品牌型號
-                "serial_number" VARCHAR(100), -- 新增：序號
-                "installation_date" DATE, -- 新增：安裝日期
-                "maintenance_interval_months" INTEGER, -- 新增：保養週期(月)
-                "last_maintenance_date" DATE, -- 從 last_replaced_date 改名
-                "next_maintenance_date" DATE, -- 從 next_check_date 改名
+                "brand_model" VARCHAR(100),
+                "serial_number" VARCHAR(100),
+                "purchase_cost" INTEGER,
+                "installation_date" DATE,
+                "maintenance_interval_months" INTEGER,
+                "compliance_interval_months" INTEGER,
+                "last_maintenance_date" DATE,
+                "next_maintenance_date" DATE,
                 "status" VARCHAR(50),
-                "notes" TEXT, -- 新增：備註欄位
+                "notes" TEXT,
                 "report_path" VARCHAR(255),
                 FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE
             );

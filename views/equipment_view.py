@@ -41,17 +41,21 @@ def render():
             serial_number = c5.text_input("序號/批號")
             installation_date = c6.date_input("安裝/啟用日期", value=None)
             
+            purchase_cost = st.number_input("採購金額 (選填)", min_value=0, step=100, help="若填寫此金額，系統將自動新增一筆對應的單次費用紀錄。")
+
             st.subheader("保養與狀態")
             c7, c8, c9 = st.columns(3)
-            maintenance_interval = c7.number_input("保養週期 (月)", min_value=0, step=1, help="填寫 0 代表此設備不需定期保養。")
+            maintenance_interval = c7.number_input("一般保養週期 (月)", min_value=0, step=1, help="例如更換濾心。填 0 代表不需定期保養。")
             last_maintenance_date = c8.date_input("上次保養日期", value=None)
             
-            # --- 自動計算下次保養日 ---
             calculated_next_date = None
             if last_maintenance_date and maintenance_interval > 0:
                 calculated_next_date = last_maintenance_date + relativedelta(months=maintenance_interval)
             
             next_maintenance_date = c9.date_input("下次保養/檢查日期", value=calculated_next_date, help="若有填寫上次保養日和週期，此欄位會自動計算。")
+
+            # --- 新增合規檢測週期欄位 ---
+            compliance_interval = st.number_input("合規檢測週期 (月)", min_value=0, step=1, help="例如水質檢測週期。填 0 代表不需定期檢測。")
 
             status = st.selectbox("目前狀態", ["正常", "需保養", "維修中", "已報廢"])
             notes = st.text_area("設備備註")
@@ -65,10 +69,12 @@ def render():
                         "dorm_id": selected_dorm_id, "equipment_name": equipment_name,
                         "equipment_category": equipment_category, "location": location,
                         "brand_model": brand_model, "serial_number": serial_number,
+                        "purchase_cost": purchase_cost,
                         "installation_date": installation_date,
                         "maintenance_interval_months": maintenance_interval if maintenance_interval > 0 else None,
+                        "compliance_interval_months": compliance_interval if compliance_interval > 0 else None, # <-- 新增
                         "last_maintenance_date": last_maintenance_date,
-                        "next_maintenance_date": next_maintenance_date, # 使用最終的日期值
+                        "next_maintenance_date": next_maintenance_date,
                         "status": status, "notes": notes
                     }
                     success, message, _ = equipment_model.add_equipment_record(details)
@@ -117,24 +123,28 @@ def render():
                         e_brand_model = ec4.text_input("品牌/型號", value=details.get('brand_model', ''))
                         e_serial_number = ec5.text_input("序號/批號", value=details.get('serial_number', ''))
                         e_installation_date = ec6.date_input("安裝/啟用日期", value=details.get('installation_date'))
+
+                        st.number_input("採購金額", value=details.get('purchase_cost') or 0, disabled=True, help="採購金額於新增時決定，若需調整請至年度費用頁面修改對應的費用紀錄。")
+
                         st.subheader("保養與狀態")
                         ec7, ec8, ec9 = st.columns(3)
-                        e_maintenance_interval = ec7.number_input("保養週期 (月)", min_value=0, step=1, value=details.get('maintenance_interval_months') or 0)
+                        e_maintenance_interval = ec7.number_input("一般保養週期 (月)", min_value=0, step=1, value=details.get('maintenance_interval_months') or 0)
                         e_last_maintenance_date = ec8.date_input("上次保養日期", value=details.get('last_maintenance_date'))
                         
-                        # --- 【核心修改 2】編輯時也自動計算 ---
                         e_calculated_next_date = None
                         if e_last_maintenance_date and e_maintenance_interval > 0:
                             e_calculated_next_date = e_last_maintenance_date + relativedelta(months=e_maintenance_interval)
                         
-                        # 讓使用者可以覆蓋自動計算的值
                         e_next_maintenance_date = ec9.date_input("下次保養/檢查日期", value=e_calculated_next_date or details.get('next_maintenance_date'))
+
+                        # --- 【核心修改 2】在編輯表單中也加入合規週期 ---
+                        e_compliance_interval = st.number_input("合規檢測週期 (月)", min_value=0, step=1, value=details.get('compliance_interval_months') or 0, help="例如水質檢測週期。")
 
                         e_status = st.selectbox("目前狀態", ["正常", "需保養", "維修中", "已報廢"], index=["正常", "需保養", "維修中", "已報廢"].index(details.get('status')) if details.get('status') in ["正常", "需保養", "維修中", "已報廢"] else 0)
                         e_notes = st.text_area("設備備註", value=details.get('notes', ''))
                         edit_submitted = st.form_submit_button("儲存變更")
                         if edit_submitted:
-                            update_data = { "equipment_name": e_equipment_name, "equipment_category": e_equipment_category, "location": e_location, "brand_model": e_brand_model, "serial_number": e_serial_number, "installation_date": e_installation_date, "maintenance_interval_months": e_maintenance_interval if e_maintenance_interval > 0 else None, "last_maintenance_date": e_last_maintenance_date, "next_maintenance_date": e_next_maintenance_date, "status": e_status, "notes": e_notes }
+                            update_data = { "equipment_name": e_equipment_name, "equipment_category": e_equipment_category, "location": e_location, "brand_model": e_brand_model, "serial_number": e_serial_number, "installation_date": e_installation_date, "maintenance_interval_months": e_maintenance_interval if e_maintenance_interval > 0 else None, "compliance_interval_months": e_compliance_interval if e_compliance_interval > 0 else None, "last_maintenance_date": e_last_maintenance_date, "next_maintenance_date": e_next_maintenance_date, "status": e_status, "notes": e_notes }
                             success, message = equipment_model.update_equipment_record(selected_id, update_data)
                             if success: st.success(message); st.cache_data.clear(); st.rerun()
                             else: st.error(message)
@@ -169,7 +179,7 @@ def render():
                 st.markdown("##### 歷史紀錄")
                 maintenance_history = equipment_model.get_related_maintenance_logs(selected_id)
                 
-                # --- 【核心修改 3】新增「完成保養」的按鈕 ---
+                # --- 新增「完成保養」的按鈕 ---
                 st.dataframe(maintenance_history, width="stretch", hide_index=True,
                     column_config={
                         "id": st.column_config.CheckboxColumn(

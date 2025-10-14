@@ -60,7 +60,10 @@ def add_compliance_record(record_type: str, record_details: dict, expense_detail
     
     try:
         with conn.cursor() as cursor:
-            # --- 在 INSERT 指令中加入 equipment_id ---
+            # 為了讓 reminder_model 能查詢到，我們在 JSON 中也存一份
+            if record_type == '消防安檢' and record_details['details'].get('next_declaration_start'):
+                 record_details['details']['next_check_date'] = record_details['details']['next_declaration_start']
+
             compliance_columns = ['dorm_id', 'record_type', 'details']
             compliance_values = [record_details['dorm_id'], record_type, json.dumps(record_details['details'], ensure_ascii=False, default=str)]
             
