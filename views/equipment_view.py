@@ -209,33 +209,47 @@ def render():
                 vendors = vendor_model.get_vendors_for_view()
                 vendor_options = {v['id']: f"{v['服務項目']} - {v['廠商名稱']}" for _, v in vendors.iterrows()} if not vendors.empty else {}
                 with st.form(f"quick_add_maintenance_{selected_id}", clear_on_submit=True):
-                    m_c1, m_c2 = st.columns(2)
+                    # --- 【核心修改 1】調整版面並加入 cost 欄位 ---
+                    m_c1, m_c2, m_c3 = st.columns(3)
                     item_type = m_c1.selectbox("項目類型", ["定期保養", "更換耗材", "維修"])
                     description = m_c2.text_input("細項說明 (必填)", placeholder="例如: 更換RO膜濾心")
-                    cost = st.number_input("本次費用", min_value=0, step=100)
+                    cost = m_c3.number_input("本次費用", min_value=0, step=100) # <-- 新增欄位
+
                     vendor_id = st.selectbox("執行廠商 (選填)", options=[None] + list(vendor_options.keys()), format_func=lambda x: "未指定" if x is None else vendor_options.get(x))
+                    
                     submitted = st.form_submit_button("新增紀錄")
                     if submitted:
                         if not description: st.error("「細項說明」為必填欄位！")
                         else:
-                            log_details = { 'dorm_id': details['dorm_id'], 'equipment_id': selected_id, 'notification_date': date.today(), 'item_type': item_type, 'description': description, 'cost': cost if cost > 0 else None, 'vendor_id': vendor_id, 'status': '進行中' }
+                            # --- 【核心修改 2】將 cost 加入要儲存的資料中 ---
+                            log_details = { 
+                                'dorm_id': details['dorm_id'], 
+                                'equipment_id': selected_id, 
+                                'notification_date': date.today(), 
+                                'item_type': item_type, 
+                                'description': description, 
+                                'cost': cost if cost > 0 else None, # <-- 新增
+                                'vendor_id': vendor_id, 
+                                'status': '進行中' 
+                            }
                             success, message = maintenance_model.add_log(log_details)
-                            if success: st.success(message); st.cache_data.clear(); st.rerun()
-                            else: st.error(message)
+                            if success: 
+                                st.success(message)
+                                st.cache_data.clear()
+                                st.rerun()
+                            else: 
+                                st.error(message)
                 
                 st.markdown("##### 歷史紀錄")
                 maintenance_history = equipment_model.get_related_maintenance_logs(selected_id)
                 
                 if not maintenance_history.empty:
-                    # --- 【核心修正】移除 data_editor，改用 dataframe + multiselect ---
                     st.dataframe(maintenance_history, width="stretch", hide_index=True, column_config={"id": None})
                     
                     st.markdown("##### 標示完成")
-                    # 篩選出尚未完成的紀錄
                     unfinished_logs = maintenance_history[maintenance_history['狀態'] != '已完成']
                     
                     if not unfinished_logs.empty:
-                        # 建立選項
                         options_for_completion = {
                             row['id']: f"ID:{row['id']} - {row['通報日期']} {row['項目類型']} ({row['細項說明']})" 
                             for _, row in unfinished_logs.iterrows()
