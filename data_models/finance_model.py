@@ -609,3 +609,16 @@ def delete_compliance_expense_record(compliance_id: int):
         return False, f"刪除紀錄時發生錯誤: {e}"
     finally:
         if conn: conn.close()
+
+def get_expense_details_by_compliance_id(compliance_id: int):
+    """根據 compliance_record_id 查詢關聯的單筆年度費用紀錄。"""
+    conn = database.get_db_connection()
+    if not conn or not compliance_id: return None
+    try:
+        with conn.cursor() as cursor:
+            # 直接查詢 AnnualExpenses 表
+            cursor.execute('SELECT * FROM "AnnualExpenses" WHERE compliance_record_id = %s', (compliance_id,))
+            record = cursor.fetchone()
+            return dict(record) if record else None
+    finally:
+        if conn: conn.close()

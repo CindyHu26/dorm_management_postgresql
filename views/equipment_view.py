@@ -280,37 +280,30 @@ def render():
 
                 if selected_comp_id: # 編輯模式
                     comp_details = finance_model.get_single_compliance_details(selected_comp_id)
-                    # 透過 compliance_id 找到關聯的 expense_id 來取得費用資訊
-                    expense_details = None
-                    if comp_details:
-                        expense_df = finance_model.get_all_annual_expenses_for_dorm(comp_details.get('dorm_id'))
-                        if not expense_df.empty:
-                            expense_record = expense_df[expense_df['compliance_record_id'] == selected_comp_id]
-                            if not expense_record.empty:
-                                expense_id = expense_record.iloc[0]['id']
-                                expense_details = finance_model.get_single_annual_expense_details(expense_id)
+                    expense_details = finance_model.get_expense_details_by_compliance_id(selected_comp_id)
 
                     with st.form(f"edit_compliance_log_{selected_comp_id}"):
                         st.markdown(f"###### 正在編輯 ID: {selected_comp_id}")
-                        ecc1, ecc2 = st.columns(2)
+                        ecc1, ecc2, ecc3 = st.columns(3)
                         e_cl_item = ecc1.text_input("申報項目", value=comp_details.get('declaration_item', ''))
                         e_cl_cert_date = ecc2.date_input("收到憑證/完成日期", value=comp_details.get('certificate_date'))
+                        # 新增下次日期欄位
+                        e_cl_next_date = ecc3.date_input("下次申報/檢測日期", value=comp_details.get('next_declaration_start'))
                         
-                        ecc3, ecc4 = st.columns(2)
-                        e_cl_cost = ecc3.number_input("相關費用", min_value=0, value=expense_details.get('total_amount', 0) if expense_details else 0)
-                        e_cl_pay_date = ecc4.date_input("支付日期", value=expense_details.get('payment_date') if expense_details else None)
+                        ecc4, ecc5 = st.columns(2)
+                        e_cl_cost = ecc4.number_input("相關費用", min_value=0, value=expense_details.get('total_amount', 0) if expense_details else 0)
+                        e_cl_pay_date = ecc5.date_input("支付日期", value=expense_details.get('payment_date') if expense_details else None)
 
                         col_edit_comp, col_delete_comp = st.columns(2)
                         if col_edit_comp.form_submit_button("儲存變更"):
-                            # 準備要更新的 expense_details
                             updated_expense_data = {
                                 "payment_date": e_cl_pay_date,
                                 "total_amount": e_cl_cost,
                             }
-                            # 準備要更新的 compliance_details
                             updated_compliance_data = {
                                 "declaration_item": e_cl_item,
                                 "certificate_date": e_cl_cert_date,
+                                "next_declaration_start": e_cl_next_date # 將新日期加入
                             }
                             
                             success, message = finance_model.update_compliance_expense_record(
@@ -334,18 +327,36 @@ def render():
                 else: # 新增模式
                     with st.form(f"add_compliance_log_{selected_id}", clear_on_submit=True):
                         st.markdown("###### 正在新增一筆紀錄")
-                        acc1, acc2 = st.columns(2)
+                        details = equipment_model.get_single_equipment_details(selected_id) # 取得設備詳細資料
+                        acc1, acc2, acc3 = st.columns(3)
                         a_cl_item = acc1.text_input("申報項目", placeholder="例如: 114年Q4水質檢測")
                         a_cl_cert_date = acc2.date_input("收到憑證/完成日期", value=date.today())
-                        acc3, acc4 = st.columns(2)
-                        a_cl_cost = acc3.number_input("相關費用 (選填)", min_value=0, step=100)
-                        a_cl_pay_date = acc4.date_input("支付日期 (選填)", value=date.today())
+                        
+                        # 自動計算下次日期
+                        compliance_interval = details.get('compliance_interval_months')
+                        calculated_next_date = None
+                        if a_cl_cert_date and compliance_interval and compliance_interval > 0:
+                            calculated_next_date = a_cl_cert_date + relativedelta(months=compliance_interval)
+                        
+                        a_cl_next_date = acc3.date_input("下次申報/檢測日期", value=calculated_next_date, help="若設備已設定合規檢測週期，此欄位會自動計算。")
+
+                        acc4, acc5 = st.columns(2)
+                        a_cl_cost = acc4.number_input("相關費用 (選填)", min_value=0, step=100)
+                        a_cl_pay_date = acc5.date_input("支付日期 (選填)", value=date.today())
                         
                         if st.form_submit_button("新增紀錄"):
                             if not a_cl_item:
                                 st.error("請填寫「申報項目」！")
                             else:
-                                record_details = { "dorm_id": details['dorm_id'], "equipment_id": selected_id, "details": { "declaration_item": a_cl_item, "certificate_date": a_cl_cert_date } }
+                                record_details = { 
+                                    "dorm_id": details['dorm_id'], 
+                                    "equipment_id": selected_id, 
+                                    "details": { 
+                                        "declaration_item": a_cl_item, 
+                                        "certificate_date": a_cl_cert_date,
+                                        "next_declaration_start": a_cl_next_date # 將下次日期加入
+                                    } 
+                                }
                                 expense_details = None
                                 if a_cl_cost > 0:
                                     expense_details = { "dorm_id": details['dorm_id'], "expense_item": f"{details['equipment_name']}-{a_cl_item}", "payment_date": a_cl_pay_date, "total_amount": a_cl_cost, "amortization_start_month": a_cl_pay_date.strftime('%Y-%m'), "amortization_end_month": a_cl_pay_date.strftime('%Y-%m') }
