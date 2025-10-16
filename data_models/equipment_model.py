@@ -426,7 +426,7 @@ def batch_add_compliance_logs(equipment_ids: list, compliance_info: dict):
         return False, f"處理完成。成功 {success_count} 筆，失敗 {len(failed_ids)} 筆。錯誤: {'; '.join(error_messages)}"
     
 def get_equipment_for_view(filters: dict = None):
-    """【v2.0 廠商關聯版】查詢設備，並支援宿舍和分類的篩選，同時顯示供應廠商。"""
+    """【v2.1 備註版】查詢設備，並支援篩選，同時顯示供應廠商與備註。"""
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
@@ -435,15 +435,16 @@ def get_equipment_for_view(filters: dict = None):
                 e.id, 
                 d.original_address AS "宿舍地址",
                 e.equipment_name AS "設備名稱", 
-                v.vendor_name AS "供應廠商", -- 【核心修改】查詢廠商名稱
+                v.vendor_name AS "供應廠商",
                 e.equipment_category AS "分類", 
                 e.location AS "位置", 
                 e.brand_model AS "品牌型號",
                 e.next_maintenance_date AS "下次保養/檢查日",
-                e.status AS "狀態"
+                e.status AS "狀態",
+                e.notes AS "備註" -- 查詢備註欄位
             FROM "DormitoryEquipment" e
             JOIN "Dormitories" d ON e.dorm_id = d.id
-            LEFT JOIN "Vendors" v ON e.vendor_id = v.id -- 【核心修改】JOIN Vendors 表
+            LEFT JOIN "Vendors" v ON e.vendor_id = v.id
         """
         params = []
         where_clauses = ["d.primary_manager = '我司'"]

@@ -47,7 +47,7 @@ def render():
         if not equipment_to_batch.empty:
             with st.form("batch_maintenance_form"):
                 st.markdown("##### 步驟三：勾選要更新的設備")
-                # 【核心修正 1】不再手動重置 "選取" 欄位，而是讓 data_editor 自己處理
+                # 不再手動重置 "選取" 欄位，而是讓 data_editor 自己處理
                 equipment_to_batch.insert(0, "選取", True)
                 edited_df = st.data_editor(
                     equipment_to_batch,
@@ -110,7 +110,7 @@ def render():
         if not equipment_to_batch_comp.empty:
             with st.form("batch_compliance_form"):
                 st.markdown("##### 步驟三：勾選要更新的設備")
-                # 【核心修正 2】同樣的邏輯應用於此處
+                # 同樣的邏輯應用於此處
                 equipment_to_batch_comp.insert(0, "選取", True)
                 edited_comp_df = st.data_editor(
                     equipment_to_batch_comp,
@@ -151,7 +151,7 @@ def render():
         with st.form("batch_create_numbered_form", clear_on_submit=True):
             st.markdown("##### 步驟一：選擇位置與命名規則")
             bc_c1, bc_c2, bc_c3, bc_c4 = st.columns(4)
-            batch_create_dorm_id = bc_c1.selectbox("選擇宿舍*", options=list(dorm_options.keys()), format_func=lambda x: dorm_options.get(x, "未知宿舍"), key="bc_dorm")
+            batch_create_dorm_id = bc_c1.selectbox( "選擇宿舍*", options=list(dorm_options.keys()), format_func=lambda x: dorm_options.get(x, "未知宿舍"), key="bc_dorm" )
             batch_create_base_name = bc_c2.text_input("設備基本名稱*", placeholder="例如: 飲水機")
             batch_create_quantity = bc_c3.number_input("數量*", min_value=1, step=1, value=1)
             batch_create_start_num = bc_c4.number_input("起始編號*", min_value=1, step=1, value=1)
@@ -164,45 +164,39 @@ def render():
             
             bc_c8, bc_c9, bc_c10 = st.columns(3)
             batch_create_cost = bc_c8.number_input("單台採購金額 (選填)", min_value=0, step=100, help="這是「每一台」設備的成本，系統會為每台設備建立一筆費用紀錄。")
-            batch_create_install_date = bc_c9.date_input("安裝/啟用日期", value=None, min_value=fifteen_years_ago)
+            batch_create_install_date = bc_c9.date_input("安裝/啟用日期", value=None)
             batch_last_maintenance_date = bc_c10.date_input("上次保養日期 (選填)", value=None)
-
+            
             st.markdown("##### 步驟三：設定週期 (選填)")
             bc_c11, bc_c12 = st.columns(2)
             batch_maintenance_interval = bc_c11.number_input("一般保養週期 (月)", min_value=0, step=1, help="例如更換濾心。填 0 代表不需定期保養。")
             batch_compliance_interval = bc_c12.number_input("合規檢測週期 (月)", min_value=0, step=1, help="例如水質檢測週期。填 0 代表不需定期檢測。")
+            
+            # --- 【核心修改 1】在批次新增中加入備註 ---
+            batch_create_notes = st.text_area("設備備註 (選填)", key="bc_notes")
 
             bc_submitted = st.form_submit_button("🚀 執行批次新增")
             if bc_submitted:
                 if not batch_create_base_name:
                     st.error("請填寫「設備基本名稱」！")
                 else:
-                    # 自動計算下次保養日
                     next_maintenance_date = None
                     if batch_last_maintenance_date and batch_maintenance_interval > 0:
                         next_maintenance_date = batch_last_maintenance_date + relativedelta(months=batch_maintenance_interval)
-                    
-                    base_details = {
-                        "dorm_id": batch_create_dorm_id,
-                        "equipment_name": batch_create_base_name,
-                        "equipment_category": batch_create_category,
-                        "location": batch_create_location,
-                        "vendor_id": batch_create_vendor_id,
-                        "purchase_cost": batch_create_cost,
-                        "installation_date": batch_create_install_date,
-                        "status": "正常",
-                        "maintenance_interval_months": batch_maintenance_interval if batch_maintenance_interval > 0 else None,
-                        "compliance_interval_months": batch_compliance_interval if batch_compliance_interval > 0 else None,
-                        "last_maintenance_date": batch_last_maintenance_date,
-                        "next_maintenance_date": next_maintenance_date
+                    base_details = { 
+                        "dorm_id": batch_create_dorm_id, "equipment_name": batch_create_base_name, 
+                        "equipment_category": batch_create_category, "location": batch_create_location, 
+                        "vendor_id": batch_create_vendor_id, "purchase_cost": batch_create_cost, 
+                        "installation_date": batch_create_install_date, "status": "正常", 
+                        "maintenance_interval_months": batch_maintenance_interval if batch_maintenance_interval > 0 else None, 
+                        "compliance_interval_months": batch_compliance_interval if batch_compliance_interval > 0 else None, 
+                        "last_maintenance_date": batch_last_maintenance_date, "next_maintenance_date": next_maintenance_date,
+                        "notes": batch_create_notes # 將備註加入
                     }
                     with st.spinner(f"正在批次新增 {batch_create_quantity} 台設備..."):
-                        success_count, message = equipment_model.batch_create_numbered_equipment(
-                            base_details, batch_create_quantity, batch_create_start_num
-                        )
+                        success_count, message = equipment_model.batch_create_numbered_equipment( base_details, batch_create_quantity, batch_create_start_num )
                     if success_count > 0:
-                        st.success(message)
-                        st.cache_data.clear()
+                        st.success(message); st.cache_data.clear(); st.rerun()
                     else:
                         st.error(message)
 
@@ -218,7 +212,7 @@ def render():
                 c4, c5, c6 = st.columns(3)
                 brand_model = c4.text_input("品牌/型號")
                 serial_number = c5.text_input("序號/批號")
-                vendor_id = c6.selectbox("供應廠商 (選填)", options=[None] + list(vendor_options.keys()), format_func=lambda x: "未指定" if x is None else vendor_options.get(x))
+                vendor_id = c6.selectbox("供應廠商 (選填)", options=[None] + list(vendor_options.keys()), format_func=lambda x: "未指定" if x is None else vendor_options.get(x), key="single_add_vendor")
                 installation_date = st.date_input("安裝/啟用日期", value=None, min_value=fifteen_years_ago)
                 purchase_cost = st.number_input("採購金額 (選填)", min_value=0, step=100, help="若填寫此金額，系統將自動新增一筆對應的單次費用紀錄。")
                 st.subheader("保養與狀態")
@@ -231,7 +225,10 @@ def render():
                 next_maintenance_date = c9.date_input("下次保養/檢查日期", value=calculated_next_date, help="若有填寫上次保養日和週期，此欄位會自動計算。")
                 compliance_interval = st.number_input("合規檢測週期 (月)", min_value=0, step=1, help="例如水質檢測週期。填 0 代表不需定期檢測。")
                 status = st.selectbox("目前狀態", ["正常", "需保養", "維修中", "已報廢"])
-                notes = st.text_area("設備備註")
+                
+                # --- 【核心修改 2】在新增單筆中加入備註 ---
+                notes = st.text_area("設備備註", key="single_notes")
+
                 submitted = st.form_submit_button("儲存設備紀錄")
                 if submitted:
                     if not equipment_name:
@@ -269,22 +266,10 @@ def render():
         st.subheader("檢視設備詳細資料與歷史紀錄")
         options_dict = {row['id']: f"ID:{row['id']} - {row['宿舍地址']} / {row['設備名稱']} ({row.get('位置', '')})" for _, row in equipment_df.iterrows()}
         selected_id = st.selectbox("請從上方總覽列表選擇要操作的設備：", [None] + list(options_dict.keys()), format_func=lambda x: "請選擇..." if x is None else options_dict.get(x))
-        
         if selected_id:
-            # --- 【核心修改 1】初始化 session_state ---
-            if 'active_tab' not in st.session_state:
-                st.session_state.active_tab = "📝 編輯基本資料"
-
+            if 'active_tab' not in st.session_state: st.session_state.active_tab = "📝 編輯基本資料"
             tab_names = ["📝 編輯基本資料", "🔧 維修/保養歷史", "📜 合規紀錄"]
-            
-            # --- 【核心修改 2】用 st.radio 取代 st.tabs ---
-            selected_tab = st.radio(
-                "管理選項：",
-                tab_names,
-                key="active_tab", # 將 session_state 變數綁定到元件
-                horizontal=True,
-                label_visibility="collapsed"
-            )
+            selected_tab = st.radio("管理選項:", tab_names, key="active_tab", horizontal=True, label_visibility="collapsed")
 
             if selected_tab == "📝 編輯基本資料":
                 details = equipment_model.get_single_equipment_details(selected_id)
@@ -321,20 +306,22 @@ def render():
                         e_next_maintenance_date = ec9.date_input("下次保養/檢查日期", value=e_calculated_next_date or details.get('next_maintenance_date'))
                         e_compliance_interval = st.number_input("合規檢測週期 (月)", min_value=0, step=1, value=details.get('compliance_interval_months') or 0, help="例如水質檢測週期。")
                         e_status = st.selectbox("目前狀態", ["正常", "需保養", "維修中", "已報廢"], index=["正常", "需保養", "維修中", "已報廢"].index(details.get('status')) if details.get('status') in ["正常", "需保養", "維修中", "已報廢"] else 0)
+                        
+                        # --- 【核心修改 3】在編輯表單中加入備註 ---
                         e_notes = st.text_area("設備備註", value=details.get('notes', ''))
                         
-                        if st.form_submit_button("儲存變更"):
-                            st.session_state.active_tab = "📝 編輯基本資料" # 儲存當前頁籤
+                        edit_submitted = st.form_submit_button("儲存變更")
+                        if edit_submitted:
+                            st.session_state.active_tab = "📝 編輯基本資料"
                             update_data = { "dorm_id": e_dorm_id, "vendor_id": e_vendor_id, "equipment_name": e_equipment_name, "equipment_category": e_equipment_category, "location": e_location, "brand_model": e_brand_model, "serial_number": e_serial_number, "installation_date": e_installation_date, "maintenance_interval_months": e_maintenance_interval if e_maintenance_interval > 0 else None, "compliance_interval_months": e_compliance_interval if e_compliance_interval > 0 else None, "last_maintenance_date": e_last_maintenance_date, "next_maintenance_date": e_next_maintenance_date, "status": e_status, "notes": e_notes }
                             success, message = equipment_model.update_equipment_record(selected_id, update_data)
                             if success: st.success(message); st.cache_data.clear(); st.rerun()
                             else: st.error(message)
-
                     st.markdown("---")
                     st.markdown("##### 危險操作區")
                     confirm_delete = st.checkbox("我了解並確認要刪除此筆設備紀錄", key=f"delete_confirm_{selected_id}")
                     if st.button("🗑️ 刪除此紀錄", type="primary", disabled=not confirm_delete, key=f"delete_button_{selected_id}"):
-                        st.session_state.active_tab = "📝 編輯基本資料" # 儲存當前頁籤
+                        st.session_state.active_tab = "📝 編輯基本資料"
                         success, message = equipment_model.delete_equipment_record(selected_id)
                         if success: st.success(message); st.cache_data.clear(); st.rerun()
                         else: st.error(message)
