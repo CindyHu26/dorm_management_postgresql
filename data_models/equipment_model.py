@@ -198,21 +198,26 @@ def get_related_maintenance_logs(equipment_id: int):
         if conn: conn.close()
 
 def get_related_compliance_records(equipment_id: int):
-    """查詢特定設備的所有合規歷史紀錄 (例如水質檢測)。"""
+    """
+    【v1.1 日期修正版】查詢特定設備的所有合規歷史紀錄 (例如水質檢測)。
+    當沒有支付日期時，會自動顯示憑證日期。
+    """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
+        # --- 使用 COALESCE 來決定要顯示哪個日期 ---
         query = """
             SELECT
                 cr.id,
-                ae.payment_date AS "支付日期",
+                -- 優先使用 ae.payment_date，如果為 NULL，則改用 details 裡的 certificate_date
+                COALESCE(ae.payment_date, (cr.details ->> 'certificate_date')::date) AS "支付日期",
                 cr.record_type AS "紀錄類型",
                 cr.details ->> 'declaration_item' AS "申報項目",
-                cr.details ->> 'certificate_date' AS "收到憑證日期"
+                (cr.details ->> 'certificate_date')::date AS "收到憑證日期"
             FROM "ComplianceRecords" cr
             LEFT JOIN "AnnualExpenses" ae ON cr.id = ae.compliance_record_id
             WHERE cr.equipment_id = %s
-            ORDER BY ae.payment_date DESC
+            ORDER BY "支付日期" DESC
         """
         return _execute_query_to_dataframe(conn, query, (equipment_id,))
     finally:

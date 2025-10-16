@@ -375,91 +375,64 @@ def render():
                 st.info("此區塊用於記錄需政府或第三方單位認證的紀錄，例如飲水機的水質檢測報告。")
                 compliance_history = equipment_model.get_related_compliance_records(selected_id)
                 st.dataframe(compliance_history, width="stretch", hide_index=True, column_config={"id": None})
-                
                 st.markdown("---")
                 st.markdown("##### 新增 / 編輯 / 刪除 合規紀錄")
                 comp_options = {row['id']: f"ID:{row['id']} - {row.get('支付日期')} {row.get('申報項目')}" for _, row in compliance_history.iterrows()}
                 selected_comp_id = st.selectbox("選擇一筆紀錄進行操作，或新增一筆：", [None] + list(comp_options.keys()), format_func=lambda x: "➕ 新增一筆紀錄" if x is None else f"✏️ 編輯 {comp_options[x]}", key="compliance_log_selector")
-
-                if selected_comp_id: # 編輯模式
+                if selected_comp_id:
                     comp_details = finance_model.get_single_compliance_details(selected_comp_id)
                     expense_details = finance_model.get_expense_details_by_compliance_id(selected_comp_id)
-
                     with st.form(f"edit_compliance_log_{selected_comp_id}"):
                         st.markdown(f"###### 正在編輯 ID: {selected_comp_id}")
                         ecc1, ecc2, ecc3 = st.columns(3)
                         e_cl_item = ecc1.text_input("申報項目", value=comp_details.get('declaration_item', ''))
                         e_cl_cert_date = ecc2.date_input("收到憑證/完成日期", value=comp_details.get('certificate_date'))
-                        # 新增下次日期欄位
                         e_cl_next_date = ecc3.date_input("下次申報/檢測日期", value=comp_details.get('next_declaration_start'))
-                        
                         ecc4, ecc5 = st.columns(2)
                         e_cl_cost = ecc4.number_input("相關費用", min_value=0, value=expense_details.get('total_amount', 0) if expense_details else 0)
                         e_cl_pay_date = ecc5.date_input("支付日期", value=expense_details.get('payment_date') if expense_details else None)
-
                         col_edit_comp, col_delete_comp = st.columns(2)
                         if col_edit_comp.form_submit_button("儲存變更"):
-                            updated_expense_data = {
-                                "payment_date": e_cl_pay_date,
-                                "total_amount": e_cl_cost,
-                            }
-                            updated_compliance_data = {
-                                "declaration_item": e_cl_item,
-                                "certificate_date": e_cl_cert_date,
-                                "next_declaration_start": e_cl_next_date # 將新日期加入
-                            }
-                            
-                            success, message = finance_model.update_compliance_expense_record(
-                                expense_details['id'] if expense_details else None, 
-                                updated_expense_data,
-                                selected_comp_id, 
-                                updated_compliance_data,
-                                comp_details.get('record_type', '合規檢測')
-                            )
+                            updated_expense_data = {"payment_date": e_cl_pay_date, "total_amount": e_cl_cost}
+                            updated_compliance_data = {"declaration_item": e_cl_item, "certificate_date": e_cl_cert_date, "next_declaration_start": e_cl_next_date}
+                            success, message = finance_model.update_compliance_expense_record(expense_details['id'] if expense_details else None, updated_expense_data, selected_comp_id, updated_compliance_data, comp_details.get('record_type', '合規檢測'))
                             if success: 
                                 st.success(message)
                                 st.cache_data.clear()
                                 st.rerun()
                             else: 
                                 st.error(message)
-
                         if col_delete_comp.form_submit_button("🗑️ 刪除此筆紀錄", type="secondary"):
                             success, message = finance_model.delete_compliance_expense_record(selected_comp_id)
                             if success: st.success(message); st.cache_data.clear(); st.rerun()
                             else: st.error(message)
-                else: # 新增模式
+                else:
                     with st.form(f"add_compliance_log_{selected_id}", clear_on_submit=True):
                         st.markdown("###### 正在新增一筆紀錄")
-                        details = equipment_model.get_single_equipment_details(selected_id) # 取得設備詳細資料
+                        details = equipment_model.get_single_equipment_details(selected_id)
                         acc1, acc2, acc3 = st.columns(3)
                         a_cl_item = acc1.text_input("申報項目", placeholder="例如: 114年Q4水質檢測")
-                        a_cl_cert_date = acc2.date_input("收到憑證/完成日期", value=date.today())
                         
-                        # 自動計算下次日期
+                        # --- 將日期欄位的 value 改為 None ---
+                        a_cl_cert_date = acc2.date_input("收到憑證/完成日期", value=None)
+                        
                         compliance_interval = details.get('compliance_interval_months')
                         calculated_next_date = None
                         if a_cl_cert_date and compliance_interval and compliance_interval > 0:
                             calculated_next_date = a_cl_cert_date + relativedelta(months=compliance_interval)
-                        
                         a_cl_next_date = acc3.date_input("下次申報/檢測日期", value=calculated_next_date, help="若設備已設定合規檢測週期，此欄位會自動計算。")
-
+                        
                         acc4, acc5 = st.columns(2)
                         a_cl_cost = acc4.number_input("相關費用 (選填)", min_value=0, step=100)
-                        a_cl_pay_date = acc5.date_input("支付日期 (選填)", value=date.today())
+                        a_cl_pay_date = acc5.date_input("支付日期 (選填)", value=None)
                         
                         if st.form_submit_button("新增紀錄"):
                             if not a_cl_item:
                                 st.error("請填寫「申報項目」！")
+                            elif not a_cl_cert_date:
+                                st.error("請填寫「收到憑證/完成日期」！")
                             else:
-                                record_details = { 
-                                    "dorm_id": details['dorm_id'], 
-                                    "equipment_id": selected_id, 
-                                    "details": { 
-                                        "declaration_item": a_cl_item, 
-                                        "certificate_date": a_cl_cert_date,
-                                        "next_declaration_start": a_cl_next_date # 將下次日期加入
-                                    } 
-                                }
+                                record_details = { "dorm_id": details['dorm_id'], "equipment_id": selected_id, "details": { "declaration_item": a_cl_item, "certificate_date": a_cl_cert_date, "next_declaration_start": a_cl_next_date } }
                                 expense_details = None
                                 if a_cl_cost > 0:
                                     expense_details = { "dorm_id": details['dorm_id'], "expense_item": f"{details['equipment_name']}-{a_cl_item}", "payment_date": a_cl_pay_date, "total_amount": a_cl_cost, "amortization_start_month": a_cl_pay_date.strftime('%Y-%m'), "amortization_end_month": a_cl_pay_date.strftime('%Y-%m') }
