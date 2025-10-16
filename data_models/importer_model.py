@@ -1262,3 +1262,63 @@ def batch_import_equipment(df: pd.DataFrame):
         if conn: conn.close()
             
     return success_count, pd.DataFrame(failed_records)
+
+def batch_import_invoice_info(df: pd.DataFrame):
+    """
+    批次匯入或更新宿舍的發票資訊。
+    """
+    success_count = 0
+    failed_records = []
+    conn = database.get_db_connection()
+    if not conn:
+        error_df = df.copy()
+        error_df['錯誤原因'] = "無法連接到資料庫"
+        return 0, error_df
+
+    try:
+        with conn.cursor() as cursor:
+            # 預載現有宿舍資料以供比對
+            dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, original_address, normalized_address FROM "Dormitories"')
+            original_addr_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
+            normalized_addr_map = {d['normalized_address']: d['id'] for _, d in dorms_df.iterrows()}
+
+            for index, row in df.iterrows():
+                try:
+                    address = row.get('宿舍地址')
+                    invoice_info = row.get('發票抬頭/統編')
+                    
+                    if not address or pd.isna(address):
+                        raise ValueError("宿舍地址為空")
+                    
+                    dorm_id = None
+                    addr_stripped = str(address).strip()
+                    
+                    # 優先比對原始地址
+                    if addr_stripped in original_addr_map:
+                        dorm_id = original_addr_map[addr_stripped]
+                    # 若找不到，再嘗試比對正規化後的地址
+                    else:
+                        normalized_input = normalize_taiwan_address(addr_stripped)['full']
+                        if normalized_input in normalized_addr_map:
+                            dorm_id = normalized_addr_map[normalized_input]
+
+                    if not dorm_id:
+                        raise ValueError(f"在資料庫中找不到對應的宿舍地址: '{addr_stripped}'")
+
+                    # 執行更新
+                    update_sql = 'UPDATE "Dormitories" SET "invoice_info" = %s WHERE id = %s'
+                    cursor.execute(update_sql, (str(invoice_info or '').strip(), dorm_id))
+                    
+                    success_count += 1
+                except Exception as row_error:
+                    row['錯誤原因'] = str(row_error)
+                    failed_records.append(row)
+
+        conn.commit()
+    except Exception as e:
+        if conn: conn.rollback()
+        print(f"批次匯入發票資訊時發生嚴重錯誤: {e}")
+    finally:
+        if conn: conn.close()
+            
+    return success_count, pd.DataFrame(failed_records)

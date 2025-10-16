@@ -619,3 +619,46 @@ def render():
                         )
             except Exception as e:
                 st.error(f"處理檔案時發生錯誤：{e}")
+
+    st.markdown("---")
+    with st.container(border=True):
+        st.subheader("🏢 宿舍發票資訊匯入")
+        st.info(
+            """
+            用於批次新增或更新宿舍的發票資訊（抬頭/統編）。
+            - **更新方式**：系統會以 Excel 中的「宿舍地址」為基準，**覆蓋**資料庫中對應宿舍的發票資訊。請確保地址完全相符。
+            """
+        )
+
+        invoice_template_df = pd.DataFrame({
+            "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號"],
+            "發票抬頭/統編": ["範例公司 OOO\n12345678"],
+        })
+        st.download_button(
+            label="📥 下載發票資訊匯入範本",
+            data=to_excel(invoice_template_df),
+            file_name="invoice_info_import_template.xlsx"
+        )
+
+        uploaded_invoice_file = st.file_uploader("上傳【宿舍發票資訊】Excel 檔案", type=["xlsx"], key="invoice_uploader")
+
+        if uploaded_invoice_file:
+            try:
+                df_invoice = pd.read_excel(uploaded_invoice_file)
+                st.markdown("##### 檔案內容預覽：")
+                st.dataframe(df_invoice.head())
+                if st.button("🚀 開始匯入發票資訊", type="primary", key="invoice_import_btn"):
+                    with st.spinner("正在處理與匯入資料..."):
+                        success, failed_df = importer_model.batch_import_invoice_info(df_invoice)
+                    st.success(f"匯入完成！成功處理 {success} 筆紀錄。")
+                    if not failed_df.empty:
+                        st.error(f"有 {len(failed_df)} 筆資料匯入失敗：")
+                        st.dataframe(failed_df)
+                        st.download_button(
+                            label="📥 下載失敗紀錄報告",
+                            data=to_excel(failed_df),
+                            file_name="invoice_import_failed_report.xlsx",
+                            key="failed_invoice_download"
+                        )
+            except Exception as e:
+                st.error(f"處理檔案時發生錯誤：{e}")
