@@ -32,6 +32,7 @@ def get_all_dorms_for_view(search_term: str = None):
                 is_self_owned AS "是否自購",
                 rent_payer AS "租金支付方",
                 utilities_payer AS "水電支付方",
+                invoice_info AS "發票資訊",
                 original_address AS "原始地址", 
                 normalized_address AS "正規化地址", 
                 dorm_name AS "宿舍名稱"
@@ -39,9 +40,10 @@ def get_all_dorms_for_view(search_term: str = None):
         """
         params = []
         if search_term:
-            query += ' WHERE original_address ILIKE %s OR normalized_address ILIKE %s OR dorm_name ILIKE %s OR legacy_dorm_code ILIKE %s OR city ILIKE %s OR district ILIKE %s OR person_in_charge ILIKE %s'
+            # 在搜尋條件中也加入新欄位
+            query += ' WHERE original_address ILIKE %s OR normalized_address ILIKE %s OR dorm_name ILIKE %s OR legacy_dorm_code ILIKE %s OR city ILIKE %s OR district ILIKE %s OR person_in_charge ILIKE %s OR invoice_info ILIKE %s'
             term = f"%{search_term}%"
-            params.extend([term, term, term, term, term, term, term])
+            params.extend([term, term, term, term, term, term, term, term])
 
         query += " ORDER BY legacy_dorm_code"
         return _execute_query_to_dataframe(conn, query, params)

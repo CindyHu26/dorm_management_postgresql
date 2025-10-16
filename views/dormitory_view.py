@@ -1,3 +1,5 @@
+# views/dormitory_view.py (發票資訊版)
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -43,6 +45,10 @@ def render():
             original_address = c1.text_input("原始地址 (必填)")
             dorm_name = c2.text_input("宿舍自訂名稱 (例如: 中山A棟)")
             person_in_charge = c3.text_input("負責人")
+            
+            # --- 【核心修改 1】新增發票資訊輸入框 ---
+            invoice_info = c1.text_input("發票抬頭/統編")
+
             is_self_owned = st.checkbox("✅ 此為公司自購宿舍", key="new_self_owned")
 
             st.subheader("責任歸屬與備註")
@@ -51,7 +57,6 @@ def render():
             rent_payer = rc2.selectbox("租金支付方", ["我司", "雇主", "工人"], key="new_rp")
             utilities_payer = rc3.selectbox("水電支付方", ["我司", "雇主", "工人"], key="new_up")
             
-            # --- 【核心修改 1】同時加入兩種備註欄位 ---
             dorm_notes = st.text_area("宿舍備註 (通用)")
             management_notes = st.text_area("管理模式備註 (可記錄特殊約定)")
             utility_bill_notes = st.text_area("變動費用備註 (將顯示在錶號費用管理頁面)")
@@ -66,9 +71,10 @@ def render():
                     dorm_details = {
                         'legacy_dorm_code': legacy_code, 'original_address': original_address,
                         'dorm_name': dorm_name, 'person_in_charge': person_in_charge,
+                        'invoice_info': invoice_info, # 【核心修改 2】將新欄位加入儲存的資料中
                         'primary_manager': primary_manager,
                         'rent_payer': rent_payer, 'utilities_payer': utilities_payer,
-                        'dorm_notes': dorm_notes, # 將 dorm_notes 加入
+                        'dorm_notes': dorm_notes, 
                         'management_notes': management_notes,
                         'utility_bill_notes': utility_bill_notes,
                         'is_self_owned': is_self_owned
@@ -86,7 +92,7 @@ def render():
     # --- 現有宿舍總覽與編輯 ---
     st.subheader("現有宿舍總覽")
     
-    search_term = st.text_input("搜尋宿舍 (可輸入編號、名稱、地址、縣市、區域或負責人)")
+    search_term = st.text_input("搜尋宿舍 (可輸入編號、名稱、地址、縣市、區域、負責人或發票資訊)")
     dorms_df = get_dorms_df(search_term)
     
     if dorms_df.empty:
@@ -110,9 +116,9 @@ def render():
             st.subheader(f"詳細資料: {dorm_details.get('original_address', '')}")
             
             tab_options = ["基本資料與編輯", "房間管理"]
-            st.radio("管理選項:", options=tab_options, key='dorm_active_tab', horizontal=True, label_visibility="collapsed")
+            active_tab = st.radio("管理選項:", options=tab_options, key='dorm_active_tab', horizontal=True, label_visibility="collapsed")
 
-            if st.session_state.dorm_active_tab == "基本資料與編輯":
+            if active_tab == "基本資料與編輯":
                 with st.container():
                     with st.form("edit_dorm_form"):
                         st.markdown("##### 基本資料")
@@ -126,6 +132,9 @@ def render():
                         district = edit_c4.text_input("區域", value=dorm_details.get('district', ''))
                         person_in_charge = edit_c5.text_input("負責人", value=dorm_details.get('person_in_charge', ''))
 
+                        # --- 【核心修改 3】在編輯表單中新增發票資訊欄位 ---
+                        invoice_info_edit = st.text_input("發票抬頭/統編", value=dorm_details.get('invoice_info', ''))
+
                         edit_is_self_owned = st.checkbox("✅ 此為公司自購宿舍", value=dorm_details.get('is_self_owned', False), key="edit_self_owned")
 
                         st.markdown("##### 責任歸屬與備註")
@@ -135,7 +144,6 @@ def render():
                         rent_payer = edit_rc2.selectbox("租金支付方", manager_options, index=manager_options.index(dorm_details.get('rent_payer')) if dorm_details.get('rent_payer') in manager_options else 0)
                         utilities_payer = edit_rc3.selectbox("水電支付方", manager_options, index=manager_options.index(dorm_details.get('utilities_payer')) if dorm_details.get('utilities_payer') in manager_options else 0)
                         
-                        # --- 【核心修改 2】在編輯表單中同時加入兩種備註欄位 ---
                         dorm_notes_edit = st.text_area("宿舍備註 (通用)", value=dorm_details.get('dorm_notes', ''))
                         management_notes = st.text_area("管理模式備註", value=dorm_details.get('management_notes', ''))
                         utility_bill_notes_edit = st.text_area("變動費用備註", value=dorm_details.get('utility_bill_notes', ''))
@@ -145,8 +153,9 @@ def render():
                             updated_details = {
                                 'legacy_dorm_code': legacy_code, 'original_address': original_address,
                                 'dorm_name': dorm_name, 'city': city, 'district': district, 'person_in_charge': person_in_charge,
+                                'invoice_info': invoice_info_edit, # 【核心修改 4】將新欄位加入更新的資料中
                                 'primary_manager': primary_manager, 'rent_payer': rent_payer, 'utilities_payer': utilities_payer,
-                                'dorm_notes': dorm_notes_edit, # 將 dorm_notes 加入更新
+                                'dorm_notes': dorm_notes_edit, 
                                 'management_notes': management_notes,
                                 'utility_bill_notes': utility_bill_notes_edit,
                                 'is_self_owned': edit_is_self_owned
@@ -170,8 +179,7 @@ def render():
                         else:
                             st.error(message)
 
-            elif st.session_state.dorm_active_tab == "房間管理":
-                # ... (房間管理的部分維持不變) ...
+            elif active_tab == "房間管理":
                 with st.container():
                     st.markdown("##### 房間列表")
                     rooms_df = dormitory_model.get_rooms_for_dorm_as_df(dorm_id)

@@ -131,10 +131,11 @@ def create_all_tables_and_indexes():
                 "utilities_payer" VARCHAR(50) DEFAULT '雇主', "insurance_fee" INTEGER,
                 "insurance_start_date" DATE, "insurance_end_date" DATE, "fire_safety_fee" INTEGER,
                 "fire_safety_start_date" DATE, "fire_safety_end_date" DATE,
-                "management_notes" TEXT, "dorm_notes" TEXT, "is_self_owned" BOOLEAN DEFAULT FALSE
+                "management_notes" TEXT, "dorm_notes" TEXT, "is_self_owned" BOOLEAN DEFAULT FALSE,
+                "invoice_info" TEXT -- 用於儲存發票資訊
             );
             """
-            
+                        
             TABLES['Rooms'] = """
             CREATE TABLE IF NOT EXISTS "Rooms" (
                 "id" SERIAL PRIMARY KEY, "dorm_id" INTEGER NOT NULL, "room_number" VARCHAR(50) NOT NULL,

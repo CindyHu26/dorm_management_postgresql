@@ -1,4 +1,4 @@
-# 檔案路徑: views/maintenance_view.py
+# views/maintenance_view.py
 
 import streamlit as st
 import pandas as pd
@@ -83,7 +83,6 @@ def render():
             c1, c2, c3 = st.columns(3)
             dorm_id = c1.selectbox("宿舍地址*", options=list(dorm_options.keys()), format_func=lambda x: dorm_options.get(x, "未選擇"), index=None, placeholder="請選擇宿舍...")
             
-            # --- 【核心修改 1】使用新的函式名稱 ---
             equipment_in_dorm = equipment_model.get_equipment_for_view({"dorm_id": dorm_id}) if dorm_id else pd.DataFrame()
             equip_options = {row['id']: f"{row['設備名稱']} ({row.get('位置', 'N/A')})" for _, row in equipment_in_dorm.iterrows()} if not equipment_in_dorm.empty else {}
             
@@ -121,7 +120,12 @@ def render():
             cost = c9.number_input("維修費用", min_value=0, step=100)
             payer = c10.selectbox("付款人", ["", "我司", "工人", "雇主"])
             invoice_date = c11.date_input("請款日期", value=None)
-            invoice_info = c12.text_input("發票資訊 (如: 抬頭、統編)")
+
+            # 在新增時，也預先帶入宿舍的發票資訊
+            dorm_details_for_new = dormitory_model.get_dorm_details_by_id(dorm_id) if dorm_id else {}
+            default_invoice_info_new = dorm_details_for_new.get('invoice_info', '')
+            invoice_info = c12.text_input("發票資訊 (如: 抬頭、統編)", value=default_invoice_info_new)
+
             notes = st.text_area("其他備註")
 
             if st.form_submit_button("儲存紀錄"):
@@ -238,7 +242,6 @@ def render():
                 ec1.text_input("宿舍地址", value=dorm_options.get(details.get('dorm_id')), disabled=True)
                 
                 record_dorm_id = details.get('dorm_id')
-                # --- 【核心修改 2】使用新的函式名稱 ---
                 equipment_in_dorm_edit = equipment_model.get_equipment_for_view({"dorm_id": record_dorm_id}) if record_dorm_id else pd.DataFrame()
                 equip_options_edit = {row['id']: f"{row['設備名稱']} ({row.get('位置', 'N/A')})" for _, row in equipment_in_dorm_edit.iterrows()} if not equipment_in_dorm_edit.empty else {}
                 current_equip_id = details.get('equipment_id')
@@ -290,7 +293,13 @@ def render():
                 e_cost = ec9.number_input("維修費用", min_value=0, step=100, value=details.get('cost') or 0)
                 e_payer = ec10.selectbox("付款人", ["", "我司", "工人", "雇主"], index=(["", "我司", "工人", "雇主"]).index(details.get('payer')) if details.get('payer') in ["", "我司", "工人", "雇主"] else 0)
                 e_invoice_date = ec11.date_input("請款日期", value=details.get('invoice_date'))
-                e_invoice_info = ec12.text_input("發票資訊", value=details.get('invoice_info'))
+                
+                # --- 【核心修改】智慧帶入發票資訊 ---
+                dorm_details_for_edit = dormitory_model.get_dorm_details_by_id(record_dorm_id) if record_dorm_id else {}
+                default_invoice_info_edit = dorm_details_for_edit.get('invoice_info', '')
+                current_invoice_info = details.get('invoice_info', '')
+                e_invoice_info = ec12.text_input("發票資訊", value=current_invoice_info or default_invoice_info_edit)
+
                 e_notes = st.text_area("其他備註", value=details.get('notes'))
 
                 if st.form_submit_button("儲存變更"):
