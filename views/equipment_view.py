@@ -269,9 +269,24 @@ def render():
         st.subheader("檢視設備詳細資料與歷史紀錄")
         options_dict = {row['id']: f"ID:{row['id']} - {row['宿舍地址']} / {row['設備名稱']} ({row.get('位置', '')})" for _, row in equipment_df.iterrows()}
         selected_id = st.selectbox("請從上方總覽列表選擇要操作的設備：", [None] + list(options_dict.keys()), format_func=lambda x: "請選擇..." if x is None else options_dict.get(x))
+        
         if selected_id:
-            tab1, tab2, tab3 = st.tabs(["📝 編輯基本資料", "🔧 維修/保養歷史", "📜 合規紀錄"])
-            with tab1:
+            # --- 【核心修改 1】初始化 session_state ---
+            if 'active_tab' not in st.session_state:
+                st.session_state.active_tab = "📝 編輯基本資料"
+
+            tab_names = ["📝 編輯基本資料", "🔧 維修/保養歷史", "📜 合規紀錄"]
+            
+            # --- 【核心修改 2】用 st.radio 取代 st.tabs ---
+            selected_tab = st.radio(
+                "管理選項：",
+                tab_names,
+                key="active_tab", # 將 session_state 變數綁定到元件
+                horizontal=True,
+                label_visibility="collapsed"
+            )
+
+            if selected_tab == "📝 編輯基本資料":
                 details = equipment_model.get_single_equipment_details(selected_id)
                 if details:
                     with st.form(f"edit_equipment_form_{selected_id}"):
@@ -308,21 +323,23 @@ def render():
                         e_status = st.selectbox("目前狀態", ["正常", "需保養", "維修中", "已報廢"], index=["正常", "需保養", "維修中", "已報廢"].index(details.get('status')) if details.get('status') in ["正常", "需保養", "維修中", "已報廢"] else 0)
                         e_notes = st.text_area("設備備註", value=details.get('notes', ''))
                         
-                        edit_submitted = st.form_submit_button("儲存變更")
-                        if edit_submitted:
+                        if st.form_submit_button("儲存變更"):
+                            st.session_state.active_tab = "📝 編輯基本資料" # 儲存當前頁籤
                             update_data = { "dorm_id": e_dorm_id, "vendor_id": e_vendor_id, "equipment_name": e_equipment_name, "equipment_category": e_equipment_category, "location": e_location, "brand_model": e_brand_model, "serial_number": e_serial_number, "installation_date": e_installation_date, "maintenance_interval_months": e_maintenance_interval if e_maintenance_interval > 0 else None, "compliance_interval_months": e_compliance_interval if e_compliance_interval > 0 else None, "last_maintenance_date": e_last_maintenance_date, "next_maintenance_date": e_next_maintenance_date, "status": e_status, "notes": e_notes }
                             success, message = equipment_model.update_equipment_record(selected_id, update_data)
                             if success: st.success(message); st.cache_data.clear(); st.rerun()
                             else: st.error(message)
+
                     st.markdown("---")
                     st.markdown("##### 危險操作區")
                     confirm_delete = st.checkbox("我了解並確認要刪除此筆設備紀錄", key=f"delete_confirm_{selected_id}")
                     if st.button("🗑️ 刪除此紀錄", type="primary", disabled=not confirm_delete, key=f"delete_button_{selected_id}"):
+                        st.session_state.active_tab = "📝 編輯基本資料" # 儲存當前頁籤
                         success, message = equipment_model.delete_equipment_record(selected_id)
                         if success: st.success(message); st.cache_data.clear(); st.rerun()
                         else: st.error(message)
 
-            with tab2:
+            elif selected_tab == "🔧 維修/保養歷史":
                 st.subheader("🔧 維修/保養歷史")
                 maintenance_history = equipment_model.get_related_maintenance_logs(selected_id)
                 st.dataframe(maintenance_history, width="stretch", hide_index=True, column_config={"id": None})
@@ -344,11 +361,13 @@ def render():
                         e_ml_vendor = emc5.selectbox("執行廠商", options=[None] + list(vendor_options.keys()), format_func=lambda x: "未指定" if x is None else vendor_options.get(x), index=([None] + list(vendor_options.keys())).index(log_details.get('vendor_id')) if log_details.get('vendor_id') in [None] + list(vendor_options.keys()) else 0)
                         col_edit, col_delete = st.columns(2)
                         if col_edit.form_submit_button("儲存變更"):
+                            st.session_state.active_tab = "🔧 維修/保養歷史" # 儲存當前頁籤
                             update_data = {"notification_date": e_ml_date, "completion_date": e_ml_date, "item_type": e_ml_type, "status": e_ml_status, "description": e_ml_desc, "cost": e_ml_cost, "vendor_id": e_ml_vendor}
                             success, message = maintenance_model.update_log(selected_log_id, update_data)
                             if success: st.success(message); st.cache_data.clear(); st.rerun()
                             else: st.error(message)
                         if col_delete.form_submit_button("🗑️ 刪除此筆紀錄", type="secondary"):
+                            st.session_state.active_tab = "🔧 維修/保養歷史" # 儲存當前頁籤
                             success, message = maintenance_model.delete_log(selected_log_id)
                             if success: st.success(message); st.cache_data.clear(); st.rerun()
                             else: st.error(message)
@@ -363,14 +382,15 @@ def render():
                         a_ml_cost = amc4.number_input("費用", min_value=0, step=100)
                         a_ml_vendor = amc5.selectbox("執行廠商 (選填)", options=[None] + list(vendor_options.keys()), format_func=lambda x: "未指定" if x is None else vendor_options.get(x))
                         if st.form_submit_button("新增紀錄"):
+                            st.session_state.active_tab = "🔧 維修/保養歷史" # 儲存當前頁籤
                             if not a_ml_desc: st.error("請填寫「細項說明」！")
                             else:
                                 log_details = { 'dorm_id': details['dorm_id'], 'equipment_id': selected_id, 'notification_date': a_ml_date, 'completion_date': a_ml_date, 'item_type': a_ml_type, 'description': a_ml_desc, 'cost': a_ml_cost if a_ml_cost > 0 else None, 'vendor_id': a_ml_vendor, 'status': '已完成' }
                                 success, message = maintenance_model.add_log(log_details)
                                 if success: st.success(message); st.cache_data.clear(); st.rerun()
                                 else: st.error(message)
-            
-            with tab3:
+
+            elif selected_tab == "📜 合規紀錄":
                 st.subheader("📜 合規紀錄")
                 st.info("此區塊用於記錄需政府或第三方單位認證的紀錄，例如飲水機的水質檢測報告。")
                 compliance_history = equipment_model.get_related_compliance_records(selected_id)
@@ -393,9 +413,10 @@ def render():
                         e_cl_pay_date = ecc5.date_input("支付日期", value=expense_details.get('payment_date') if expense_details else None)
                         col_edit_comp, col_delete_comp = st.columns(2)
                         if col_edit_comp.form_submit_button("儲存變更"):
+                            st.session_state.active_tab = "📜 合規紀錄" # 儲存當前頁籤
                             updated_expense_data = {"payment_date": e_cl_pay_date, "total_amount": e_cl_cost}
                             updated_compliance_data = {"declaration_item": e_cl_item, "certificate_date": e_cl_cert_date, "next_declaration_start": e_cl_next_date}
-                            success, message = finance_model.update_compliance_expense_record(expense_details['id'] if expense_details else None, updated_expense_data, selected_comp_id, updated_compliance_data, comp_details.get('record_type', '合規檢測'))
+                            success, message = finance_model.update_compliance_expense_record(expense_details['id'] if expense_details else None, updated_expense_data, selected_comp_id, updated_compliance_data, comp_details.get('record_type', '合規紀錄'))
                             if success: 
                                 st.success(message)
                                 st.cache_data.clear()
@@ -403,6 +424,7 @@ def render():
                             else: 
                                 st.error(message)
                         if col_delete_comp.form_submit_button("🗑️ 刪除此筆紀錄", type="secondary"):
+                            st.session_state.active_tab = "📜 合規紀錄" # 儲存當前頁籤
                             success, message = finance_model.delete_compliance_expense_record(selected_comp_id)
                             if success: st.success(message); st.cache_data.clear(); st.rerun()
                             else: st.error(message)
@@ -412,21 +434,18 @@ def render():
                         details = equipment_model.get_single_equipment_details(selected_id)
                         acc1, acc2, acc3 = st.columns(3)
                         a_cl_item = acc1.text_input("申報項目", placeholder="例如: 114年Q4水質檢測")
-                        
-                        # --- 將日期欄位的 value 改為 None ---
                         a_cl_cert_date = acc2.date_input("收到憑證/完成日期", value=None)
-                        
                         compliance_interval = details.get('compliance_interval_months')
                         calculated_next_date = None
                         if a_cl_cert_date and compliance_interval and compliance_interval > 0:
                             calculated_next_date = a_cl_cert_date + relativedelta(months=compliance_interval)
                         a_cl_next_date = acc3.date_input("下次申報/檢測日期", value=calculated_next_date, help="若設備已設定合規檢測週期，此欄位會自動計算。")
-                        
                         acc4, acc5 = st.columns(2)
                         a_cl_cost = acc4.number_input("相關費用 (選填)", min_value=0, step=100)
                         a_cl_pay_date = acc5.date_input("支付日期 (選填)", value=None)
                         
                         if st.form_submit_button("新增紀錄"):
+                            st.session_state.active_tab = "📜 合規紀錄" # 儲存當前頁籤
                             if not a_cl_item:
                                 st.error("請填寫「申報項目」！")
                             elif not a_cl_cert_date:
