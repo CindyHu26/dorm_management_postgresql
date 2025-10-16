@@ -1,16 +1,13 @@
-# views/dormitory_view.py (發票資訊版)
+# views/dormitory_view.py (房東關聯版)
 
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from data_models import dormitory_model 
+from data_models import dormitory_model, vendor_model # 匯入 vendor_model
 from data_processor import normalize_taiwan_address
 
 @st.cache_data
 def get_dorms_df(search=None):
-    """
-    從資料庫獲取宿舍資料以供顯示，並將結果快取。
-    """
     return dormitory_model.get_all_dorms_for_view(search_term=search)
 
 def render():
@@ -36,6 +33,11 @@ def render():
         st.session_state.dorm_active_tab = "基本資料與編輯"
         st.session_state.last_selected_dorm = st.session_state.selected_dorm_id
 
+    # --- 預載廠商資料 ---
+    vendors = vendor_model.get_vendors_for_view()
+    # 我們特別為房東建立一個篩選過的選項
+    landlord_options = {v['id']: v['廠商名稱'] for _, v in vendors[vendors['服務項目'] == '房東'].iterrows()} if not vendors.empty else {}
+
     # --- 新增宿舍區塊 ---
     with st.expander("➕ 新增宿舍地址", expanded=False):
         with st.form("new_dorm_form", clear_on_submit=True):
@@ -46,9 +48,10 @@ def render():
             dorm_name = c2.text_input("宿舍自訂名稱 (例如: 中山A棟)")
             person_in_charge = c3.text_input("負責人")
             
-            # --- 【核心修改 1】新增發票資訊輸入框 ---
-            invoice_info = c1.text_input("發票抬頭/統編")
+            # --- 【核心修改 1】新增房東下拉選單 ---
+            landlord_id = c2.selectbox("房東 (請先至廠商資料建立)", options=[None] + list(landlord_options.keys()), format_func=lambda x: "未指定" if x is None else landlord_options.get(x))
 
+            invoice_info = c1.text_input("發票抬頭/統編")
             is_self_owned = st.checkbox("✅ 此為公司自購宿舍", key="new_self_owned")
 
             st.subheader("責任歸屬與備註")
@@ -71,7 +74,8 @@ def render():
                     dorm_details = {
                         'legacy_dorm_code': legacy_code, 'original_address': original_address,
                         'dorm_name': dorm_name, 'person_in_charge': person_in_charge,
-                        'invoice_info': invoice_info, # 【核心修改 2】將新欄位加入儲存的資料中
+                        'landlord_id': landlord_id, # 【核心修改 2】將新欄位加入儲存的資料中
+                        'invoice_info': invoice_info,
                         'primary_manager': primary_manager,
                         'rent_payer': rent_payer, 'utilities_payer': utilities_payer,
                         'dorm_notes': dorm_notes, 
@@ -81,9 +85,7 @@ def render():
                     }
                     success, message = dormitory_model.add_new_dormitory(dorm_details)
                     if success:
-                        st.success(message)
-                        get_dorms_df.clear() 
-                        st.rerun()
+                        st.success(message); get_dorms_df.clear(); st.rerun()
                     else:
                         st.error(message)
 
@@ -92,7 +94,7 @@ def render():
     # --- 現有宿舍總覽與編輯 ---
     st.subheader("現有宿舍總覽")
     
-    search_term = st.text_input("搜尋宿舍 (可輸入編號、名稱、地址、縣市、區域、負責人或發票資訊)")
+    search_term = st.text_input("搜尋宿舍 (可輸入編號、房東、地址、負責人或發票資訊)")
     dorms_df = get_dorms_df(search_term)
     
     if dorms_df.empty:
@@ -127,14 +129,20 @@ def render():
                         original_address = edit_c1.text_input("原始地址", value=dorm_details.get('original_address', ''))
                         dorm_name = edit_c2.text_input("宿舍自訂名稱", value=dorm_details.get('dorm_name', ''))
                         
-                        edit_c3, edit_c4, edit_c5 = st.columns(3)
-                        city = edit_c3.text_input("縣市", value=dorm_details.get('city', ''))
-                        district = edit_c4.text_input("區域", value=dorm_details.get('district', ''))
-                        person_in_charge = edit_c5.text_input("負責人", value=dorm_details.get('person_in_charge', ''))
+                        # --- 【核心修改 3】在編輯表單中新增房東下拉選單 ---
+                        edit_c3, edit_c4 = st.columns(2)
+                        person_in_charge = edit_c3.text_input("負責人", value=dorm_details.get('person_in_charge', ''))
+                        
+                        current_landlord_id = dorm_details.get('landlord_id')
+                        landlord_keys = [None] + list(landlord_options.keys())
+                        landlord_index = landlord_keys.index(current_landlord_id) if current_landlord_id in landlord_keys else 0
+                        landlord_id_edit = edit_c4.selectbox("房東", options=landlord_keys, format_func=lambda x: "未指定" if x is None else landlord_options.get(x), index=landlord_index)
 
-                        # --- 【核心修改 3】在編輯表單中新增發票資訊欄位 ---
+                        edit_c5, edit_c6 = st.columns(2)
+                        city = edit_c5.text_input("縣市", value=dorm_details.get('city', ''))
+                        district = edit_c6.text_input("區域", value=dorm_details.get('district', ''))
+                        
                         invoice_info_edit = st.text_input("發票抬頭/統編", value=dorm_details.get('invoice_info', ''))
-
                         edit_is_self_owned = st.checkbox("✅ 此為公司自購宿舍", value=dorm_details.get('is_self_owned', False), key="edit_self_owned")
 
                         st.markdown("##### 責任歸屬與備註")
@@ -153,7 +161,8 @@ def render():
                             updated_details = {
                                 'legacy_dorm_code': legacy_code, 'original_address': original_address,
                                 'dorm_name': dorm_name, 'city': city, 'district': district, 'person_in_charge': person_in_charge,
-                                'invoice_info': invoice_info_edit, # 【核心修改 4】將新欄位加入更新的資料中
+                                'landlord_id': landlord_id_edit, # 【核心修改 4】將新欄位加入更新的資料中
+                                'invoice_info': invoice_info_edit,
                                 'primary_manager': primary_manager, 'rent_payer': rent_payer, 'utilities_payer': utilities_payer,
                                 'dorm_notes': dorm_notes_edit, 
                                 'management_notes': management_notes,
@@ -172,10 +181,7 @@ def render():
                     if st.button("🗑️ 刪除此宿舍", type="primary", disabled=not confirm_delete):
                         success, message = dormitory_model.delete_dormitory_by_id(dorm_id)
                         if success:
-                            st.success(message)
-                            st.session_state.selected_dorm_id = None
-                            get_dorms_df.clear()
-                            st.rerun()
+                            st.success(message); st.session_state.selected_dorm_id = None; get_dorms_df.clear(); st.rerun()
                         else:
                             st.error(message)
 
@@ -187,12 +193,7 @@ def render():
                     st.markdown("---")
                     st.subheader("新增、編輯或刪除房間")
                     room_options = {row['id']: f"{row['房號']} (容量: {row.get('容量', 'N/A')})" for _, row in rooms_df.iterrows()}
-                    st.selectbox(
-                        "選擇要編輯或刪除的房間：",
-                        options=[None] + list(room_options.keys()),
-                        format_func=lambda x: "請選擇..." if x is None else room_options.get(x),
-                        key='selected_room_id'
-                    )
+                    st.selectbox( "選擇要編輯或刪除的房間：", options=[None] + list(room_options.keys()), format_func=lambda x: "請選擇..." if x is None else room_options.get(x), key='selected_room_id' )
                     if st.session_state.selected_room_id:
                         room_details = dormitory_model.get_single_room_details(st.session_state.selected_room_id)
                         if room_details:
@@ -207,24 +208,17 @@ def render():
                                 e_room_notes = st.text_area("房間備註", value=room_details.get('room_notes', ''))
                                 edit_submitted = st.form_submit_button("儲存房間變更")
                                 if edit_submitted:
-                                    updated_details = {
-                                        "capacity": e_capacity, "gender_policy": e_gender_policy,
-                                        "nationality_policy": e_nationality_policy, "room_notes": e_room_notes
-                                    }
+                                    updated_details = { "capacity": e_capacity, "gender_policy": e_gender_policy, "nationality_policy": e_nationality_policy, "room_notes": e_room_notes }
                                     success, message = dormitory_model.update_room_details(st.session_state.selected_room_id, updated_details)
                                     if success:
-                                        st.success(message)
-                                        st.session_state.room_action_completed = True
-                                        st.rerun()
+                                        st.success(message); st.session_state.room_action_completed = True; st.rerun()
                                     else:
                                         st.error(message)
                             confirm_delete_room = st.checkbox("我了解並確認要刪除此房間", key=f"delete_room_{st.session_state.selected_room_id}")
                             if st.button("🗑️ 刪除此房間", type="primary", disabled=not confirm_delete_room):
                                 success, message = dormitory_model.delete_room_by_id(st.session_state.selected_room_id)
                                 if success:
-                                    st.success(message)
-                                    st.session_state.room_action_completed = True
-                                    st.rerun()
+                                    st.success(message); st.session_state.room_action_completed = True; st.rerun()
                                 else:
                                     st.error(message)
                     with st.form("new_room_form", clear_on_submit=True):
@@ -241,14 +235,9 @@ def render():
                             if not room_number:
                                 st.error("房號為必填欄位！")
                             else:
-                                room_details = {
-                                    'dorm_id': dorm_id, 'room_number': room_number, 'capacity': capacity,
-                                    'gender_policy': gender_policy, 'nationality_policy': nationality_policy,
-                                    'room_notes': room_notes
-                                }
+                                room_details = { 'dorm_id': dorm_id, 'room_number': room_number, 'capacity': capacity, 'gender_policy': gender_policy, 'nationality_policy': nationality_policy, 'room_notes': room_notes }
                                 success, msg, _ = dormitory_model.add_new_room_to_dorm(room_details)
                                 if success:
-                                    st.success(msg)
-                                    st.rerun()
+                                    st.success(msg); st.rerun()
                                 else:
                                     st.error(msg)

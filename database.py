@@ -127,15 +127,17 @@ def create_all_tables_and_indexes():
                 "city" VARCHAR(50),
                 "district" VARCHAR(50),
                 "person_in_charge" VARCHAR(50),
+                "landlord_id" INTEGER, -- 【核心修改】新增房東 ID 欄位
                 "primary_manager" VARCHAR(50) DEFAULT '雇主', "rent_payer" VARCHAR(50) DEFAULT '雇主',
                 "utilities_payer" VARCHAR(50) DEFAULT '雇主', "insurance_fee" INTEGER,
                 "insurance_start_date" DATE, "insurance_end_date" DATE, "fire_safety_fee" INTEGER,
                 "fire_safety_start_date" DATE, "fire_safety_end_date" DATE,
                 "management_notes" TEXT, "dorm_notes" TEXT, "is_self_owned" BOOLEAN DEFAULT FALSE,
-                "invoice_info" TEXT -- 用於儲存發票資訊
+                "invoice_info" TEXT,
+                FOREIGN KEY ("landlord_id") REFERENCES "Vendors" ("id") ON DELETE SET NULL -- 【核心修改】新增外鍵關聯
             );
             """
-                        
+
             TABLES['Rooms'] = """
             CREATE TABLE IF NOT EXISTS "Rooms" (
                 "id" SERIAL PRIMARY KEY, "dorm_id" INTEGER NOT NULL, "room_number" VARCHAR(50) NOT NULL,

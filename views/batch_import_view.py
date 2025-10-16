@@ -662,3 +662,45 @@ def render():
                         )
             except Exception as e:
                 st.error(f"處理檔案時發生錯誤：{e}")
+
+    with st.container(border=True):
+        st.subheader("🏡 宿舍房東資訊匯入")
+        st.info(
+            """
+            用於批次關聯宿舍與房東。
+            - **更新方式**：系統會以「宿舍地址」為基準，**覆蓋**資料庫中對應宿舍的房東欄位。請確保房東名稱已存在於「廠商管理」（服務項目需為 "房東"）。
+            """
+        )
+
+        landlord_template_df = pd.DataFrame({
+            "宿舍地址": ["範例：彰化縣鹿港鎮成功路123號"],
+            "房東": ["王大明"],
+        })
+        st.download_button(
+            label="📥 下載房東資訊匯入範本",
+            data=to_excel(landlord_template_df),
+            file_name="landlord_info_import_template.xlsx"
+        )
+
+        uploaded_landlord_file = st.file_uploader("上傳【宿舍房東資訊】Excel 檔案", type=["xlsx"], key="landlord_uploader")
+
+        if uploaded_landlord_file:
+            try:
+                df_landlord = pd.read_excel(uploaded_landlord_file)
+                st.markdown("##### 檔案內容預覽：")
+                st.dataframe(df_landlord.head())
+                if st.button("🚀 開始匯入房東資訊", type="primary", key="landlord_import_btn"):
+                    with st.spinner("正在處理與匯入資料..."):
+                        success, failed_df = importer_model.batch_import_landlord_info(df_landlord)
+                    st.success(f"匯入完成！成功處理 {success} 筆紀錄。")
+                    if not failed_df.empty:
+                        st.error(f"有 {len(failed_df)} 筆資料匯入失敗：")
+                        st.dataframe(failed_df)
+                        st.download_button(
+                            label="📥 下載失敗紀錄報告",
+                            data=to_excel(failed_df),
+                            file_name="landlord_import_failed_report.xlsx",
+                            key="failed_landlord_download"
+                        )
+            except Exception as e:
+                st.error(f"處理檔案時發生錯誤：{e}")

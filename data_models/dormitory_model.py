@@ -16,36 +16,38 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_all_dorms_for_view(search_term: str = None):
     """
-    【v2.0 修改版】取得所有宿舍的基本資料，新增縣市、區域、負責人欄位。
+    【v2.2 房東關聯版】取得所有宿舍的基本資料，新增房東與發票資訊欄位。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
         query = """
             SELECT 
-                id, 
-                legacy_dorm_code AS "編號", 
-                city AS "縣市",
-                district AS "區域",
-                person_in_charge AS "負責人",
-                primary_manager AS "主要管理人",
-                is_self_owned AS "是否自購",
-                rent_payer AS "租金支付方",
-                utilities_payer AS "水電支付方",
-                invoice_info AS "發票資訊",
-                original_address AS "原始地址", 
-                normalized_address AS "正規化地址", 
-                dorm_name AS "宿舍名稱"
-            FROM "Dormitories"
+                d.id, 
+                d.legacy_dorm_code AS "編號", 
+                d.city AS "縣市",
+                d.district AS "區域",
+                d.person_in_charge AS "負責人",
+                d.primary_manager AS "主要管理人",
+                d.is_self_owned AS "是否自購",
+                v.vendor_name AS "房東",
+                d.rent_payer AS "租金支付方",
+                d.utilities_payer AS "水電支付方",
+                d.invoice_info AS "發票資訊",
+                d.original_address AS "原始地址", 
+                d.normalized_address AS "正規化地址", 
+                d.dorm_name AS "宿舍名稱"
+            FROM "Dormitories" d
+            LEFT JOIN "Vendors" v ON d.landlord_id = v.id -- 【核心修改】JOIN Vendors 表
         """
         params = []
         if search_term:
-            # 在搜尋條件中也加入新欄位
-            query += ' WHERE original_address ILIKE %s OR normalized_address ILIKE %s OR dorm_name ILIKE %s OR legacy_dorm_code ILIKE %s OR city ILIKE %s OR district ILIKE %s OR person_in_charge ILIKE %s OR invoice_info ILIKE %s'
+            # 在搜尋條件中也加入房東名稱
+            query += ' WHERE d.original_address ILIKE %s OR d.normalized_address ILIKE %s OR d.dorm_name ILIKE %s OR d.legacy_dorm_code ILIKE %s OR d.city ILIKE %s OR d.district ILIKE %s OR d.person_in_charge ILIKE %s OR d.invoice_info ILIKE %s OR v.vendor_name ILIKE %s'
             term = f"%{search_term}%"
-            params.extend([term, term, term, term, term, term, term, term])
+            params.extend([term, term, term, term, term, term, term, term, term])
 
-        query += " ORDER BY legacy_dorm_code"
+        query += " ORDER BY d.legacy_dorm_code"
         return _execute_query_to_dataframe(conn, query, params)
     finally:
         if conn: conn.close()

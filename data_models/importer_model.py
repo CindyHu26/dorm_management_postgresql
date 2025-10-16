@@ -1322,3 +1322,75 @@ def batch_import_invoice_info(df: pd.DataFrame):
         if conn: conn.close()
             
     return success_count, pd.DataFrame(failed_records)
+
+# in data_models/importer_model.py
+
+def batch_import_landlord_info(df: pd.DataFrame):
+    """
+    批次匯入或更新宿舍與房東的關聯。
+    """
+    success_count = 0
+    failed_records = []
+    conn = database.get_db_connection()
+    if not conn:
+        error_df = df.copy()
+        error_df['錯誤原因'] = "無法連接到資料庫"
+        return 0, error_df
+
+    try:
+        with conn.cursor() as cursor:
+            # 預載宿舍和房東(Vendors)資料以供比對
+            dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, original_address, normalized_address FROM "Dormitories"')
+            original_addr_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
+            normalized_addr_map = {d['normalized_address']: d['id'] for _, d in dorms_df.iterrows()}
+            
+            # 只載入服務項目為 "房東" 的廠商
+            vendors_df = _execute_query_to_dataframe(conn, 'SELECT id, vendor_name FROM "Vendors" WHERE service_category = %s', ('房東',))
+            vendor_map = {v['vendor_name']: v['id'] for _, v in vendors_df.iterrows()}
+
+            for index, row in df.iterrows():
+                try:
+                    address = row.get('宿舍地址')
+                    landlord_name = row.get('房東')
+                    
+                    if not address or pd.isna(address):
+                        raise ValueError("宿舍地址為空")
+                    
+                    # 查找宿舍 ID
+                    dorm_id = None
+                    addr_stripped = str(address).strip()
+                    if addr_stripped in original_addr_map:
+                        dorm_id = original_addr_map[addr_stripped]
+                    else:
+                        normalized_input = normalize_taiwan_address(addr_stripped)['full']
+                        if normalized_input in normalized_addr_map:
+                            dorm_id = normalized_addr_map[normalized_input]
+
+                    if not dorm_id:
+                        raise ValueError(f"在資料庫中找不到對應的宿舍地址: '{addr_stripped}'")
+
+                    # 查找房東 ID
+                    landlord_id = None
+                    if pd.notna(landlord_name) and str(landlord_name).strip():
+                        landlord_name_stripped = str(landlord_name).strip()
+                        landlord_id = vendor_map.get(landlord_name_stripped)
+                        if not landlord_id:
+                            raise ValueError(f"在廠商資料中找不到服務項目為 '房東' 且名稱為 '{landlord_name_stripped}' 的紀錄。")
+                    
+                    # 執行更新
+                    update_sql = 'UPDATE "Dormitories" SET "landlord_id" = %s WHERE id = %s'
+                    cursor.execute(update_sql, (landlord_id, dorm_id))
+                    
+                    success_count += 1
+                except Exception as row_error:
+                    row['錯誤原因'] = str(row_error)
+                    failed_records.append(row)
+
+        conn.commit()
+    except Exception as e:
+        if conn: conn.rollback()
+        print(f"批次匯入房東資訊時發生嚴重錯誤: {e}")
+    finally:
+        if conn: conn.close()
+            
+    return success_count, pd.DataFrame(failed_records)
