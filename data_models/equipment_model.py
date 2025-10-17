@@ -1,4 +1,4 @@
-# 檔案路徑: data_models/equipment_model.py
+# data_models/equipment_model.py
 
 import pandas as pd
 import database
@@ -19,7 +19,7 @@ def _execute_query_to_dataframe(conn, query, params=None):
         return pd.DataFrame(records, columns=columns)
 
 def get_equipment_for_view(filters: dict = None):
-    """【核心修改 1】查詢設備，並支援宿舍和分類的篩選。"""
+    """【v2.2 週期欄位版】查詢設備，並支援篩選，同時顯示供應廠商、備註與週期。"""
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
@@ -28,19 +28,21 @@ def get_equipment_for_view(filters: dict = None):
                 e.id, 
                 d.original_address AS "宿舍地址",
                 e.equipment_name AS "設備名稱", 
+                v.vendor_name AS "供應廠商",
                 e.equipment_category AS "分類", 
                 e.location AS "位置", 
                 e.brand_model AS "品牌型號",
+                e.maintenance_interval_months AS "保養週期(月)",
+                e.compliance_interval_months AS "合規週期(月)",
                 e.next_maintenance_date AS "下次保養/檢查日",
-                e.status AS "狀態"
+                e.status AS "狀態",
+                e.notes AS "備註"
             FROM "DormitoryEquipment" e
             JOIN "Dormitories" d ON e.dorm_id = d.id
+            LEFT JOIN "Vendors" v ON e.vendor_id = v.id
         """
         params = []
-        where_clauses = []
-        
-        # 始終只顯示我司管理的宿舍設備
-        where_clauses.append("d.primary_manager = '我司'")
+        where_clauses = ["d.primary_manager = '我司'"]
 
         if filters:
             if filters.get("dorm_id"):
@@ -425,46 +427,6 @@ def batch_add_compliance_logs(equipment_ids: list, compliance_info: dict):
     else:
         return False, f"處理完成。成功 {success_count} 筆，失敗 {len(failed_ids)} 筆。錯誤: {'; '.join(error_messages)}"
     
-def get_equipment_for_view(filters: dict = None):
-    """【v2.1 備註版】查詢設備，並支援篩選，同時顯示供應廠商與備註。"""
-    conn = database.get_db_connection()
-    if not conn: return pd.DataFrame()
-    try:
-        query = """
-            SELECT 
-                e.id, 
-                d.original_address AS "宿舍地址",
-                e.equipment_name AS "設備名稱", 
-                v.vendor_name AS "供應廠商",
-                e.equipment_category AS "分類", 
-                e.location AS "位置", 
-                e.brand_model AS "品牌型號",
-                e.next_maintenance_date AS "下次保養/檢查日",
-                e.status AS "狀態",
-                e.notes AS "備註" -- 查詢備註欄位
-            FROM "DormitoryEquipment" e
-            JOIN "Dormitories" d ON e.dorm_id = d.id
-            LEFT JOIN "Vendors" v ON e.vendor_id = v.id
-        """
-        params = []
-        where_clauses = ["d.primary_manager = '我司'"]
-
-        if filters:
-            if filters.get("dorm_id"):
-                where_clauses.append("e.dorm_id = %s")
-                params.append(filters["dorm_id"])
-            if filters.get("category"):
-                where_clauses.append("e.equipment_category = %s")
-                params.append(filters["category"])
-        
-        if where_clauses:
-            query += " WHERE " + " AND ".join(where_clauses)
-            
-        query += " ORDER BY d.original_address, e.equipment_category, e.equipment_name"
-        return _execute_query_to_dataframe(conn, query, params)
-    finally:
-        if conn: conn.close()
-
 def batch_create_numbered_equipment(details: dict, quantity: int, start_number: int):
     """
     【v1.1 週期設定版】批次新增帶有連續編號的設備。

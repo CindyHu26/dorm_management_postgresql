@@ -1,4 +1,4 @@
-# views/equipment_view.py (v17 - 修正 session_state 錯誤)
+# views/equipment_view.py (v18 - 總覽欄位擴充)
 
 import streamlit as st
 import pandas as pd
@@ -203,11 +203,35 @@ def render():
     if equipment_df.empty:
         st.info("在目前的篩選條件下，找不到任何設備紀錄。")
     else:
-        st.dataframe(equipment_df, width="stretch", hide_index=True)
+        # --- 【核心修改】在此處加入 column_config ---
+        st.dataframe(
+            equipment_df, 
+            width="stretch", 
+            hide_index=True,
+            column_config={
+                "id": None, # 隱藏 id 欄位
+                "保養週期(月)": st.column_config.NumberColumn(
+                    "保養週期",
+                    help="一般保養的間隔月數",
+                    format="%d 月"
+                ),
+                "合規週期(月)": st.column_config.NumberColumn(
+                    "合規週期",
+                    help="合規檢測的間隔月數",
+                    format="%d 月"
+                ),
+                "下次保養/檢查日": st.column_config.DateColumn(
+                    "下次保養/檢查日",
+                    format="YYYY-MM-DD"
+                )
+            }
+        )
         st.markdown("---")
         st.subheader("檢視設備詳細資料與歷史紀錄")
         options_dict = {row['id']: f"ID:{row['id']} - {row['宿舍地址']} / {row['設備名稱']} ({row.get('位置', '')})" for _, row in equipment_df.iterrows()}
         selected_id = st.selectbox("請從上方總覽列表選擇要操作的設備：", [None] + list(options_dict.keys()), format_func=lambda x: "請選擇..." if x is None else options_dict.get(x))
+        
+        # --- 編輯區塊 (維持不變) ---
         if selected_id:
             if 'active_tab' not in st.session_state: st.session_state.active_tab = "📝 編輯基本資料"
             tab_names = ["📝 編輯基本資料", "🔧 維修/保養歷史", "📜 合規紀錄"]
@@ -296,6 +320,7 @@ def render():
                 else:
                     with st.form(f"add_maintenance_log_{selected_id}", clear_on_submit=True):
                         st.markdown("###### 正在新增一筆紀錄")
+                        details = equipment_model.get_single_equipment_details(selected_id)
                         amc1, amc2, amc3 = st.columns(3)
                         a_ml_date = amc1.date_input("通報/完成日期", value=date.today())
                         a_ml_type = amc2.selectbox("項目類型", ["定期保養", "更換耗材", "維修"])
