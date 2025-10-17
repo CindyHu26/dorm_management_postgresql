@@ -49,7 +49,7 @@ PAGES = {
         "營運分析": operations_analyzer_view,
         "宿舍深度分析": dorm_analyzer_view,
         "雇主儀表板": employer_dashboard_view,
-        "費用分析": analytics_view,
+        "水電費用分析": analytics_view,
         "虧損宿舍分析": loss_analyzer_view,
         "匯出報表": report_view
     },

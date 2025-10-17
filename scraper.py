@@ -115,7 +115,7 @@ def download_all_reports(
                 f.write(response.content)
 
             downloaded_files.append(file_path)
-            log_callback(f"SUCCESS: 已儲存報表: {os.path.basename(file_path)}")
+            # log_callback(f"SUCCESS: 已儲存報表: {os.path.basename(file_path)}")
             
             time.sleep(1)
 

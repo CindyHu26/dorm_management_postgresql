@@ -213,7 +213,7 @@ def parse_and_process_reports(
                 if "客戶簡稱" in cells_text and "姓名(中)" in cells_text and not is_data_section:
                     is_data_section = True
                     header = [h.replace('\n', '') for h in cells_text]
-                    log_callback(f"INFO: 在檔案 {os.path.basename(file_path)} 中找到資料標頭。")
+                    # log_callback(f"INFO: 在檔案 {os.path.basename(file_path)} 中找到資料標頭。")
                     continue
 
                 if is_data_section:
