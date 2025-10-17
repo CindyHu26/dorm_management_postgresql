@@ -1,4 +1,4 @@
-# 檔案路徑: data_models/single_dorm_analyzer.py
+# 檔案路徑: data_models/single_dorm_analyzer.py (複選版)
 
 import pandas as pd
 from datetime import datetime, date
@@ -18,19 +18,21 @@ def _execute_query_to_dataframe(conn, query, params=None):
         return pd.DataFrame(records, columns=columns)
 
 def get_dorm_basic_info(dorm_id: int):
-    """獲取單一宿舍的基本管理資訊。"""
+    """
+    獲取單一宿舍的基本管理資訊。
+    【注意】此函式維持不變，僅在前端選擇單一宿舍時被呼叫。
+    """
     conn = database.get_db_connection()
     if not conn: return None
     try:
         with conn.cursor() as cursor:
-            # --- 【核心修改】在 JOIN Leases 的條件中，新增 contract_item = '房租' ---
             query = """
                 SELECT 
                     d.primary_manager, d.rent_payer, d.utilities_payer,
                     l.lease_start_date, l.lease_end_date, l.monthly_rent
                 FROM "Dormitories" d
                 LEFT JOIN "Leases" l ON d.id = l.dorm_id
-                    AND l.contract_item = '房租' -- <-- 新增此行，明確指定只要房租合約
+                    AND l.contract_item = '房租'
                     AND l.lease_start_date <= CURRENT_DATE
                     AND (l.lease_end_date IS NULL OR l.lease_end_date >= CURRENT_DATE)
                 WHERE d.id = %s
@@ -43,19 +45,29 @@ def get_dorm_basic_info(dorm_id: int):
     finally:
         if conn: conn.close()
 
-def get_dorm_meters(dorm_id: int):
-    """獲取單一宿舍的所有電水錶資訊。"""
+def get_dorm_meters(dorm_ids: list):
+    """【複選版】獲取所選宿舍的所有電水錶資訊。"""
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
-        query = 'SELECT meter_type AS "類型", meter_number AS "錶號", area_covered AS "對應區域" FROM "Meters" WHERE dorm_id = %s'
-        return _execute_query_to_dataframe(conn, query, (dorm_id,))
+        query = """
+            SELECT 
+                d.original_address AS "宿舍地址",
+                m.meter_type AS "類型", 
+                m.meter_number AS "錶號", 
+                m.area_covered AS "對應區域" 
+            FROM "Meters" m
+            JOIN "Dormitories" d ON m.dorm_id = d.id
+            WHERE m.dorm_id = ANY(%s)
+            ORDER BY d.original_address, m.meter_type
+        """
+        return _execute_query_to_dataframe(conn, query, (dorm_ids,))
     finally:
         if conn: conn.close()
 
-def get_resident_summary(dorm_id: int, year_month: str):
+def get_resident_summary(dorm_ids: list, year_month: str):
     """
-    【v2.0 修改版】計算指定月份，宿舍的在住人員統計數據。
+    【v2.0 複選版】計算指定月份、所選宿舍的在住人員統計數據。
     """
     conn = database.get_db_connection()
     if not conn: 
@@ -65,7 +77,7 @@ def get_resident_summary(dorm_id: int, year_month: str):
         }
 
     try:
-        params = {"dorm_id": dorm_id, "year_month": year_month}
+        params = {"dorm_ids": dorm_ids, "year_month": year_month}
         query = """
             WITH DateParams AS (
                 SELECT 
@@ -78,7 +90,7 @@ def get_resident_summary(dorm_id: int, year_month: str):
             JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
             JOIN "Rooms" r ON ah.room_id = r.id
             CROSS JOIN DateParams dp
-            WHERE r.dorm_id = %(dorm_id)s
+            WHERE r.dorm_id = ANY(%(dorm_ids)s) -- 【核心修改】
               AND ah.start_date <= dp.last_day_of_month
               AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
         """
@@ -108,36 +120,36 @@ def get_resident_summary(dorm_id: int, year_month: str):
         "rent_summary": rent_summary.sort_values(by='房租金額')
     }
 
-def get_expense_summary(dorm_id: int, year_month: str):
+def get_expense_summary(dorm_ids: list, year_month: str):
     """
-    【v1.3 合約項目擴充版】計算指定月份宿舍的總支出細項。
+    【v1.3 複選版】計算指定月份、所選宿舍的總支出細項。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     
     try:
-        params = {"dorm_id": dorm_id, "year_month": year_month}
+        params = {"dorm_ids": dorm_ids, "year_month": year_month}
         query = """
             WITH DateParams AS (
                 SELECT 
                     TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
                     (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
             )
-            -- 1. 長期合約支出 (如月租金、清運費)，支付方來自 Dormitories.rent_payer
+            -- 1. 長期合約支出
             SELECT 
                 l.contract_item || ' (' || d.rent_payer || '支付)' AS "費用項目", 
                 SUM(l.monthly_rent) AS "金額"
             FROM "Dormitories" d
             JOIN "Leases" l ON d.id = l.dorm_id
             CROSS JOIN DateParams dp
-            WHERE d.id = %(dorm_id)s
+            WHERE d.id = ANY(%(dorm_ids)s) -- 【核心修改】
               AND l.lease_start_date <= dp.last_day_of_month
               AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month)
             GROUP BY l.contract_item, d.rent_payer
 
             UNION ALL
             
-            -- 2. 變動雜費，根據類型決定支付方
+            -- 2. 變動雜費
             SELECT 
                 b.bill_type || ' (' || 
                     CASE
@@ -151,20 +163,20 @@ def get_expense_summary(dorm_id: int, year_month: str):
             FROM "UtilityBills" b
             JOIN "Dormitories" d ON b.dorm_id = d.id
             CROSS JOIN DateParams dp
-            WHERE b.dorm_id = %(dorm_id)s
+            WHERE b.dorm_id = ANY(%(dorm_ids)s) -- 【核心修改】
               AND b.bill_start_date <= dp.last_day_of_month 
               AND b.bill_end_date >= dp.first_day_of_month
             GROUP BY b.bill_type, d.utilities_payer, b.payer
 
             UNION ALL
 
-            -- 3. 長期攤銷費用，預設為我司支付
+            -- 3. 長期攤銷費用
             SELECT 
                 expense_item || ' (攤銷, 我司支付)' AS "費用項目",
                 SUM(ROUND(total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0)))
             FROM "AnnualExpenses"
             CROSS JOIN DateParams dp
-            WHERE dorm_id = %(dorm_id)s
+            WHERE dorm_id = ANY(%(dorm_ids)s) -- 【核心修改】
               AND TO_DATE(amortization_start_month, 'YYYY-MM') <= dp.first_day_of_month
               AND TO_DATE(amortization_end_month, 'YYYY-MM') >= dp.first_day_of_month
             GROUP BY expense_item
@@ -173,21 +185,22 @@ def get_expense_summary(dorm_id: int, year_month: str):
         summary_df = _execute_query_to_dataframe(conn, query, params)
         if not summary_df.empty:
             summary_df['金額'] = summary_df['金額'].fillna(0).astype(float).astype(int)
-            return summary_df[summary_df['金額'] > 0]
+            # 因為是彙總，所以我們需要再次 Group By
+            return summary_df.groupby("費用項目")['金額'].sum().reset_index()
         return summary_df
 
     finally:
         if conn: conn.close()
 
-def get_income_summary(dorm_id: int, year_month: str):
+def get_income_summary(dorm_ids: list, year_month: str):
     """
-    計算指定月份，單一宿舍的總收入 (工人月費 + 其他收入)。
+    【複選版】計算指定月份、所選宿舍的總收入 (工人月費 + 其他收入)。
     """
     conn = database.get_db_connection()
     if not conn: return 0
     
     total_income = 0
-    params = {"dorm_id": dorm_id, "year_month": year_month}
+    params = {"dorm_ids": dorm_ids, "year_month": year_month}
     
     try:
         with conn.cursor() as cursor:
@@ -208,7 +221,7 @@ def get_income_summary(dorm_id: int, year_month: str):
                 JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
                 JOIN "Rooms" r ON ah.room_id = r.id
                 CROSS JOIN DateParams dp
-                WHERE r.dorm_id = %(dorm_id)s
+                WHERE r.dorm_id = ANY(%(dorm_ids)s) -- 【核心修改】
                   AND ah.start_date <= dp.last_day_of_month
                   AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
             """
@@ -221,7 +234,7 @@ def get_income_summary(dorm_id: int, year_month: str):
             other_income_query = """
                 SELECT SUM(amount) as total_other_income
                 FROM "OtherIncome"
-                WHERE dorm_id = %(dorm_id)s
+                WHERE dorm_id = ANY(%(dorm_ids)s) -- 【核心修改】
                   AND TO_CHAR(transaction_date, 'YYYY-MM') = %(year_month)s
             """
             cursor.execute(other_income_query, params)
@@ -236,17 +249,16 @@ def get_income_summary(dorm_id: int, year_month: str):
         
     return int(total_income)
 
-def get_resident_details_as_df(dorm_id: int, year_month: str):
+def get_resident_details_as_df(dorm_ids: list, year_month: str):
     """
-    【v2.1 修改版】為指定的單一宿舍和月份，查詢所有在住人員的詳細資料。
-    新增宿舍復歸費與充電清潔費。
+    【v2.1 複選版】為指定的所選宿舍和月份，查詢所有在住人員的詳細資料。
     """
-    if not dorm_id: return pd.DataFrame()
+    if not dorm_ids: return pd.DataFrame()
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
 
     try:
-        params = {"dorm_id": dorm_id, "year_month": year_month}
+        params = {"dorm_ids": dorm_ids, "year_month": year_month}
         query = """
             WITH DateParams AS (
                 SELECT 
@@ -254,6 +266,7 @@ def get_resident_details_as_df(dorm_id: int, year_month: str):
                     (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
             )
             SELECT 
+                d.original_address AS "宿舍", -- 【核心修改】新增宿舍地址
                 r.room_number AS "房號", w.worker_name AS "姓名", w.employer_name AS "雇主",
                 w.gender AS "性別", w.nationality AS "國籍", ah.start_date AS "入住此房日",
                 ah.end_date AS "離開此房日", w.work_permit_expiry_date AS "工作期限",
@@ -263,26 +276,27 @@ def get_resident_details_as_df(dorm_id: int, year_month: str):
             FROM "AccommodationHistory" ah
             JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
             JOIN "Rooms" r ON ah.room_id = r.id
+            JOIN "Dormitories" d ON r.dorm_id = d.id -- 【核心修改】JOIN Dormitories
             CROSS JOIN DateParams dp
-            WHERE r.dorm_id = %(dorm_id)s
+            WHERE r.dorm_id = ANY(%(dorm_ids)s) -- 【核心修改】
               AND ah.start_date <= dp.last_day_of_month
               AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
-            ORDER BY r.room_number, w.worker_name
+            ORDER BY d.original_address, r.room_number, w.worker_name
         """
         return _execute_query_to_dataframe(conn, query, params)
     finally:
         if conn: conn.close()
 
-def get_dorm_analysis_data(dorm_id: int, year_month: str):
+def get_dorm_analysis_data(dorm_ids: list, year_month: str):
     """
-    【v2.0 修改版】為指定的單一宿舍和月份，執行全方位的營運數據分析。
+    【v2.0 複選版】為指定的所選宿舍和月份，執行全方位的營運數據分析。
     """
     conn = database.get_db_connection()
     if not conn: return None
 
     try:
-        params = {"dorm_id": dorm_id, "year_month": year_month}
-        rooms_df = _execute_query_to_dataframe(conn, 'SELECT * FROM "Rooms" WHERE dorm_id = %(dorm_id)s', params)
+        params = {"dorm_ids": dorm_ids, "year_month": year_month}
+        rooms_df = _execute_query_to_dataframe(conn, 'SELECT * FROM "Rooms" WHERE dorm_id = ANY(%(dorm_ids)s)', params)
         
         workers_query = """
             WITH DateParams AS (
@@ -297,7 +311,7 @@ def get_dorm_analysis_data(dorm_id: int, year_month: str):
             JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
             JOIN "Rooms" r ON ah.room_id = r.id
             CROSS JOIN DateParams dp
-            WHERE r.dorm_id = %(dorm_id)s
+            WHERE r.dorm_id = ANY(%(dorm_ids)s) -- 【核心修改】
               AND ah.start_date <= dp.last_day_of_month
               AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
         """
@@ -338,14 +352,15 @@ def get_dorm_analysis_data(dorm_id: int, year_month: str):
     finally:
         if conn: conn.close()
 
-def get_monthly_financial_trend(dorm_id: int):
+def get_monthly_financial_trend(dorm_ids: list):
     """
-    【v1.1 細分費用版】為指定的宿舍，計算過去24個月的每月收入、支出與損益，用於繪製趨勢圖。
+    【v1.1 複選版】為指定的宿舍列表，計算過去24個月的彙總收入、支出與損益。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
 
     try:
+        params = {"dorm_ids": dorm_ids}
         query = """
             WITH MonthSeries AS (
                 SELECT TO_CHAR(GENERATE_SERIES(
@@ -362,18 +377,18 @@ def get_monthly_financial_trend(dorm_id: int):
                 JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
                 JOIN "Rooms" r ON ah.room_id = r.id
                 CROSS JOIN LATERAL GENERATE_SERIES(ah.start_date, COALESCE(ah.end_date, CURRENT_DATE), '1 month'::interval) as s(month_in_service)
-                WHERE r.dorm_id = %(dorm_id)s
+                WHERE r.dorm_id = ANY(%(dorm_ids)s) -- 【核心修改】
                 GROUP BY 1
             ),
             OtherMonthlyIncome AS (
                 SELECT TO_CHAR(transaction_date, 'YYYY-MM') as year_month, SUM(amount) as total_other_income
-                FROM "OtherIncome" WHERE dorm_id = %(dorm_id)s GROUP BY 1
+                FROM "OtherIncome" WHERE dorm_id = ANY(%(dorm_ids)s) GROUP BY 1 -- 【核心修改】
             ),
             MonthlyContract AS (
                 SELECT TO_CHAR(generate_series(l.lease_start_date, COALESCE(l.lease_end_date, CURRENT_DATE), '1 month'::interval)::date, 'YYYY-MM') as year_month,
                        SUM(l.monthly_rent) as contract_expense
                 FROM "Leases" l JOIN "Dormitories" d ON l.dorm_id = d.id
-                WHERE l.dorm_id = %(dorm_id)s AND d.rent_payer = '我司'
+                WHERE l.dorm_id = ANY(%(dorm_ids)s) AND d.rent_payer = '我司' -- 【核心修改】
                 GROUP BY 1
             ),
             MonthlyUtilities AS (
@@ -381,7 +396,7 @@ def get_monthly_financial_trend(dorm_id: int):
                 FROM (
                     SELECT generate_series(b.bill_start_date, b.bill_end_date, '1 day'::interval)::date as month_date, (b.amount::decimal / (b.bill_end_date - b.bill_start_date + 1)) as daily_expense
                     FROM "UtilityBills" b JOIN "Dormitories" d ON b.dorm_id = d.id
-                    WHERE b.dorm_id = %(dorm_id)s AND ((b.bill_type IN ('水費', '電費') AND d.utilities_payer = '我司') OR (b.bill_type NOT IN ('水費', '電費') AND b.payer = '我司'))
+                    WHERE b.dorm_id = ANY(%(dorm_ids)s) AND ((b.bill_type IN ('水費', '電費') AND d.utilities_payer = '我司') OR (b.bill_type NOT IN ('水費', '電費') AND b.payer = '我司')) -- 【核心修改】
                 ) as d GROUP BY 1
             ),
             MonthlyAmortized AS (
@@ -389,7 +404,7 @@ def get_monthly_financial_trend(dorm_id: int):
                  FROM (
                     SELECT generate_series(TO_DATE(ae.amortization_start_month, 'YYYY-MM'), TO_DATE(ae.amortization_end_month, 'YYYY-MM'), '1 day'::interval)::date as month_date, (ae.total_amount::decimal / (((EXTRACT(YEAR FROM TO_DATE(ae.amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(ae.amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(ae.amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(ae.amortization_start_month, 'YYYY-MM'))) + 1) * 30.4375)) as daily_expense
                     FROM "AnnualExpenses" ae
-                    WHERE ae.dorm_id = %(dorm_id)s
+                    WHERE ae.dorm_id = ANY(%(dorm_ids)s) -- 【核心修改】
                  ) as d GROUP BY 1
             )
             SELECT
@@ -408,7 +423,7 @@ def get_monthly_financial_trend(dorm_id: int):
             LEFT JOIN MonthlyAmortized ma ON ms.year_month = ma.year_month
             ORDER BY ms.year_month;
         """
-        df = _execute_query_to_dataframe(conn, query, {"dorm_id": dorm_id})
+        df = _execute_query_to_dataframe(conn, query, params)
         if not df.empty:
             num_cols = ["總收入", "長期合約支出", "變動雜費", "長期攤銷", "總支出", "淨損益"]
             for col in num_cols:
@@ -419,12 +434,12 @@ def get_monthly_financial_trend(dorm_id: int):
     finally:
         if conn: conn.close()
 
-def calculate_financial_summary_for_period(dorm_id: int, start_date: date, end_date: date):
+def calculate_financial_summary_for_period(dorm_ids: list, start_date: date, end_date: date):
     """
-    【v1.3 合約項目擴充版】計算自訂區間平均損益，將月租改為通用合約費用。
+    【v1.3 複選版】計算自訂區間平均損益。
     """
     try:
-        monthly_df = get_monthly_financial_trend(dorm_id)
+        monthly_df = get_monthly_financial_trend(dorm_ids) # 【核心修改】
         if monthly_df.empty:
             return {}
 
@@ -449,7 +464,7 @@ def calculate_financial_summary_for_period(dorm_id: int, start_date: date, end_d
             "avg_monthly_income": int(avg_income),
             "avg_monthly_expense": int(avg_expense),
             "avg_monthly_profit_loss": int(avg_profit_loss),
-            "avg_monthly_contract": int(avg_contract), # 修正: 保持一致性
+            "avg_monthly_contract": int(avg_contract),
             "avg_monthly_utilities": int(avg_utilities),
             "avg_monthly_amortized": int(avg_amortized),
         }
