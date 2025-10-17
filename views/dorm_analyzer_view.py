@@ -143,7 +143,11 @@ def render():
         # --- 【核心修改 6】傳入 selected_dorm_ids (list) ---
         return single_dorm_analyzer.get_monthly_financial_trend(dorm_ids)
 
-    trend_df = get_trend_data(tuple(selected_dorm_ids)) # 使用 tuple 讓 @st.cache_data 正常運作
+    # --- 【核心修改】移除 tuple() 轉換，直接傳遞 list ---
+    trend_df = get_trend_data(selected_dorm_ids)
+
+    if not trend_df.empty:
+        chart_df = trend_df.set_index("月份")
     if not trend_df.empty:
         chart_df = trend_df.set_index("月份")
         st.line_chart(chart_df)

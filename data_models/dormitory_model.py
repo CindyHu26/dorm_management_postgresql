@@ -25,8 +25,7 @@ def get_all_dorms_for_view(search_term: str = None):
             SELECT 
                 d.id, 
                 d.legacy_dorm_code AS "編號", 
-                d.city AS "縣市",
-                d.district AS "區域",
+                d.original_address AS "原始地址", 
                 d.person_in_charge AS "負責人",
                 d.primary_manager AS "主要管理人",
                 d.is_self_owned AS "是否自購",
@@ -34,7 +33,8 @@ def get_all_dorms_for_view(search_term: str = None):
                 d.rent_payer AS "租金支付方",
                 d.utilities_payer AS "水電支付方",
                 d.invoice_info AS "發票資訊",
-                d.original_address AS "原始地址", 
+                d.city AS "縣市",
+                d.district AS "區域",
                 d.normalized_address AS "正規化地址", 
                 d.dorm_name AS "宿舍名稱"
             FROM "Dormitories" d

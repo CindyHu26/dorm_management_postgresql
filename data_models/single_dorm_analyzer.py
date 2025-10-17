@@ -352,7 +352,7 @@ def get_dorm_analysis_data(dorm_ids: list, year_month: str):
     finally:
         if conn: conn.close()
 
-def get_monthly_financial_trend(dorm_ids: list):
+def get_monthly_financial_trend(dorm_ids: list): # 接收的就是 list
     """
     【v1.1 複選版】為指定的宿舍列表，計算過去24個月的彙總收入、支出與損益。
     """
@@ -360,6 +360,7 @@ def get_monthly_financial_trend(dorm_ids: list):
     if not conn: return pd.DataFrame()
 
     try:
+        # 這裡 params 字典中的 dorm_ids 就是 list
         params = {"dorm_ids": dorm_ids}
         query = """
             WITH MonthSeries AS (
@@ -370,25 +371,25 @@ def get_monthly_financial_trend(dorm_ids: list):
                 )::date, 'YYYY-MM') as year_month
             ),
             MonthlyIncome AS (
-                SELECT 
+                SELECT
                     TO_CHAR(s.month_in_service, 'YYYY-MM') as year_month,
                     SUM(COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0) + COALESCE(w.restoration_fee, 0) + COALESCE(w.charging_cleaning_fee, 0)) as total_income
                 FROM "AccommodationHistory" ah
                 JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
                 JOIN "Rooms" r ON ah.room_id = r.id
                 CROSS JOIN LATERAL GENERATE_SERIES(ah.start_date, COALESCE(ah.end_date, CURRENT_DATE), '1 month'::interval) as s(month_in_service)
-                WHERE r.dorm_id = ANY(%(dorm_ids)s) -- 【核心修改】
+                WHERE r.dorm_id = ANY(%(dorm_ids)s) -- psycopg2 會處理 list
                 GROUP BY 1
             ),
             OtherMonthlyIncome AS (
                 SELECT TO_CHAR(transaction_date, 'YYYY-MM') as year_month, SUM(amount) as total_other_income
-                FROM "OtherIncome" WHERE dorm_id = ANY(%(dorm_ids)s) GROUP BY 1 -- 【核心修改】
+                FROM "OtherIncome" WHERE dorm_id = ANY(%(dorm_ids)s) GROUP BY 1 -- psycopg2 會處理 list
             ),
             MonthlyContract AS (
                 SELECT TO_CHAR(generate_series(l.lease_start_date, COALESCE(l.lease_end_date, CURRENT_DATE), '1 month'::interval)::date, 'YYYY-MM') as year_month,
                        SUM(l.monthly_rent) as contract_expense
                 FROM "Leases" l JOIN "Dormitories" d ON l.dorm_id = d.id
-                WHERE l.dorm_id = ANY(%(dorm_ids)s) AND d.rent_payer = '我司' -- 【核心修改】
+                WHERE l.dorm_id = ANY(%(dorm_ids)s) AND d.rent_payer = '我司' -- psycopg2 會處理 list
                 GROUP BY 1
             ),
             MonthlyUtilities AS (
@@ -396,7 +397,7 @@ def get_monthly_financial_trend(dorm_ids: list):
                 FROM (
                     SELECT generate_series(b.bill_start_date, b.bill_end_date, '1 day'::interval)::date as month_date, (b.amount::decimal / (b.bill_end_date - b.bill_start_date + 1)) as daily_expense
                     FROM "UtilityBills" b JOIN "Dormitories" d ON b.dorm_id = d.id
-                    WHERE b.dorm_id = ANY(%(dorm_ids)s) AND ((b.bill_type IN ('水費', '電費') AND d.utilities_payer = '我司') OR (b.bill_type NOT IN ('水費', '電費') AND b.payer = '我司')) -- 【核心修改】
+                    WHERE b.dorm_id = ANY(%(dorm_ids)s) AND ((b.bill_type IN ('水費', '電費') AND d.utilities_payer = '我司') OR (b.bill_type NOT IN ('水費', '電費') AND b.payer = '我司')) -- psycopg2 會處理 list
                 ) as d GROUP BY 1
             ),
             MonthlyAmortized AS (
@@ -404,7 +405,7 @@ def get_monthly_financial_trend(dorm_ids: list):
                  FROM (
                     SELECT generate_series(TO_DATE(ae.amortization_start_month, 'YYYY-MM'), TO_DATE(ae.amortization_end_month, 'YYYY-MM'), '1 day'::interval)::date as month_date, (ae.total_amount::decimal / (((EXTRACT(YEAR FROM TO_DATE(ae.amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(ae.amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(ae.amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(ae.amortization_start_month, 'YYYY-MM'))) + 1) * 30.4375)) as daily_expense
                     FROM "AnnualExpenses" ae
-                    WHERE ae.dorm_id = ANY(%(dorm_ids)s) -- 【核心修改】
+                    WHERE ae.dorm_id = ANY(%(dorm_ids)s) -- psycopg2 會處理 list
                  ) as d GROUP BY 1
             )
             SELECT
@@ -423,11 +424,12 @@ def get_monthly_financial_trend(dorm_ids: list):
             LEFT JOIN MonthlyAmortized ma ON ms.year_month = ma.year_month
             ORDER BY ms.year_month;
         """
+        # 傳遞 params 字典給 _execute_query_to_dataframe
         df = _execute_query_to_dataframe(conn, query, params)
         if not df.empty:
             num_cols = ["總收入", "長期合約支出", "變動雜費", "長期攤銷", "總支出", "淨損益"]
             for col in num_cols:
-                if col in df.columns: 
+                if col in df.columns:
                     df[col] = df[col].astype(float).round().astype(int)
         return df
 
