@@ -83,8 +83,8 @@ def get_workers_for_view(filters: dict):
 
 def get_workers_for_view(filters: dict):
     """
-    【v2.2 修改版】根據篩選條件，查詢移工的詳細住宿資訊。
-    新增回傳「床位編號」。
+    【v2.3 修正版】根據篩選條件，查詢移工的詳細住宿資訊。
+    新增回傳 unique_id 以修正 view 中的 KeyError。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -103,6 +103,7 @@ def get_workers_for_view(filters: dict):
                 WHERE start_date <= {current_date_func} AND (end_date IS NULL OR end_date >= {current_date_func})
             )
             SELECT
+                w.unique_id, -- 【核心修正】新增此欄位
                 w.employer_name AS "雇主", 
                 w.worker_name AS "姓名", 
                 d_actual.original_address AS "實際地址",

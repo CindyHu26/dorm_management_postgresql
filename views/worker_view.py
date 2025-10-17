@@ -1,4 +1,4 @@
-# views/worker_view.py (v2.7 - 修正 session_state 錯誤)
+# views/worker_view.py (v2.8 - 調整版面配置)
 
 import streamlit as st
 import pandas as pd
@@ -6,12 +6,22 @@ from datetime import datetime, date
 from data_models import worker_model, dormitory_model
 
 def render():
-    """【v2.7 修改版】渲染「人員管理」頁面，修正 session_state 錯誤"""
+    """【v2.8 修改版】渲染「人員管理」頁面，調整版面配置"""
     st.header("移工住宿人員管理")
     
+    # --- Session State 初始化 ---
     if 'worker_active_tab' not in st.session_state:
         st.session_state.worker_active_tab = "✏️ 編輯核心資料"
+    # 如果選擇了新的工人，重置頁籤到第一個
+    if 'selected_worker_id' not in st.session_state:
+        st.session_state.selected_worker_id = None
+    if 'last_selected_worker_id' not in st.session_state:
+        st.session_state.last_selected_worker_id = None
+    if st.session_state.selected_worker_id != st.session_state.last_selected_worker_id:
+        st.session_state.worker_active_tab = "✏️ 編輯核心資料"
+        st.session_state.last_selected_worker_id = st.session_state.selected_worker_id
 
+    # --- 新增手動管理人員區塊 ---
     with st.expander("➕ 新增手動管理人員 (他仲等)"):
         with st.form("new_manual_worker_form", clear_on_submit=True):
             st.subheader("新人員基本資料")
@@ -88,33 +98,57 @@ def render():
 
     st.markdown("---")
 
-    st.subheader("編輯/檢視單一移工資料")
-    
-    @st.cache_data
-    def get_editable_workers_list():
-        return worker_model.get_workers_for_editor_selection()
+    # --- 移工總覽區塊 (移到前面) ---
+    st.subheader("移工總覽 (所有宿舍)")
 
-    editable_workers = get_editable_workers_list()
+    if 'worker_view_filters' not in st.session_state:
+        st.session_state.worker_view_filters = {'name_search': '', 'dorm_id': None, 'status': '全部'}
+
+    @st.cache_data
+    def get_dorms_list():
+        return dormitory_model.get_dorms_for_selection()
+
+    dorms = get_dorms_list() or []
+    dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms}
     
-    if not editable_workers:
-        st.info("系統中沒有任何工人資料可供編輯。")
+    f_c1_view, f_c2_view, f_c3_view = st.columns(3)
+    st.session_state.worker_view_filters['name_search'] = f_c1_view.text_input("搜尋姓名、雇主或地址", value=st.session_state.worker_view_filters['name_search'])
+    st.session_state.worker_view_filters['dorm_id'] = f_c2_view.selectbox("篩選宿舍 ", options=[None] + list(dorm_options.keys()), format_func=lambda x: "全部宿舍" if x is None else dorm_options.get(x), index=[None, *dorm_options.keys()].index(st.session_state.worker_view_filters['dorm_id']))
+    st.session_state.worker_view_filters['status'] = f_c3_view.selectbox("篩選在住狀態 ", ["全部", "在住", "已離住"], index=["全部", "在住", "已離住"].index(st.session_state.worker_view_filters['status']))
+    
+    # 執行查詢，取得篩選後的 DataFrame
+    workers_df = worker_model.get_workers_for_view(st.session_state.worker_view_filters)
+    
+    # 顯示總覽表格
+    st.dataframe(workers_df, width="stretch", hide_index=True, column_config={"unique_id": None}) # 隱藏 unique_id
+
+    st.markdown("---")
+
+    # --- 編輯/檢視單一移工資料區塊 (移到後面) ---
+    st.subheader("編輯/檢視單一移工資料")
+
+    if workers_df.empty:
+        st.info("目前沒有符合篩選條件的工人資料可供編輯。")
     else:
+        # --- 【核心修改】直接使用 workers_df 來建立選項 ---
         worker_options = {
-            w['unique_id']: (
-                f"{w.get('employer_name', 'N/A')} / "
-                f"{w.get('worker_name', 'N/A')} / "
-                f"護照:{w.get('passport_number') or '無'} / "
-                f"居留證:{w.get('arc_number') or '無'} "
-                f"({w.get('original_address', 'N/A')}){w.get('status_tag', '')}"
+            row['unique_id']: ( # 這裡現在可以正確讀取
+                f"{row.get('雇主', 'N/A')} / "
+                f"{row.get('姓名', 'N/A')} / "
+                f"護照:{row.get('護照號碼') or '無'} / "
+                f"居留證:{row.get('居留證號碼') or '無'} "
+                f"({row.get('實際地址', 'N/A')})"
+                f"{' (已離住)' if row.get('在住狀態') == '已離住' else ''}"
             )
-            for w in editable_workers
+            for _, row in workers_df.iterrows() # 使用篩選後的 workers_df
         }
         
+        # --- 【核心修改】將 selected_worker_id 存入 session_state ---
         selected_worker_id = st.selectbox(
-            "搜尋並選擇移工 (可輸入雇主/姓名/護照/居留證號)",
+            "請從上方總覽列表選擇要操作的移工：",
             options=[None] + list(worker_options.keys()),
             format_func=lambda x: "請選擇..." if x is None else worker_options.get(x),
-            key="main_worker_selector"
+            key="selected_worker_id" # 使用 session_state key
         )
 
         if selected_worker_id:
@@ -125,10 +159,11 @@ def render():
                 st.markdown(f"#### 管理移工: {worker_details.get('worker_name')} ({worker_details.get('employer_name')})")
                 
                 tab_names = ["✏️ 編輯核心資料", "🏠 住宿歷史管理", "🕒 狀態歷史管理", "💰 費用歷史"]
+                # 使用 session_state 來控制頁籤
                 selected_tab = st.radio(
                     "管理選項:",
                     tab_names,
-                    key="worker_active_tab",
+                    key="worker_active_tab", # 使用 session_state key
                     horizontal=True,
                     label_visibility="collapsed"
                 )
@@ -154,16 +189,15 @@ def render():
                         fcc1, fcc2 = st.columns(2)
                         payment_method_options = ["", "員工自付", "雇主支付"]
                         payment_method = fcc1.selectbox("付款方", payment_method_options, index=payment_method_options.index(worker_details.get('payment_method')) if worker_details.get('payment_method') in payment_method_options else 0)
-                        
+
                         with fcc2:
                             end_date_value = worker_details.get('accommodation_end_date')
                             accommodation_end_date = st.date_input("最終離住日期", value=end_date_value)
                             clear_end_date = st.checkbox("清除離住日期 (將狀態改回在住)")
 
                         worker_notes = st.text_area("個人備註", value=worker_details.get('worker_notes') or "")
-                        
+
                         if st.form_submit_button("儲存核心資料變更"):
-                            # 移除 st.session_state 的手動設定
                             final_end_date = None if clear_end_date else (str(accommodation_end_date) if accommodation_end_date else None)
                             update_data = {
                                 'monthly_fee': monthly_fee, 'utilities_fee': utilities_fee, 'cleaning_fee': cleaning_fee,
@@ -186,7 +220,7 @@ def render():
                             success, message = worker_model.reset_worker_data_source(selected_worker_id)
                             if success: st.success(message); st.cache_data.clear(); st.rerun()
                             else: st.error(message)
-                    
+
                     if current_data_source != '手動管理(他仲)':
                         st.markdown("---")
                         st.write("若希望暫時保護此人員的**離住日**不被系統自動更新，請使用下方按鈕。")
@@ -205,7 +239,7 @@ def render():
                 elif selected_tab == "🏠 住宿歷史管理":
                     st.markdown("##### 新增一筆住宿紀錄 (換宿)")
                     st.info("當工人更換房間或宿舍時，請在此處新增一筆紀錄。系統將自動結束前一筆紀錄。")
-                    
+
                     ac1, ac2, ac3 = st.columns(3)
                     all_dorms = dormitory_model.get_dorms_for_selection() or []
                     all_dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in all_dorms}
@@ -215,7 +249,7 @@ def render():
                     selected_room_id_ac = ac2.selectbox("新房間號碼", options=room_options_ac.keys(), format_func=lambda x: room_options_ac.get(x), key="ac_room_select")
                     new_bed_number = ac3.text_input("新床位編號 (例如: A-01)")
                     change_date = st.date_input("換宿生效日期", value=date.today(), key="ac_change_date")
-                    
+
                     if st.button("🚀 執行換宿"):
                         if not selected_room_id_ac: st.error("必須選擇一個新的房間！")
                         else:
@@ -256,14 +290,14 @@ def render():
                                         success, message = worker_model.update_accommodation_history(selected_history_id, update_data)
                                         if success: st.success(message); st.cache_data.clear(); st.rerun()
                                         else: st.error(message)
-                                
+
                                 st.markdown("##### 危險操作區")
                                 confirm_delete_history = st.checkbox("我了解並確認要刪除此筆住宿歷史", key=f"delete_accom_{selected_history_id}")
                                 if st.button("🗑️ 刪除此筆歷史", type="primary", disabled=not confirm_delete_history):
                                     success, message = worker_model.delete_accommodation_history(selected_history_id)
                                     if success: st.success(message); st.cache_data.clear(); st.rerun()
                                     else: st.error(message)
-               
+
                 elif selected_tab == "🕒 狀態歷史管理":
                     st.markdown("##### 新增一筆狀態紀錄")
                     with st.form("new_status_form", clear_on_submit=True):
@@ -278,7 +312,7 @@ def render():
                             success, message = worker_model.add_new_worker_status(status_details)
                             if success: st.success(message); st.cache_data.clear(); st.rerun()
                             else: st.error(message)
-                    
+
                     st.markdown("##### 狀態歷史紀錄")
                     history_df = worker_model.get_worker_status_history(selected_worker_id)
                     st.dataframe(history_df, width="stretch", hide_index=True, column_config={"id": None})
@@ -298,19 +332,19 @@ def render():
                                     status_options_edit = ["掛宿外住(不收費)", "掛宿外住(收費)", "費用不同", "其他"]
                                     current_status = status_details.get('status')
                                     try: index = status_options_edit.index(current_status)
-                                    except ValueError: index = 0 
+                                    except ValueError: index = 0
                                     edit_status = es_c1.selectbox("狀態", status_options_edit, index=index)
                                     start_val, end_val = status_details.get('start_date'), status_details.get('end_date')
                                     edit_start_date = es_c2.date_input("起始日", value=start_val)
                                     edit_end_date = es_c3.date_input("結束日 (若留空代表此為當前狀態)", value=end_val)
                                     edit_notes = st.text_area("狀態備註", value=status_details.get('notes', ''))
-                                    
+
                                     if st.form_submit_button("儲存狀態變更"):
                                         updated_details = {"status": edit_status, "start_date": str(edit_start_date) if edit_start_date else None, "end_date": str(edit_end_date) if edit_end_date else None, "notes": edit_notes}
                                         success, message = worker_model.update_worker_status(selected_status_id, updated_details)
                                         if success: st.success(message); st.cache_data.clear(); st.rerun()
                                         else: st.error(message)
-                                
+
                                 confirm_delete_status = st.checkbox("我了解並確認要刪除此筆狀態紀錄")
                                 if st.button("🗑️ 刪除此狀態", type="primary", disabled=not confirm_delete_status):
                                     success, message = worker_model.delete_worker_status(selected_status_id)
@@ -326,7 +360,7 @@ def render():
                             new_fee_type = fc1.selectbox("費用類型", fee_type_options)
                             new_amount = fc2.number_input("金額", min_value=0, step=100)
                             new_effective_date = fc3.date_input("生效日期", value=date.today())
-                            
+
                             if st.form_submit_button("新增歷史紀錄"):
                                 details = {"worker_unique_id": selected_worker_id, "fee_type": new_fee_type, "amount": new_amount, "effective_date": new_effective_date}
                                 success, message = worker_model.add_fee_history(details)
@@ -337,7 +371,7 @@ def render():
                     st.markdown("##### 費用變更歷史總覽")
                     fee_history_df = worker_model.get_fee_history_for_worker(selected_worker_id)
                     st.dataframe(fee_history_df, width="stretch", hide_index=True, column_config={"id": None})
-                    
+
                     st.markdown("---")
                     st.subheader("編輯或刪除單筆費用歷史")
 
@@ -363,33 +397,10 @@ def render():
                                         success, message = worker_model.update_fee_history(selected_history_id, update_data)
                                         if success: st.success(message); st.cache_data.clear(); st.rerun()
                                         else: st.error(message)
-                                
+
                                 st.markdown("##### 危險操作區")
                                 confirm_delete_history = st.checkbox("我了解並確認要刪除此筆費用歷史", key=f"delete_fee_hist_{selected_history_id}")
                                 if st.button("🗑️ 刪除此筆歷史", type="primary", disabled=not confirm_delete_history):
                                     success, message = worker_model.delete_fee_history(selected_history_id)
                                     if success: st.success(message); st.cache_data.clear(); st.rerun()
                                     else: st.error(message)
-
-    st.markdown("---")
-    
-    st.subheader("移工總覽 (所有宿舍)")
-    
-    if 'worker_view_filters' not in st.session_state:
-        st.session_state.worker_view_filters = {'name_search': '', 'dorm_id': None, 'status': '全部'}
-
-    @st.cache_data
-    def get_dorms_list():
-        return dormitory_model.get_dorms_for_selection()
-
-    dorms = get_dorms_list() or []
-    dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms}
-    
-    f_c1_view, f_c2_view, f_c3_view = st.columns(3)
-    st.session_state.worker_view_filters['name_search'] = f_c1_view.text_input("搜尋姓名、雇主或地址", value=st.session_state.worker_view_filters['name_search'])
-    st.session_state.worker_view_filters['dorm_id'] = f_c2_view.selectbox("篩選宿舍 ", options=[None] + list(dorm_options.keys()), format_func=lambda x: "全部宿舍" if x is None else dorm_options.get(x), index=[None, *dorm_options.keys()].index(st.session_state.worker_view_filters['dorm_id']))
-    st.session_state.worker_view_filters['status'] = f_c3_view.selectbox("篩選在住狀態 ", ["全部", "在住", "已離住"], index=["全部", "在住", "已離住"].index(st.session_state.worker_view_filters['status']))
-    
-    workers_df = worker_model.get_workers_for_view(st.session_state.worker_view_filters)
-    
-    st.dataframe(workers_df, width="stretch", hide_index=True)
