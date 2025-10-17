@@ -122,7 +122,7 @@ def render():
             batch_create_vendor_id = bc_c7.selectbox("供應廠商", options=[None] + list(vendor_options.keys()), format_func=lambda x: "未指定" if x is None else vendor_options.get(x), key="bc_vendor")
             bc_c8, bc_c9, bc_c10 = st.columns(3)
             batch_create_cost = bc_c8.number_input("單台採購金額 (選填)", min_value=0, step=100, help="這是「每一台」設備的成本，系統會為每台設備建立一筆費用紀錄。")
-            batch_create_install_date = bc_c9.date_input("安裝/啟用日期", value=None)
+            batch_create_install_date = bc_c9.date_input("安裝/啟用日期", value=None, min_value=fifteen_years_ago)
             batch_last_maintenance_date = bc_c10.date_input("上次保養日期 (選填)", value=None)
             st.markdown("##### 步驟三：設定週期 (選填)")
             bc_c11, bc_c12 = st.columns(2)
