@@ -15,57 +15,60 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_meters_for_dorm_as_df(dorm_id: int):
     """
-    查詢指定宿舍下的所有電水錶，用於UI列表顯示 (已為 PostgreSQL 優化)。
+    【修改版】查詢指定宿舍下的所有電水錶，包含備註欄位。
     """
     conn = database.get_db_connection()
-    if not conn: 
+    if not conn:
         return pd.DataFrame()
     try:
         query = """
-            SELECT 
+            SELECT
                 id,
                 meter_type AS "類型",
                 meter_number AS "錶號",
-                area_covered AS "對應區域/房號"
+                area_covered AS "對應區域/房號",
+                notes AS "備註"
             FROM "Meters"
             WHERE dorm_id = %s
             ORDER BY meter_type, meter_number
         """
         return _execute_query_to_dataframe(conn, query, (dorm_id,))
     finally:
-        if conn: 
+        if conn:
             conn.close()
 
 def add_meter_record(details: dict):
     """
-    新增一筆電水錶紀錄 (已為 PostgreSQL 優化)。
+    【修改版】新增一筆電水錶紀錄，包含備註欄位。
     """
     conn = database.get_db_connection()
-    if not conn: 
+    if not conn:
         return False, "資料庫連線失敗", None
     try:
         with conn.cursor() as cursor:
+            # 檢查重複紀錄的邏輯維持不變
             cursor.execute(
-                'SELECT id FROM "Meters" WHERE dorm_id = %s AND meter_type = %s AND meter_number = %s', 
+                'SELECT id FROM "Meters" WHERE dorm_id = %s AND meter_type = %s AND meter_number = %s',
                 (details.get('dorm_id'), details.get('meter_type'), details.get('meter_number'))
             )
             if cursor.fetchone():
                 return False, "新增失敗：該宿舍已存在完全相同的電水錶紀錄。", None
 
+            # 將 notes 加入 INSERT 語句
             columns = ', '.join(f'"{k}"' for k in details.keys())
             placeholders = ', '.join(['%s'] * len(details))
             sql = f'INSERT INTO "Meters" ({columns}) VALUES ({placeholders}) RETURNING id'
-            
+
             cursor.execute(sql, tuple(details.values()))
             new_id = cursor.fetchone()['id']
         conn.commit()
         return True, f"成功新增用戶號紀錄 (ID: {new_id})", new_id
     except Exception as e:
-        if conn: 
+        if conn:
             conn.rollback()
         return False, f"新增用戶號時發生錯誤: {e}", None
     finally:
-        if conn: 
+        if conn:
             conn.close()
 
 def delete_meter_record(record_id: int):
@@ -87,6 +90,46 @@ def delete_meter_record(record_id: int):
     finally:
         if conn: 
             conn.close()
+
+# --- 新增函式：取得單筆紀錄詳情 ---
+def get_single_meter_details(record_id: int):
+    """取得單一電水錶的詳細資料。"""
+    conn = database.get_db_connection()
+    if not conn: return None
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute('SELECT * FROM "Meters" WHERE id = %s', (record_id,))
+            record = cursor.fetchone()
+            return dict(record) if record else None
+    finally:
+        if conn: conn.close()
+
+def update_meter_record(record_id: int, details: dict):
+    """更新一筆已存在的電水錶紀錄。"""
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗。"
+    try:
+        with conn.cursor() as cursor:
+            # 檢查是否有重複 (避免更新成已存在的組合)
+            if 'meter_type' in details and 'meter_number' in details:
+                 cursor.execute(
+                    'SELECT id FROM "Meters" WHERE dorm_id = (SELECT dorm_id FROM "Meters" WHERE id = %s) AND meter_type = %s AND meter_number = %s AND id != %s',
+                    (record_id, details['meter_type'], details['meter_number'], record_id)
+                 )
+                 if cursor.fetchone():
+                     return False, "更新失敗：該宿舍已存在相同的類型與錶號組合。"
+
+            fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
+            values = list(details.values()) + [record_id]
+            sql = f'UPDATE "Meters" SET {fields} WHERE id = %s'
+            cursor.execute(sql, tuple(values))
+        conn.commit()
+        return True, "用戶號紀錄更新成功！"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"更新用戶號時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
 
 def get_meters_for_selection(dorm_id: int):
     """

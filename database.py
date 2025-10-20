@@ -210,6 +210,7 @@ def create_all_tables_and_indexes():
             CREATE TABLE IF NOT EXISTS "Meters" (
                 "id" SERIAL PRIMARY KEY, "dorm_id" INTEGER NOT NULL, "meter_type" VARCHAR(50) NOT NULL,
                 "meter_number" VARCHAR(100) NOT NULL, "area_covered" VARCHAR(100),
+                "notes" TEXT,
                 FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE
             );
             """
