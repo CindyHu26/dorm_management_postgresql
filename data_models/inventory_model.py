@@ -63,6 +63,29 @@ def add_inventory_item(details: dict):
     if not conn: return False, "資料庫連線失敗。"
     try:
         with conn.cursor() as cursor:
+            # --- 核心修改：處理 unit_cost 可能為 0 或 None ---
+            unit_cost_val = details.get('unit_cost')
+            # 如果值不是 None 且不為空字串，嘗試轉成整數，否則設為 None (存入 NULL)
+            if unit_cost_val is not None and str(unit_cost_val).strip() != '':
+                 try:
+                     details['unit_cost'] = int(unit_cost_val)
+                     # 允許存入 0
+                 except (ValueError, TypeError):
+                     details['unit_cost'] = None # 如果轉換失敗，設為 None
+            else:
+                 details['unit_cost'] = None
+            # --- 修改結束 ---
+
+            # Selling price 處理邏輯類似
+            selling_price_val = details.get('selling_price')
+            if selling_price_val is not None and str(selling_price_val).strip() != '':
+                 try:
+                     details['selling_price'] = int(selling_price_val)
+                 except (ValueError, TypeError):
+                     details['selling_price'] = None
+            else:
+                 details['selling_price'] = None
+
             columns = ', '.join(f'"{k}"' for k in details.keys())
             placeholders = ', '.join(['%s'] * len(details))
             sql = f'INSERT INTO "InventoryItems" ({columns}) VALUES ({placeholders}) RETURNING id'
@@ -72,7 +95,9 @@ def add_inventory_item(details: dict):
         return True, f"成功新增品項 (ID: {new_id})"
     except Exception as e:
         if conn: conn.rollback()
-        if "unique constraint" in str(e).lower(): return False, "新增失敗：該「品項名稱」已存在。"
+        # 檢查是否為唯一性約束錯誤
+        if isinstance(e, database.psycopg2.IntegrityError) and "unique constraint" in str(e).lower():
+             return False, "新增失敗：該「品項名稱」已存在。"
         return False, f"新增品項時發生錯誤: {e}"
     finally:
         if conn: conn.close()
@@ -82,6 +107,28 @@ def update_inventory_item(item_id: int, details: dict):
     if not conn: return False, "資料庫連線失敗。"
     try:
         with conn.cursor() as cursor:
+            # --- 核心修改：處理 unit_cost 可能為 0 或 None ---
+            unit_cost_val = details.get('unit_cost')
+            if unit_cost_val is not None and str(unit_cost_val).strip() != '':
+                 try:
+                     details['unit_cost'] = int(unit_cost_val)
+                     # 允許存入 0
+                 except (ValueError, TypeError):
+                     details['unit_cost'] = None
+            else:
+                 details['unit_cost'] = None
+            # --- 修改結束 ---
+
+            # Selling price 處理邏輯類似
+            selling_price_val = details.get('selling_price')
+            if selling_price_val is not None and str(selling_price_val).strip() != '':
+                 try:
+                     details['selling_price'] = int(selling_price_val)
+                 except (ValueError, TypeError):
+                     details['selling_price'] = None
+            else:
+                 details['selling_price'] = None
+
             fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
             values = list(details.values()) + [item_id]
             sql = f'UPDATE "InventoryItems" SET {fields} WHERE id = %s'
@@ -90,7 +137,8 @@ def update_inventory_item(item_id: int, details: dict):
         return True, "品項資料更新成功！"
     except Exception as e:
         if conn: conn.rollback()
-        if "unique constraint" in str(e).lower(): return False, "更新失敗：該「品項名稱」已存在。"
+        if isinstance(e, database.psycopg2.IntegrityError) and "unique constraint" in str(e).lower():
+            return False, "更新失敗：該「品項名稱」已存在。"
         return False, f"更新品項時發生錯誤: {e}"
     finally:
         if conn: conn.close()
@@ -147,39 +195,49 @@ def add_inventory_log(details: dict):
             update_stock_sql = 'UPDATE "InventoryItems" SET current_stock = current_stock + %s WHERE id = %s'
             cursor.execute(update_stock_sql, (quantity_change, item_id))
 
+            # --- 修改點：處理採購自動新增費用 ---
             if transaction_type == '採購':
                 cursor.execute('SELECT item_name, unit_cost FROM "InventoryItems" WHERE id = %s', (item_id,))
                 item_info = cursor.fetchone()
-                
-                if item_info and item_info.get('unit_cost', 0) > 0:
-                    total_cost = item_info['unit_cost'] * quantity_change
+
+                # --- 核心修改：只在 unit_cost 有值且 > 0 時才新增費用 ---
+                unit_cost = item_info.get('unit_cost') if item_info else None
+                # 檢查 unit_cost 是否存在 (不是 None) 且 大於 0
+                if unit_cost is not None and unit_cost > 0:
+                    total_cost = unit_cost * quantity_change
                     payment_date = details.get('transaction_date', date.today())
-                    
+
                     general_config = db_utils.get_general_config()
                     headquarters_id = int(general_config.get('headquarters_dorm_id', 1))
 
                     cost_dorm_id = details.get('dorm_id') or headquarters_id
-                    
+
                     expense_details = {
-                        "dorm_id": cost_dorm_id, 
+                        "dorm_id": cost_dorm_id,
                         "expense_item": f"庫存採購-{item_info['item_name']}",
                         "payment_date": payment_date,
                         "total_amount": total_cost,
                         "amortization_start_month": payment_date.strftime('%Y-%m'),
-                        "amortization_end_month": payment_date.strftime('%Y-%m'),
+                        "amortization_end_month": payment_date.strftime('%Y-%m'), # 預設攤銷一個月
                         "notes": f"來自庫存紀錄ID:{new_log_id} - 採購 {quantity_change} 個"
                     }
 
                     success, message, new_expense_id = finance_model.add_annual_expense_record(expense_details)
                     if not success:
                         raise Exception(f"自動新增費用失敗: {message}")
-                    
+
                     cursor.execute('UPDATE "InventoryLog" SET related_expense_id = %s WHERE id = %s', (new_expense_id, new_log_id))
+            # --- 修改結束 ---
 
         conn.commit()
-        return True, "成功新增異動紀錄並更新庫存。"
+        # 根據是否有自動新增費用，回傳不同的成功訊息
+        if transaction_type == '採購' and 'new_expense_id' in locals() and unit_cost is not None and unit_cost > 0:
+            return True, f"成功新增異動紀錄並更新庫存，已自動新增費用紀錄 (ID: {new_expense_id})。"
+        else:
+            return True, "成功新增異動紀錄並更新庫存。"
     except Exception as e:
-        if conn: conn.rollback(); return False, f"新增異動紀錄時發生錯誤: {e}"
+        if conn: conn.rollback()
+        return False, f"新增異動紀錄時發生錯誤: {e}"
     finally:
         if conn: conn.close()
         
