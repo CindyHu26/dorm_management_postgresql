@@ -25,8 +25,8 @@ def render():
                 dorm_id = c3.selectbox("關聯宿舍 (選填，如鑰匙)", options=[None] + list(dorm_options.keys()), format_func=lambda x: "無 (通用資產)" if x is None else dorm_options.get(x))
                 
                 c4, c5, c6 = st.columns(3)
-                unit_cost = c4.number_input("成本單價 (選填，用於轉費用)", min_value=0)
-                selling_price = c5.number_input("建議售價 (選填，用於銷售)", min_value=0)
+                unit_cost = c4.number_input("成本單價 (選填)", min_value=0, value=None, step=1, format="%d", help="若不確定成本可留空")
+                selling_price = c5.number_input("建議售價 (選填)", min_value=0, value=None, step=1, format="%d", help="若此物品不出售可留空")
                 specifications = c6.text_input("規格/型號")
                 
                 notes = st.text_area("品項備註")
@@ -38,8 +38,8 @@ def render():
                         details = {
                             'item_name': item_name, 'item_category': item_category,
                             'dorm_id': dorm_id,
-                            'unit_cost': unit_cost if unit_cost > 0 else None,
-                            'selling_price': selling_price if selling_price > 0 else None,
+                            'unit_cost': unit_cost,
+                            'selling_price': selling_price,
                             'specifications': specifications, 'notes': notes
                         }
                         success, message = inventory_model.add_inventory_item(details)
@@ -51,7 +51,11 @@ def render():
         search_term = st.text_input("搜尋品項 (可輸入名稱、分類或宿舍地址)")
         
         items_df = inventory_model.get_all_inventory_items(search_term)
-        st.dataframe(items_df, width='stretch', hide_index=True, column_config={"id": None})
+        st.dataframe(items_df, width='stretch', hide_index=True, column_config={
+            "id": None,
+            "成本單價": st.column_config.NumberColumn(format="NT$ %d"),
+            "建議售價": st.column_config.NumberColumn(format="NT$ %d"),
+        })
         
         st.markdown("---")
         st.subheader("編輯 / 刪除單筆品項")
@@ -70,8 +74,10 @@ def render():
                     e_dorm_id = ec3.selectbox("關聯宿舍 (選填)", options=[None] + list(dorm_options.keys()), format_func=lambda x: "無 (通用資產)" if x is None else dorm_options.get(x), index=([None] + list(dorm_options.keys())).index(current_dorm_id) if current_dorm_id in [None] + list(dorm_options.keys()) else 0)
                     
                     ec4, ec5, ec6 = st.columns(3)
-                    e_unit_cost = ec4.number_input("成本單價", min_value=0, value=details.get('unit_cost') or 0)
-                    e_selling_price = ec5.number_input("建議售價", min_value=0, value=details.get('selling_price') or 0)
+                    current_unit_cost = details.get('unit_cost') # 可能為 None 或 0 或 其他數字
+                    e_unit_cost = ec4.number_input("成本單價", min_value=0, value=current_unit_cost, step=1, format="%d", help="若不確定成本可留空或填0")
+                    current_selling_price = details.get('selling_price')
+                    e_selling_price = ec5.number_input("建議售價", min_value=0, value=current_selling_price, step=1, format="%d", help="若此物品不出售可留空或填0")
                     e_specifications = ec6.text_input("規格/型號", value=details.get('specifications'))
                     
                     e_notes = st.text_area("品項備註", value=details.get('notes'))
