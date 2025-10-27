@@ -71,6 +71,26 @@ def render():
         st.success("在指定範圍內，沒有相關的宿舍保險。")
     st.markdown("---")
 
+# --- 清掃排程提醒 ---
+    st.subheader(f"🧹 宿舍清掃排程 ({len(reminders.get('cleaning_schedules', []))} 筆)")
+    cleaning_df = reminders.get('cleaning_schedules', pd.DataFrame())
+    if not cleaning_df.empty:
+        # 將日期字串轉為 date 物件以便格式化
+        cleaning_df['下次預計日期'] = pd.to_datetime(cleaning_df['下次預計日期'], errors='coerce').dt.date
+        cleaning_df['上次完成日期'] = pd.to_datetime(cleaning_df['上次完成日期'], errors='coerce').dt.date
+        st.dataframe(
+            cleaning_df,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "下次預計日期": st.column_config.DateColumn(format="YYYY-MM-DD"),
+                "上次完成日期": st.column_config.DateColumn(format="YYYY-MM-DD"),
+            }
+         )
+    else:
+        st.success("在指定範圍內，沒有需要執行的清掃排程。")
+    st.markdown("---")
+
     # --- 移工工作期限提醒 ---
     st.subheader(f"🧑‍💼 移工工作期限 ({len(reminders.get('workers', []))} 筆)")
     workers_df = reminders.get('workers', pd.DataFrame())
@@ -78,3 +98,4 @@ def render():
         st.dataframe(workers_df, width="stretch", hide_index=True)
     else:
         st.success("在指定範圍內，沒有相關的移工工作期限。")
+

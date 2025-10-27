@@ -81,20 +81,18 @@ def get_upcoming_reminders(days_ahead: int = 90):
         """
         insurance_df = _execute_query_to_dataframe(conn, insurance_query, (start_date, end_date))
         
-        # 5. 查詢合規紀錄
+        # --- 5. 查詢合規紀錄 (排除清掃紀錄) ---
         compliance_query = """
             WITH ComplianceNextDate AS (
                 SELECT
-                    id,
-                    dorm_id,
-                    record_type,
-                    details,
-                    -- 使用 COALESCE 自動選擇存在的日期欄位
+                    id, dorm_id, record_type, details,
                     COALESCE(
                         (details ->> 'next_check_date')::date,
                         (details ->> 'next_declaration_start')::date
                     ) as next_date
                 FROM "ComplianceRecords"
+                -- *** 排除清掃類型的紀錄 ***
+                WHERE record_type NOT IN ('宿舍簡易清掃', '宿舍大掃除')
             )
             SELECT
                 d.original_address AS "宿舍地址",
@@ -103,16 +101,31 @@ def get_upcoming_reminders(days_ahead: int = 90):
                 cr.next_date AS "下次申報/檢查日"
             FROM ComplianceNextDate cr
             JOIN "Dormitories" d ON cr.dorm_id = d.id
-            -- 只要 next_date 存在且在我們的時間範圍內，就抓出來
             WHERE cr.next_date BETWEEN %s AND %s
             ORDER BY "下次申報/檢查日" ASC;
         """
         compliance_df = _execute_query_to_dataframe(conn, compliance_query, (start_date, end_date))
 
+        # --- 6. 獨立查詢清掃排程提醒 ---
+        cleaning_query = """
+            SELECT
+                d.original_address AS "宿舍地址",
+                cr.record_type AS "清掃類型",
+                cr.details ->> 'next_schedule_date' AS "下次預計日期",
+                cr.details ->> 'last_completion_date' AS "上次完成日期"
+            FROM "ComplianceRecords" cr
+            JOIN "Dormitories" d ON cr.dorm_id = d.id
+            WHERE cr.record_type IN ('宿舍簡易清掃', '宿舍大掃除')
+              AND (cr.details ->> 'next_schedule_date')::date BETWEEN %s AND %s
+            ORDER BY "下次預計日期" ASC;
+        """
+        cleaning_df = _execute_query_to_dataframe(conn, cleaning_query, (start_date, end_date))
+
         return {
             "leases": leases_df, "workers": workers_df,
             "equipment": equipment_df, "insurance": insurance_df,
-            "compliance": compliance_df
+            "compliance": compliance_df,
+            "cleaning_schedules": cleaning_df # 將查詢結果放入新鍵
         }
         
     except Exception as e:
