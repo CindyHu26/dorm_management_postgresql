@@ -52,8 +52,15 @@ def render():
             @st.cache_data
             def get_finance_summary(employers, period):
                 return employer_dashboard_model.get_employer_financial_summary(employers, period)
-
+            
             finance_df_month = get_finance_summary(selected_employers, year_month_str)
+
+            @st.cache_data
+            def get_details_for_period(employers, period):
+                # 呼叫修改後的函數，傳入年月
+                return employer_dashboard_model.get_employer_resident_details(employers, period)
+
+            report_df_month = get_details_for_period(selected_employers, year_month_str)
 
             if finance_df_month.empty:
                 st.warning(f"在 {year_month_str} 中，找不到與所選雇主相關的任何收支紀錄。")
@@ -213,4 +220,5 @@ def render():
             st.dataframe(dorm_summary_df, width='stretch', hide_index=True)
             
             with st.expander("點此查看員工住宿詳情"):
-                st.dataframe(report_df, width='stretch', hide_index=True)
+                    st.dataframe(report_df_month, width='stretch', hide_index=True,
+                                 column_config={"員工月費": st.column_config.NumberColumn(format="NT$ %d")}) # 加入格式化
