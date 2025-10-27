@@ -74,7 +74,7 @@ def render():
     vendor_options = {v['id']: f"{v['服務項目']} - {v['廠商名稱']}" for _, v in vendors.iterrows()} if not vendors.empty else {}
     
     status_options = ["待處理", "待尋廠商", "進行中", "待付款", "已完成"]
-    item_type_options = ["維修", "定期保養", "更換耗材", "水電", "包通", "飲水機", "冷氣", "消防", "金城", "監視器", "水質檢測", "清運", "裝潢", "其他", "其他...(手動輸入)"]
+    item_type_options = ["維修", "定期保養", "更換耗材", "水電", "包通", "飲水機", "冷氣", "消防", "金城", "監視器", "水質檢測", "清運", "裝潢", "其他", "其他(手動輸入)"]
 
     # --- 新增紀錄 ---
     with st.expander("➕ 新增維修紀錄"):
@@ -96,7 +96,7 @@ def render():
             
             with c4:
                 selected_item_type = st.selectbox("項目類型", options=item_type_options)
-                custom_item_type = st.text_input("自訂項目類型", help="若上方選擇「其他...」，請在此處填寫")
+                custom_item_type = st.text_input("自訂項目類型", help="若上方選擇「其他(手動輸入)」，請在此處填寫")
             
             description = c5.text_area("修理細項說明*")
             
@@ -129,12 +129,12 @@ def render():
             notes = st.text_area("其他備註")
 
             if st.form_submit_button("儲存紀錄"):
-                final_item_type = custom_item_type if selected_item_type == "其他..." else selected_item_type
+                final_item_type = custom_item_type if selected_item_type == "其他(手動輸入)" else selected_item_type
                 
                 if not dorm_id or not description:
                     st.error("「宿舍地址」和「修理細項說明」為必填欄位！")
-                elif selected_item_type == "其他..." and not custom_item_type:
-                    st.error("您選擇了「其他...」，請務必填寫「自訂項目類型」！")
+                elif selected_item_type == "其他(手動輸入)" and not custom_item_type:
+                    st.error("您選擇了「其他(手動輸入)」，請務必填寫「自訂項目類型」！")
                 else:
                     file_paths = []
                     if uploaded_files:
@@ -260,10 +260,10 @@ def render():
                         default_index = item_type_options.index(current_item_type)
                         default_custom_value = ""
                     else:
-                        default_index = item_type_options.index("其他...")
+                        default_index = item_type_options.index("其他(手動輸入)")
                         default_custom_value = current_item_type
                     e_selected_item_type = st.selectbox("項目類型", options=item_type_options, index=default_index, key=f"edit_item_type_{selected_log_id}")
-                    e_custom_item_type = st.text_input("自訂項目類型", value=default_custom_value, help="若上方選擇「其他...」，請在此處填寫", key=f"edit_custom_item_type_{selected_log_id}")
+                    e_custom_item_type = st.text_input("自訂項目類型", value=default_custom_value, help="若上方選擇「其他(手動輸入)」，請在此處填寫", key=f"edit_custom_item_type_{selected_log_id}")
 
                 e_description = edc2.text_area("修理細項說明", value=details.get('description'))
                 
@@ -303,10 +303,10 @@ def render():
                 e_notes = st.text_area("其他備註", value=details.get('notes'))
 
                 if st.form_submit_button("儲存變更"):
-                    e_final_item_type = e_custom_item_type if e_selected_item_type == "其他..." else e_selected_item_type
+                    e_final_item_type = e_custom_item_type if e_selected_item_type == "其他(手動輸入)" else e_selected_item_type
                     
-                    if e_selected_item_type == "其他..." and not e_custom_item_type:
-                        st.error("您選擇了「其他...」，請務必填寫「自訂項目類型」！")
+                    if e_selected_item_type == "其他(手動輸入)" and not e_custom_item_type:
+                        st.error("您選擇了「其他(手動輸入)」，請務必填寫「自訂項目類型」！")
                     else:
                         final_status = e_status
                         pre_completion_states = ["待處理", "待尋廠商", "進行中"]
