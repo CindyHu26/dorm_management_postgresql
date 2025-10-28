@@ -1,6 +1,7 @@
 import pandas as pd
 import database
 from data_processor import normalize_taiwan_address
+from . import cleaning_model
 
 def _execute_query_to_dataframe(conn, query, params=None):
     """一個輔助函式，用來手動執行查詢並回傳 DataFrame。"""
@@ -317,5 +318,48 @@ def get_my_company_dorms_for_selection(search_term: str = None):
     except Exception as e:
         print(f"查詢我司管理宿舍時發生錯誤: {e}")
         return []
+    finally:
+        if conn: conn.close()
+
+def add_new_dormitory(details: dict):
+    """【v2.1 清掃初始化版】新增宿舍的業務邏輯，自動拆分縣市區域並寫入負責人，若是 '我司' 管理則初始化清掃排程。"""
+    conn = database.get_db_connection()
+    if not conn: return False, "無法連接到資料庫"
+    new_dorm_id = None # 初始化 new_dorm_id
+    try:
+        addr_info = normalize_taiwan_address(details.get('original_address', ''))
+        details['normalized_address'] = addr_info['full']
+        details['city'] = addr_info['city']
+        details['district'] = addr_info['district']
+
+        with conn.cursor() as cursor:
+            columns = ', '.join(f'"{k}"' for k in details.keys())
+            placeholders = ', '.join(['%s'] * len(details))
+            sql = f'INSERT INTO "Dormitories" ({columns}) VALUES ({placeholders}) RETURNING id'
+            cursor.execute(sql, tuple(details.values()))
+            new_dorm_id = cursor.fetchone()['id']
+
+            # 建立預設的 "[未分配房間]"
+            cursor.execute('INSERT INTO "Rooms" (dorm_id, room_number) VALUES (%s, %s)', (new_dorm_id, "[未分配房間]"))
+
+        conn.commit() # 先提交宿舍和房間的新增
+
+        # --- 如果是 '我司' 管理，則初始化清掃排程 ---
+        if details.get('primary_manager') == '我司' and new_dorm_id:
+            try:
+                # 獨立呼叫初始化函數，它會自己處理資料庫連線
+                cleaning_model.initialize_cleaning_schedule(new_dorm_id)
+                print(f"INFO: Dorm ID {new_dorm_id} is managed by '我司', initialized cleaning schedule.")
+            except Exception as init_error:
+                # 即使初始化失敗，也不影響宿舍新增的結果，僅記錄錯誤
+                print(f"WARNING: Failed to initialize cleaning schedule for new dorm ID {new_dorm_id}: {init_error}")
+
+        return True, f"成功新增宿舍 (ID: {new_dorm_id})"
+    except Exception as e:
+        if conn: conn.rollback()
+        # 檢查是否為唯一性約束錯誤
+        if isinstance(e, database.psycopg2.IntegrityError) and "unique constraint" in str(e).lower():
+            return False, "新增失敗：正規化地址已存在。"
+        return False, f"新增宿舍時發生錯誤: {e}"
     finally:
         if conn: conn.close()

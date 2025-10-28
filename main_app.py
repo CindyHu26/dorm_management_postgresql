@@ -29,7 +29,8 @@ from views import (
     vendor_view,
     batch_import_view, 
     report_view,
-    inventory_view
+    inventory_view,
+    cleaning_schedule_view
 )
 
 def load_config():
@@ -67,6 +68,7 @@ PAGES = {
         "長期合約管理": lease_view,
         "長期合約分項總覽": contract_view,
         "設備管理": equipment_view,
+        "清掃排程管理": cleaning_schedule_view,
         "電水錶管理": meter_view,
         "廠商資料管理": vendor_view
     },
