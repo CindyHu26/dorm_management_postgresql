@@ -1,5 +1,5 @@
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import database
 
 def _execute_query_to_dataframe(conn, query, params=None):
@@ -569,22 +569,39 @@ def get_single_accommodation_details(history_id: int):
 
 def update_accommodation_history(history_id: int, details: dict):
     """
-    【v2.3 修改版】更新一筆已存在的住宿歷史紀錄，新增床位編號。
+    【v2.5 房間修改版】更新一筆已存在的住宿歷史紀錄，允許修改 room_id。
     """
     conn = database.get_db_connection()
     if not conn: return False, "資料庫連線失敗"
     try:
         with conn.cursor() as cursor:
-            details.pop('room_id', None)
-            
+            # --- 移除 details.pop('room_id', None) ---
+            # details.pop('room_id', None) # <--- 將此行註解或刪除
+
+            # 檢查 details 是否為空，如果只傳入 room_id 也要能更新
+            if not details:
+                 # Technically possible if only room_id was intended, but usually unlikely.
+                 # Let's assume other details might be intended even if empty now.
+                 # If you ONLY want to update room_id, the check might need adjustment.
+                 # For now, let's proceed assuming other fields might be updated too.
+                 pass # Allow update even if other fields are empty/None if room_id is present
+
+
             fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
             values = list(details.values()) + [history_id]
             sql = f'UPDATE "AccommodationHistory" SET {fields} WHERE id = %s'
             cursor.execute(sql, tuple(values))
+
+            # --- 檢查更新影響的行數 ---
+            if cursor.rowcount == 0:
+                 conn.rollback() # 如果沒有任何行被更新，可能 ID 不存在，回滾
+                 return False, f"更新失敗：找不到 ID 為 {history_id} 的住宿歷史紀錄。"
+
         conn.commit()
         return True, "住宿歷史紀錄更新成功！"
     except Exception as e:
         if conn: conn.rollback()
+        # --- 提供更詳細的錯誤 ---
         return False, f"更新住宿歷史時發生錯誤: {e}"
     finally:
         if conn: conn.close()

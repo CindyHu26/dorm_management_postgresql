@@ -274,11 +274,34 @@ def render():
                             if history_details:
                                 with st.form(f"edit_history_form_{selected_history_id}"):
                                     st.markdown(f"###### 正在編輯 ID: {history_details['id']} 的紀錄")
+
+                                    # --- 替換住宿位置輸入 ---
                                     current_room_id = history_details.get('room_id')
-                                    dorm_id = dormitory_model.get_dorm_id_from_room_id(current_room_id)
-                                    dorm_name = dormitory_model.get_dorm_details_by_id(dorm_id).get('original_address', '未知宿舍')
-                                    room_name = dormitory_model.get_single_room_details(current_room_id).get('room_number', '未知房間')
-                                    st.text_input("住宿位置", value=f"{dorm_name} {room_name}", disabled=True, help="如需變更房間，請使用上方的「新增住宿紀錄」功能。")
+                                    current_dorm_id = dormitory_model.get_dorm_id_from_room_id(current_room_id)
+
+                                    # 取得所有宿舍選項
+                                    all_dorms_edit = dormitory_model.get_dorms_for_selection() or []
+                                    all_dorm_options_edit = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in all_dorms_edit}
+                                    dorm_keys_edit = list(all_dorm_options_edit.keys())
+                                    try:
+                                        dorm_index = dorm_keys_edit.index(current_dorm_id) if current_dorm_id in dorm_keys_edit else 0
+                                    except ValueError:
+                                        dorm_index = 0
+
+                                    edit_dorm_id = st.selectbox("宿舍地址", options=dorm_keys_edit, format_func=lambda x: all_dorm_options_edit.get(x), index=dorm_index, key=f"edit_hist_dorm_{selected_history_id}")
+
+                                    # 根據選擇的宿舍動態載入房間選項
+                                    rooms_edit = dormitory_model.get_rooms_for_selection(edit_dorm_id) or []
+                                    room_options_edit = {r['id']: r['room_number'] for r in rooms_edit}
+                                    room_keys_edit = list(room_options_edit.keys())
+                                    try:
+                                        # 如果目前房間在新宿舍的選項中，則預選它，否則不預選(index=0)
+                                        room_index = room_keys_edit.index(current_room_id) if current_room_id in room_keys_edit else 0
+                                    except ValueError:
+                                        room_index = 0
+
+                                    edit_room_id = st.selectbox("房間號碼", options=room_keys_edit, format_func=lambda x: room_options_edit.get(x), index=room_index, key=f"edit_hist_room_{selected_history_id}")
+
                                     ehc1, ehc2, ehc3 = st.columns(3)
                                     edit_start_date = ehc1.date_input("起始日", value=history_details.get('start_date'))
                                     edit_end_date = ehc2.date_input("結束日 (留空表示仍在住)", value=history_details.get('end_date'))
@@ -286,10 +309,20 @@ def render():
                                     edit_notes = st.text_area("備註", value=history_details.get('notes', ''))
 
                                     if st.form_submit_button("儲存歷史紀錄變更"):
-                                        update_data = {"start_date": edit_start_date, "end_date": edit_end_date, "bed_number": edit_bed_number, "notes": edit_notes}
-                                        success, message = worker_model.update_accommodation_history(selected_history_id, update_data)
-                                        if success: st.success(message); st.cache_data.clear(); st.rerun()
-                                        else: st.error(message)
+                                        if not edit_room_id:
+                                             st.error("必須選擇一個房間！")
+                                        else:
+                                             # --- 將 edit_room_id 加入 update_data ---
+                                             update_data = {
+                                                 "room_id": edit_room_id, # <-- 加入房間 ID
+                                                 "start_date": edit_start_date,
+                                                 "end_date": edit_end_date,
+                                                 "bed_number": edit_bed_number,
+                                                 "notes": edit_notes
+                                             }
+                                             success, message = worker_model.update_accommodation_history(selected_history_id, update_data)
+                                             if success: st.success(message); st.cache_data.clear(); st.rerun()
+                                             else: st.error(message)
 
                                 st.markdown("##### 危險操作區")
                                 confirm_delete_history = st.checkbox("我了解並確認要刪除此筆住宿歷史", key=f"delete_accom_{selected_history_id}")
