@@ -352,8 +352,8 @@ def batch_import_building_permits(df: pd.DataFrame):
 
 def batch_import_accommodation(df: pd.DataFrame):
     """
-    【v1.6 修正版】批次匯入【住宿分配/異動】的核心邏輯。
-    修正日期計算的 TypeError。
+    【v1.7 佔位房號修正版】批次匯入【住宿分配/異動】的核心邏輯。
+    如果最新紀錄是 '[未分配房間]' 且未指定入住日，則直接更新該紀錄。
     """
     success_count = 0
     failed_records = []
@@ -362,17 +362,18 @@ def batch_import_accommodation(df: pd.DataFrame):
         error_df = df.copy()
         error_df['錯誤原因'] = "無法連接到資料庫"
         return 0, error_df
-        
+
     try:
-        from datetime import date, timedelta # 匯入標準時間差函式庫
+        from datetime import date, timedelta
 
         with conn.cursor() as cursor:
             dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, original_address, normalized_address FROM "Dormitories"')
             original_addr_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
             normalized_addr_map = {d['normalized_address']: d['id'] for _, d in dorms_df.iterrows()}
-            
+
             rooms_df = _execute_query_to_dataframe(conn, 'SELECT id, dorm_id, room_number FROM "Rooms"')
-            room_map = {(r['dorm_id'], r['room_number']): r['id'] for _, r in rooms_df.iterrows()}
+            room_map = {(r['dorm_id'], str(r['room_number'])): r['id'] for _, r in rooms_df.iterrows()}
+            room_id_to_number_map = {r['id']: r['room_number'] for _, r in rooms_df.iterrows()}
 
             for index, row in df.iterrows():
                 try:
@@ -383,6 +384,7 @@ def batch_import_accommodation(df: pd.DataFrame):
                         raise ValueError("雇主和姓名為必填欄位")
 
                     worker_id = None
+                    # ... (查找 worker_id 的邏輯) ...
                     if passport:
                         unique_id = f"{employer}_{name}_{passport}"
                         cursor.execute('SELECT unique_id FROM "Workers" WHERE unique_id = %s', (unique_id,))
@@ -403,7 +405,7 @@ def batch_import_accommodation(df: pd.DataFrame):
                             raise ValueError(f"找不到工人: {employer}_{name}")
                         else:
                             raise ValueError(f"找到 {len(workers_found)} 位同名工人，請提供護照號碼以作區分")
-                    
+
                     if not worker_id:
                         raise ValueError("無法確定唯一的工人紀錄")
 
@@ -424,39 +426,73 @@ def batch_import_accommodation(df: pd.DataFrame):
                         cursor.execute(f'INSERT INTO "Rooms" ({cols}) VALUES ({vals}) RETURNING id', tuple(room_details.values()))
                         new_room_id = cursor.fetchone()['id']
                         room_map[room_key] = new_room_id
-                    
+                        # --- 新增：同時更新反向映射 ---
+                        room_id_to_number_map[new_room_id] = room_number_str
+                        # --- 新增結束 ---
+
                     bed_number_val = row.get('床位編號 (選填)')
                     bed_number = str(bed_number_val).strip() if pd.notna(bed_number_val) and str(bed_number_val).strip() else None
 
+
                     move_in_date_input = row.get('入住日 (換宿/指定日期時填寫)')
+
+                    # --- 【核心修改點 1】查詢時包含 room_number (雖然我們有 map 了，但 JOIN 比較保險) ---
                     cursor.execute("""
-                        SELECT ah.id, r.room_number, ah.room_id, ah.start_date
-                        FROM "AccommodationHistory" ah JOIN "Rooms" r ON ah.room_id = r.id
+                        SELECT ah.id, ah.room_id, ah.start_date
+                        FROM "AccommodationHistory" ah
                         WHERE ah.worker_unique_id = %s AND ah.end_date IS NULL
                         ORDER BY ah.start_date DESC, ah.id DESC LIMIT 1
                     """, (worker_id,))
                     latest_history = cursor.fetchone()
-                    
-                    if latest_history and latest_history['room_id'] == new_room_id:
-                        continue
-                        
-                    if latest_history and latest_history['room_number'] == '[未分配房間]' and (pd.isna(move_in_date_input) or not move_in_date_input):
-                        cursor.execute('UPDATE "AccommodationHistory" SET room_id = %s, bed_number = %s WHERE id = %s', (new_room_id, bed_number, latest_history['id']))
+
+                    # --- 【核心修改點 2】加入判斷邏輯 ---
+                    should_update_placeholder = False
+                    if latest_history:
+                        latest_room_id = latest_history['room_id']
+                        latest_room_number = room_id_to_number_map.get(latest_room_id)
+                        # 條件：最新紀錄存在 且 是佔位房號 且 Excel未指定入住日
+                        if latest_room_number == '[未分配房間]' and (pd.isna(move_in_date_input) or not move_in_date_input):
+                            should_update_placeholder = True
+
+                    if should_update_placeholder:
+                        # --- 直接更新佔位紀錄 ---
+                        cursor.execute(
+                            'UPDATE "AccommodationHistory" SET room_id = %s, bed_number = %s WHERE id = %s',
+                            (new_room_id, bed_number, latest_history['id'])
+                        )
+                        print(f"INFO: Worker {worker_id} - Updated placeholder room to {new_room_id}") # 增加日誌
+
+                    elif latest_history and latest_history['room_id'] == new_room_id:
+                        # --- 如果房間沒變，檢查床位是否有變 ---
+                        cursor.execute('SELECT bed_number FROM "AccommodationHistory" WHERE id = %s', (latest_history['id'],))
+                        current_bed = cursor.fetchone()['bed_number']
+                        if current_bed != bed_number:
+                            cursor.execute('UPDATE "AccommodationHistory" SET bed_number = %s WHERE id = %s', (bed_number, latest_history['id']))
+                            print(f"INFO: Worker {worker_id} - Updated bed number in room {new_room_id} to {bed_number}") # 增加日誌
+                        else:
+                            # 房間和床位都沒變，跳過
+                            continue
+
                     else:
+                        # --- 維持原本的換宿邏輯 ---
                         effective_date = pd.to_datetime(move_in_date_input).date() if pd.notna(move_in_date_input) and move_in_date_input else date.today()
                         if latest_history:
-                            # 【核心修改】使用 timedelta 計算
                             end_date = effective_date - timedelta(days=1)
-                            cursor.execute('UPDATE "AccommodationHistory" SET end_date = %s WHERE id = %s', (end_date, latest_history['id']))
-                        
+                            cursor.execute(
+                                'UPDATE "AccommodationHistory" SET end_date = %s WHERE id = %s',
+                                (end_date, latest_history['id'])
+                            )
+
                         cursor.execute(
                             'INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, bed_number) VALUES (%s, %s, %s, %s)',
                             (worker_id, new_room_id, effective_date, bed_number)
                         )
-                    
+                        print(f"INFO: Worker {worker_id} - Created new accommodation record for room {new_room_id}") # 增加日誌
+
+                    # 更新 Workers 表的 data_source 標記 (這部分邏輯不變)
                     cursor.execute('UPDATE "Workers" SET data_source = %s WHERE unique_id = %s', ('手動調整', worker_id))
                     success_count += 1
-                
+
                 except Exception as row_error:
                     row['錯誤原因'] = str(row_error)
                     failed_records.append(row)
@@ -465,10 +501,14 @@ def batch_import_accommodation(df: pd.DataFrame):
     except Exception as e:
         if conn: conn.rollback()
         print(f"批次匯入住宿資料時發生嚴重錯誤: {e}")
-        remaining_rows = df.iloc[len(failed_records):].copy()
-        remaining_rows['錯誤原因'] = f"系統層級錯誤: {e}"
-        failed_records.extend(remaining_rows.to_dict('records'))
-
+        # 將剩餘未處理的行標記為失敗
+        start_index = len(failed_records) # Index where processing stopped due to error
+        remaining_rows_df = df.iloc[start_index:]
+        if not remaining_rows_df.empty:
+            remaining_rows_list = remaining_rows_df.to_dict('records')
+            for row in remaining_rows_list:
+                row['錯誤原因'] = f"系統層級錯誤: {e}"
+            failed_records.extend(remaining_rows_list)
     finally:
         if conn: conn.close()
 

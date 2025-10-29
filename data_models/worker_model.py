@@ -83,67 +83,73 @@ def get_workers_for_view(filters: dict):
 
 def get_workers_for_view(filters: dict):
     """
-    【v2.3 修正版】根據篩選條件，查詢移工的詳細住宿資訊。
-    新增回傳 unique_id 以修正 view 中的 KeyError。
+    【v2.4 入住日修正版】根據篩選條件，查詢移工的詳細住宿資訊。
+    「入住日期」欄位現在顯示最新一筆住宿歷史的起始日。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
-    
+
     current_date_func = "CURRENT_DATE"
-    
+
     try:
         base_query = f"""
             WITH CurrentAccommodation AS (
-                SELECT 
+                SELECT
                     worker_unique_id,
                     room_id,
                     bed_number,
+                    start_date, -- 【核心修改 1】選取最新住宿歷史的 start_date
                     ROW_NUMBER() OVER(PARTITION BY worker_unique_id ORDER BY start_date DESC, id DESC) as rn
                 FROM "AccommodationHistory"
+                -- 保留原本的邏輯，找出 "目前" 的住宿紀錄
                 WHERE start_date <= {current_date_func} AND (end_date IS NULL OR end_date >= {current_date_func})
             )
             SELECT
-                w.unique_id, -- 【核心修正】新增此欄位
-                w.employer_name AS "雇主", 
-                w.worker_name AS "姓名", 
+                w.unique_id,
+                w.employer_name AS "雇主",
+                w.worker_name AS "姓名",
                 d_actual.original_address AS "實際地址",
                 r_actual.room_number AS "實際房號",
                 ca.bed_number AS "床位編號",
                 w.gender AS "性別",
-                w.nationality AS "國籍", 
-                w.accommodation_start_date AS "入住日期", 
-                w.accommodation_end_date AS "離住日期",
+                w.nationality AS "國籍",
+                -- 【核心修改 2】將入住日期來源改為 ca.start_date
+                ca.start_date AS "入住日期",
+                w.accommodation_end_date AS "離住日期", -- 離住日期維持 Workers 表的欄位
                 w.work_permit_expiry_date AS "工作期限",
                 w.special_status as "特殊狀況",
-                CASE 
+                CASE
                     WHEN w.accommodation_end_date IS NOT NULL AND w.accommodation_end_date <= {current_date_func}
                     THEN '已離住' ELSE '在住'
                 END as "在住狀態",
                 w.monthly_fee AS "月費(房租)", w.utilities_fee AS "水電費", w.cleaning_fee AS "清潔費",
                 w.restoration_fee AS "宿舍復歸費",
                 w.charging_cleaning_fee AS "充電清潔費",
-                w.worker_notes AS "個人備註", 
+                w.worker_notes AS "個人備註",
                 w.passport_number AS "護照號碼", w.arc_number AS "居留證號碼",
-                d_actual.primary_manager AS "主要管理人", 
-                d_system.original_address AS "系統地址",
+                d_actual.primary_manager AS "主要管理人",
+                d_system.original_address AS "系統地址", -- 系統地址可能還是有用，先保留
                 w.data_source as "資料來源"
             FROM "Workers" w
+            -- JOIN CTE，條件 rn = 1 不變，確保只取最新一筆
             LEFT JOIN (SELECT * FROM CurrentAccommodation WHERE rn = 1) ca ON w.unique_id = ca.worker_unique_id
             LEFT JOIN "Rooms" r_actual ON ca.room_id = r_actual.id
             LEFT JOIN "Dormitories" d_actual ON r_actual.dorm_id = d_actual.id
-            LEFT JOIN "Rooms" r_system ON w.room_id = r_system.id
-            LEFT JOIN "Dormitories" d_system ON r_system.dorm_id = d_system.id
+            LEFT JOIN "Rooms" r_system ON w.room_id = r_system.id -- 系統地址相關JOIN維持
+            LEFT JOIN "Dormitories" d_system ON r_system.dorm_id = d_system.id -- 系統地址相關JOIN維持
         """
-        
+
         where_clauses = []
         params = []
-        
+
+        # --- 篩選條件 (WHERE 子句) 邏輯維持不變 ---
         if filters.get('name_search'):
             term = f"%{filters['name_search']}%"
             where_clauses.append('(w.worker_name ILIKE %s OR w.employer_name ILIKE %s OR d_actual.original_address ILIKE %s OR d_system.original_address ILIKE %s)')
             params.extend([term, term, term, term])
-            
+
         if filters.get('dorm_id'):
+            # 篩選條件應針對實際地址
             where_clauses.append("d_actual.id = %s")
             params.append(filters['dorm_id'])
 
@@ -152,12 +158,14 @@ def get_workers_for_view(filters: dict):
             where_clauses.append(f"(w.accommodation_end_date IS NULL OR w.accommodation_end_date > {current_date_func})")
         elif status_filter == '已離住':
             where_clauses.append(f"(w.accommodation_end_date IS NOT NULL AND w.accommodation_end_date <= {current_date_func})")
+        # --- 篩選條件結束 ---
 
         if where_clauses:
             base_query += " WHERE " + " AND ".join(where_clauses)
-            
+
+        # 排序條件維持不變
         base_query += ' ORDER BY d_actual.primary_manager, w.employer_name, w.worker_name'
-        
+
         return _execute_query_to_dataframe(conn, base_query, params)
     finally:
         if conn: conn.close()
@@ -239,32 +247,67 @@ def update_worker_details(unique_id: str, details: dict, effective_date: date = 
 
 def add_manual_worker(details: dict, initial_status: dict, bed_number: str = None):
     """
-    【v2.1 修改版】新增手動管理的移工資料，並為其建立初始住宿和狀態紀錄，包含床位編號。
+    【v2.2 修改版】新增手動管理的移工資料。
+    若有選擇宿舍地址（即使未選擇房號），也會新增一筆指向該宿舍 "[未分配房間]" 的住宿歷史。
     """
     details['data_source'] = '手動管理(他仲)'
     details['special_status'] = initial_status.get('status')
-    room_id = details.get('room_id') 
+    
+    # --- 【核心修改 1】從 details 中同時獲取 dorm_id 和 room_id ---
+    # 注意：前端傳遞過來時，需要確保 dorm_id 也被包含在 details 或可從 room_id 反查
+    # 我們假設前端傳遞的是選擇的 dorm_id 和 room_id (room_id 可能為 None)
+    selected_dorm_id = details.pop('dorm_id', None) # 從 details 取出 dorm_id，並從字典移除以防插入 Workers 表
+    selected_room_id = details.pop('room_id', None) # 從 details 取出 room_id，並從字典移除以防插入 Workers 表
+    # Workers 表中的 room_id 欄位我們不再直接依賴前端選擇，而是置空或由後續邏輯更新
+    details['room_id'] = None
 
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed.", None
     try:
         with conn.cursor() as cursor:
+            # 檢查員工 ID 是否已存在
             cursor.execute('SELECT unique_id FROM "Workers" WHERE unique_id = %s', (details['unique_id'],))
             if cursor.fetchone():
                 return False, f"新增失敗：員工ID '{details['unique_id']}' 已存在。", None
             
+            # 插入 Workers 表
             columns = ', '.join(f'"{k}"' for k in details.keys())
             placeholders = ', '.join(['%s'] * len(details))
             sql = f'INSERT INTO "Workers" ({columns}) VALUES ({placeholders})'
             cursor.execute(sql, tuple(details.values()))
             
-            if room_id:
+            # --- 【核心修改 2】修改新增 AccommodationHistory 的邏輯 ---
+            room_id_to_insert = None
+            if selected_dorm_id: # 只要有選宿舍地址就要處理
+                if selected_room_id: # 如果有選具體房號
+                    room_id_to_insert = selected_room_id
+                else: # 如果沒選具體房號 (選了 "未分配")
+                    # 查詢該宿舍下 "[未分配房間]" 的 ID
+                    cursor.execute(
+                        'SELECT id FROM "Rooms" WHERE dorm_id = %s AND room_number = %s LIMIT 1',
+                        (selected_dorm_id, '[未分配房間]')
+                    )
+                    unassigned_room = cursor.fetchone()
+                    if unassigned_room:
+                        room_id_to_insert = unassigned_room['id']
+                    else:
+                        # 理論上不應該發生，因為建立宿舍時會自動建立 [未分配房間]
+                        print(f"警告：宿舍 ID {selected_dorm_id} 缺少 '[未分配房間]' 的紀錄，無法為其新增初始住宿歷史。")
+
+            # 如果成功找到要插入的 room_id (無論是具體房號或 [未分配房間])
+            if room_id_to_insert:
                 accom_sql = 'INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, bed_number) VALUES (%s, %s, %s, %s)'
-                start_date = details.get('accommodation_start_date', date.today())
-                cursor.execute(accom_sql, (details['unique_id'], room_id, start_date, bed_number))
-            
+                start_date = details.get('accommodation_start_date', date.today()) # 起始日還是從 details 取
+                cursor.execute(accom_sql, (details['unique_id'], room_id_to_insert, start_date, bed_number))
+            # --- 修改結束 ---
+
+            # 新增 WorkerStatusHistory (邏輯不變)
             if initial_status and initial_status.get('status'):
                 initial_status['worker_unique_id'] = details['unique_id']
+                # 確保 start_date 有值
+                if 'start_date' not in initial_status or not initial_status['start_date']:
+                     initial_status['start_date'] = details.get('accommodation_start_date', date.today())
+
                 status_cols = ', '.join(f'"{k}"' for k in initial_status.keys())
                 status_placeholders = ', '.join(['%s'] * len(initial_status))
                 status_sql = f'INSERT INTO "WorkerStatusHistory" ({status_cols}) VALUES ({status_placeholders})'

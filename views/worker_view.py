@@ -73,15 +73,19 @@ def render():
                     if pass_clean:
                         unique_id += f"_{pass_clean}"
                     details = {
-                        'unique_id': unique_id, 'employer_name': emp_clean, 'worker_name': name_clean,
-                        'passport_number': pass_clean if pass_clean else None,
-                        'gender': gender, 'nationality': nationality, 'arc_number': arc_number,
-                        'room_id': selected_room_id_new, 'monthly_fee': monthly_fee, 
-                        'utilities_fee': utilities_fee, 'cleaning_fee': cleaning_fee,
-                        'restoration_fee': restoration_fee, 'charging_cleaning_fee': charging_cleaning_fee,
-                        'payment_method': payment_method,
-                        'accommodation_start_date': str(accommodation_start_date) if accommodation_start_date else None,
-                        'worker_notes': worker_notes
+                    'unique_id': unique_id, 'employer_name': emp_clean, 'worker_name': name_clean,
+                    'passport_number': pass_clean if pass_clean else None,
+                    'gender': gender, 'nationality': nationality, 'arc_number': arc_number,
+                    # --- 加入 dorm_id ---
+                    'dorm_id': selected_dorm_id_new,
+                    # --- 加入結束 ---
+                    'room_id': selected_room_id_new, # room_id 保持傳遞，後端會處理 None 的情況
+                    'monthly_fee': monthly_fee,
+                    'utilities_fee': utilities_fee, 'cleaning_fee': cleaning_fee,
+                    'restoration_fee': restoration_fee, 'charging_cleaning_fee': charging_cleaning_fee,
+                    'payment_method': payment_method,
+                    'accommodation_start_date': str(accommodation_start_date) if accommodation_start_date else None,
+                    'worker_notes': worker_notes
                     }
                     status_details = {
                         'status': initial_status,
