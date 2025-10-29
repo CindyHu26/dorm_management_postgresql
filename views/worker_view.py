@@ -30,7 +30,9 @@ def render():
             worker_name = c2.text_input("移工姓名 (必填)")
             passport_number = c3.text_input("護照號碼 (同名時必填)")
             gender = c1.selectbox("性別", ["", "男", "女"])
-            nationality = c2.text_input("國籍")
+            nationality_options = ["", "越南", "印尼", "泰國", "菲律賓", "其他 (請手動輸入)"]
+            selected_nationality = c2.selectbox("國籍", options=nationality_options)
+            custom_nationality = c2.text_input("手動輸入國籍", help="若上方選擇「其他」，請在此填寫")
             arc_number = c3.text_input("居留證號")
             st.subheader("住宿與費用")
             dorms = dormitory_model.get_dorms_for_selection() or []
@@ -70,12 +72,13 @@ def render():
                     name_clean = worker_name.strip()
                     pass_clean = str(passport_number or '').strip()
                     unique_id = f"{emp_clean}_{name_clean}"
+                    final_nationality = custom_nationality if selected_nationality == "其他 (請手動輸入)" else selected_nationality
                     if pass_clean:
                         unique_id += f"_{pass_clean}"
                     details = {
                     'unique_id': unique_id, 'employer_name': emp_clean, 'worker_name': name_clean,
                     'passport_number': pass_clean if pass_clean else None,
-                    'gender': gender, 'nationality': nationality, 'arc_number': arc_number,
+                    'gender': gender, 'nationality': final_nationality, 'arc_number': arc_number,
                     # --- 加入 dorm_id ---
                     'dorm_id': selected_dorm_id_new,
                     # --- 加入結束 ---
