@@ -1,4 +1,5 @@
 import pandas as pd
+import psycopg2
 import database
 from data_processor import normalize_taiwan_address
 from . import cleaning_model
@@ -95,31 +96,54 @@ def add_new_dormitory(details: dict):
     finally:
         if conn: conn.close()
 
-def update_dormitory_details(dorm_id: int, details: dict):
-    """【v2.0 修改版】更新宿舍的詳細資料，自動更新縣市區域。"""
+def update_room_details(room_id: int, details: dict):
+    """【修改版】更新一筆已存在的房間紀錄，包含房號，並檢查重複。"""
     conn = database.get_db_connection()
-    if not conn: return False, "無法連接到資料庫"
+    if not conn: return False, "資料庫連線失敗"
     try:
-        # 如果原始地址被修改，就重新正規化並更新縣市區域
-        if 'original_address' in details:
-            addr_info = normalize_taiwan_address(details['original_address'])
-            details['normalized_address'] = addr_info['full']
-            details['city'] = addr_info['city']
-            details['district'] = addr_info['district']
-
         with conn.cursor() as cursor:
+            # --- 【核心修改 1】檢查房號是否重複 ---
+            new_room_number = details.get('room_number')
+            if new_room_number:
+                # 查詢目前房間所屬的宿舍 ID
+                cursor.execute('SELECT dorm_id FROM "Rooms" WHERE id = %s', (room_id,))
+                result = cursor.fetchone()
+                if not result:
+                    return False, f"找不到 ID 為 {room_id} 的房間。"
+                current_dorm_id = result['dorm_id']
+
+                # 檢查在同一個宿舍下，是否有其他房間已經使用新的房號
+                cursor.execute(
+                    'SELECT id FROM "Rooms" WHERE dorm_id = %s AND room_number = %s AND id != %s',
+                    (current_dorm_id, new_room_number, room_id)
+                )
+                if cursor.fetchone():
+                    return False, f"更新失敗：宿舍內已存在房號為 '{new_room_number}' 的房間。"
+            # --- 檢查結束 ---
+
             fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
-            values = list(details.values()) + [dorm_id]
-            sql = f'UPDATE "Dormitories" SET {fields} WHERE id = %s'
+            values = list(details.values()) + [room_id]
+            sql = f'UPDATE "Rooms" SET {fields} WHERE id = %s'
             cursor.execute(sql, tuple(values))
+
+            if cursor.rowcount == 0: # 檢查是否有更新成功
+                conn.rollback() # 如果沒更新到任何行，可能 room_id 不存在
+                return False, f"更新失敗：找不到 ID 為 {room_id} 的房間紀錄。"
+
         conn.commit()
-        return True, "宿舍資料更新成功！"
+        return True, "房間資料更新成功！"
+    except psycopg2.IntegrityError as e: # 更具體地捕捉唯一性約束錯誤
+        if conn: conn.rollback()
+        # 這裡的 unique constraint 應該是指 (dorm_id, room_number) 的組合
+        if "unique constraint" in str(e).lower() and "rooms_dorm_id_room_number_key" in str(e).lower():
+             return False, f"更新失敗：宿舍內已存在房號為 '{new_room_number}' 的房間 (資料庫約束)。"
+        else:
+             return False, f"更新房間時發生資料庫錯誤: {e}"
     except Exception as e:
         if conn: conn.rollback()
-        return False, f"更新宿舍時發生錯誤: {e}"
+        return False, f"更新房間時發生未知錯誤: {e}"
     finally:
         if conn: conn.close()
-
 
 def delete_dormitory_by_id(dorm_id: int):
     """
