@@ -218,15 +218,13 @@ def render():
 
     st.markdown("---")
     # --- 區塊四：住宿分配匯入 ---
+    # --- 【核心修改】區塊四：住宿分配匯入 (改為頁籤) ---
     with st.container(border=True):
         st.subheader("🏠 住宿分配/異動匯入")
-        st.info(
-            """
-            用於批次分配或更新人員的實際住宿房間與床位。
-            - **更新方式**：系統會自動判斷應更新舊住宿紀錄的結束日期，或為人員新增一筆換宿紀錄。
-            """
-        )
         
+        tab_move, tab_overwrite = st.tabs(["批次異動 (換宿)", "批次覆蓋 (修正資料)"])
+
+        # 共用範本
         accommodation_template_df = pd.DataFrame({
             "雇主": ["範例：ABC公司"],
             "姓名": ["阮文雄"],
@@ -236,33 +234,89 @@ def render():
             "床位編號 (選填)": ["A-01上"],
             "入住日 (換宿/指定日期時填寫)": [date.today().strftime('%Y-%m-%d')]
         })
-        st.download_button(
-            label="📥 下載住宿分配匯入範本",
-            data=to_excel(accommodation_template_df),
-            file_name="accommodation_import_template.xlsx"
-        )
+        
+        # --- 頁籤 1: 異動 (換宿) ---
+        with tab_move:
+            st.info(
+                """
+                **適用時機：** 員工實際「換宿」、從 `[未分配房間]` 狀態指定一個「新的」入住日。
+                - **運作方式：**
+                    - 系統會結束該員工上一筆住宿紀錄的 `end_date`。
+                    - 並以 Excel 上的「入住日」(若無則為今天) 建立一筆**新的**住宿紀錄。
+                    - 這會保留完整的住宿歷史。
+                - **注意：** 此功能**不會**保留 `[未分配房間]` 的原始入住日。
+                """
+            )
+            st.download_button(
+                label="📥 下載匯入範本 (與覆蓋共用)",
+                data=to_excel(accommodation_template_df),
+                file_name="accommodation_import_template.xlsx",
+                key="move_template_download"
+            )
+            uploaded_file_move = st.file_uploader("上傳【異動】Excel 檔案", type=["xlsx"], key="accommodation_uploader_move")
+            
+            if uploaded_file_move:
+                try:
+                    df_move = pd.read_excel(uploaded_file_move, dtype=str).fillna('')
+                    st.markdown("##### 檔案內容預覽：")
+                    st.dataframe(df_move.head())
+                    if st.button("🚀 開始匯入異動資料", type="primary", key="accommodation_import_move_btn"):
+                        with st.spinner("正在處理與匯入異動資料..."):
+                            # 呼叫新的 "move" 函式
+                            success, failed_df = importer_model.batch_import_accommodation_move(df_move)
+                        st.success(f"匯入完成！成功 {success} 筆。")
+                        if not failed_df.empty:
+                            st.error(f"有 {len(failed_df)} 筆資料匯入失敗：")
+                            st.dataframe(failed_df)
+                            st.download_button(
+                                label="📥 下載失敗紀錄報告",
+                                data=to_excel(failed_df),
+                                file_name="accommodation_move_failed_report.xlsx",
+                            )
+                except Exception as e:
+                    st.error(f"處理檔案時發生錯誤：{e}")
 
-        uploaded_accommodation_file = st.file_uploader("上傳【住宿分配】Excel 檔案", type=["xlsx"], key="accommodation_uploader")
-
-        if uploaded_accommodation_file:
-            try:
-                df_accommodation = pd.read_excel(uploaded_accommodation_file, dtype=str).fillna('')
-                st.markdown("##### 檔案內容預覽：")
-                st.dataframe(df_accommodation.head())
-                if st.button("🚀 開始匯入住宿資料", type="primary", key="accommodation_import_btn"):
-                    with st.spinner("正在處理與匯入住宿資料..."):
-                        success, failed_df = importer_model.batch_import_accommodation(df_accommodation)
-                    st.success(f"匯入完成！成功 {success} 筆。")
-                    if not failed_df.empty:
-                        st.error(f"有 {len(failed_df)} 筆資料匯入失敗：")
-                        st.dataframe(failed_df)
-                        st.download_button(
-                            label="📥 下載失敗紀錄報告",
-                            data=to_excel(failed_df),
-                            file_name="accommodation_import_failed_report.xlsx",
-                        )
-            except Exception as e:
-                st.error(f"處理檔案時發生錯誤：{e}")
+        # --- 頁籤 2: 覆蓋 (修正) ---
+        with tab_overwrite:
+            st.info(
+                """
+                **適用時機：** 修正錯誤資料，例如將 `[未分配房間]` 改為正確房號，且**希望保留原始入住日**。
+                - **運作方式：**
+                    - 系統會找到該員工**最新一筆**住宿紀錄 (無論是什麼房號)。
+                    - **直接覆蓋**該筆紀錄的「房號」和「床號」。
+                    - 如果 Excel 的「入住日」**為空**：會保留該筆紀錄**原始的** `start_date` (不會變)。
+                    - 如果 Excel 的「入住日」**有填**：會**連同 `start_date` 一起覆蓋**成 Excel 上的日期。
+                - **警告：** 此功能會修改歷史，不會產生新的住宿紀錄。
+                """
+            )
+            st.download_button(
+                label="📥 下載匯入範本 (與異動共用)",
+                data=to_excel(accommodation_template_df),
+                file_name="accommodation_import_template.xlsx",
+                key="overwrite_template_download"
+            )
+            uploaded_file_overwrite = st.file_uploader("上傳【覆蓋】Excel 檔案", type=["xlsx"], key="accommodation_uploader_overwrite")
+            
+            if uploaded_file_overwrite:
+                try:
+                    df_overwrite = pd.read_excel(uploaded_file_overwrite, dtype=str).fillna('')
+                    st.markdown("##### 檔案內容預覽：")
+                    st.dataframe(df_overwrite.head())
+                    if st.button("🚀 開始匯入覆蓋資料", type="primary", key="accommodation_import_overwrite_btn"):
+                        with st.spinner("正在處理與匯入覆蓋資料..."):
+                            # 呼叫新的 "overwrite" 函式
+                            success, failed_df = importer_model.batch_import_accommodation_overwrite(df_overwrite)
+                        st.success(f"匯入完成！成功 {success} 筆。")
+                        if not failed_df.empty:
+                            st.error(f"有 {len(failed_df)} 筆資料匯入失敗：")
+                            st.dataframe(failed_df)
+                            st.download_button(
+                                label="📥 下載失敗紀錄報告",
+                                data=to_excel(failed_df),
+                                file_name="accommodation_overwrite_failed_report.xlsx",
+                            )
+                except Exception as e:
+                    st.error(f"處理檔案時發生錯誤：{e}")
 
     st.markdown("---")
     with st.container(border=True):

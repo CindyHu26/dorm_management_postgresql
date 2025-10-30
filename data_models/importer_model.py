@@ -514,6 +514,250 @@ def batch_import_accommodation(df: pd.DataFrame):
 
     return success_count, pd.DataFrame(failed_records)
 
+def batch_import_accommodation_move(df: pd.DataFrame):
+    """
+    批次匯入【住宿異動 (換宿)】。
+    此邏輯會結束舊紀錄，並新增一筆新紀錄。
+    """
+    success_count = 0
+    failed_records = []
+    conn = database.get_db_connection()
+    if not conn:
+        error_df = df.copy()
+        error_df['錯誤原因'] = "無法連接到資料庫"
+        return 0, error_df
+        
+    try:
+        from datetime import date, timedelta
+
+        with conn.cursor() as cursor:
+            # --- 預載資料 (Address, Room maps) ---
+            dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, original_address, normalized_address FROM "Dormitories"')
+            original_addr_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
+            normalized_addr_map = {d['normalized_address']: d['id'] for _, d in dorms_df.iterrows()}
+            
+            rooms_df = _execute_query_to_dataframe(conn, 'SELECT id, dorm_id, room_number FROM "Rooms"')
+            room_map = {(r['dorm_id'], str(r['room_number'])): r['id'] for _, r in rooms_df.iterrows()}
+            # --- 預載結束 ---
+
+            for index, row in df.iterrows():
+                try:
+                    # --- 查找 worker_id (共用邏輯) ---
+                    employer = str(row.get('雇主', '')).strip()
+                    name = str(row.get('姓名', '')).strip()
+                    passport = str(row.get('護照號碼 (選填)', '')).strip()
+                    if not employer or not name: raise ValueError("雇主和姓名為必填欄位")
+                    worker_id = None
+                    if passport:
+                        unique_id = f"{employer}_{name}_{passport}"
+                        cursor.execute('SELECT unique_id FROM "Workers" WHERE unique_id = %s', (unique_id,))
+                        worker_record = cursor.fetchone()
+                        if worker_record: worker_id = worker_record['unique_id']
+                        else: raise ValueError(f"找不到工人: {unique_id}")
+                    else:
+                        cursor.execute('SELECT unique_id FROM "Workers" WHERE employer_name = %s AND worker_name = %s', (employer, name))
+                        workers_found = cursor.fetchall()
+                        if len(workers_found) == 1: worker_id = workers_found[0]['unique_id']
+                        elif len(workers_found) == 0: raise ValueError(f"找不到工人: {employer}_{name}")
+                        else: raise ValueError(f"找到 {len(workers_found)} 位同名工人，請提供護照號碼以作區分")
+                    if not worker_id: raise ValueError("無法確定唯一的工人紀錄")
+                    # --- 查找 worker_id 結束 ---
+
+                    # --- 查找 new_room_id (共用邏輯) ---
+                    address = row.get('實際住宿地址')
+                    room_number_str = str(row.get('房號')).strip()
+                    if not address or pd.isna(address) or not room_number_str: raise ValueError("實際住宿地址和房號為必填欄位")
+                    addr_stripped = str(address).strip()
+                    dorm_id = original_addr_map.get(addr_stripped) or normalized_addr_map.get(normalize_taiwan_address(addr_stripped)['full'])
+                    if not dorm_id: raise ValueError(f"找不到宿舍地址: {address}")
+                    room_key = (dorm_id, room_number_str)
+                    new_room_id = room_map.get(room_key)
+                    if not new_room_id:
+                        room_details = {'dorm_id': dorm_id, 'room_number': room_number_str, 'capacity': 4, 'gender_policy': '可混住'}
+                        cols = ', '.join(f'"{k}"' for k in room_details.keys()); vals = ', '.join(['%s'] * len(room_details))
+                        cursor.execute(f'INSERT INTO "Rooms" ({cols}) VALUES ({vals}) RETURNING id', tuple(room_details.values()))
+                        new_room_id = cursor.fetchone()['id']; room_map[room_key] = new_room_id
+                    # --- 查找 new_room_id 結束 ---
+                    
+                    bed_number_val = row.get('床位編號 (選填)')
+                    bed_number = str(bed_number_val).strip() if pd.notna(bed_number_val) and str(bed_number_val).strip() else None
+
+                    # --- "Move" (異動) 邏輯 ---
+                    move_in_date_input = row.get('入住日 (換宿/指定日期時填寫)')
+                    effective_date = pd.to_datetime(move_in_date_input).date() if pd.notna(move_in_date_input) and move_in_date_input else date.today()
+
+                    cursor.execute(
+                        'SELECT ah.id, ah.room_id FROM "AccommodationHistory" ah WHERE ah.worker_unique_id = %s AND ah.end_date IS NULL ORDER BY ah.start_date DESC, ah.id DESC LIMIT 1',
+                        (worker_id,)
+                    )
+                    latest_history = cursor.fetchone()
+
+                    if latest_history and latest_history['room_id'] == new_room_id:
+                        continue # 房間相同，跳過
+                    
+                    if latest_history:
+                        end_date_for_old_record = effective_date - timedelta(days=1)
+                        cursor.execute(
+                            'UPDATE "AccommodationHistory" SET end_date = %s WHERE id = %s', 
+                            (end_date_for_old_record, latest_history['id'])
+                        )
+                    
+                    cursor.execute(
+                        'INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, bed_number) VALUES (%s, %s, %s, %s)',
+                        (worker_id, new_room_id, effective_date, bed_number)
+                    )
+                    # --- 邏輯結束 ---
+                    
+                    cursor.execute('UPDATE "Workers" SET data_source = %s WHERE unique_id = %s', ('手動調整', worker_id))
+                    success_count += 1
+                
+                except Exception as row_error:
+                    row['錯誤原因'] = str(row_error)
+                    failed_records.append(row)
+
+        conn.commit()
+    except Exception as e:
+        if conn: conn.rollback()
+        print(f"批次匯入住宿(異動)時發生嚴重錯誤: {e}")
+        # 處理系統層級錯誤
+        start_index = len(failed_records)
+        remaining_rows_df = df.iloc[start_index:]
+        if not remaining_rows_df.empty:
+            remaining_rows_list = remaining_rows_df.to_dict('records')
+            for row in remaining_rows_list:
+                row['錯誤原因'] = f"系統層級錯誤: {e}"
+            failed_records.extend(remaining_rows_list)
+    finally:
+        if conn: conn.close()
+    return success_count, pd.DataFrame(failed_records)
+
+
+# --- 【核心修改 2】新增 "Overwrite" (覆蓋) 函式 ---
+def batch_import_accommodation_overwrite(df: pd.DataFrame):
+    """
+    批次匯入【住宿覆蓋 (修正)】。
+    此邏輯會直接更新最新一筆紀錄的 room_id, bed_number, 以及 (可選的) start_date。
+    """
+    success_count = 0
+    failed_records = []
+    conn = database.get_db_connection()
+    if not conn:
+        error_df = df.copy()
+        error_df['錯誤原因'] = "無法連接到資料庫"
+        return 0, error_df
+        
+    try:
+        from datetime import date, timedelta
+
+        with conn.cursor() as cursor:
+            # --- 預載資料 (Address, Room maps) ---
+            dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, original_address, normalized_address FROM "Dormitories"')
+            original_addr_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
+            normalized_addr_map = {d['normalized_address']: d['id'] for _, d in dorms_df.iterrows()}
+            
+            rooms_df = _execute_query_to_dataframe(conn, 'SELECT id, dorm_id, room_number FROM "Rooms"')
+            room_map = {(r['dorm_id'], str(r['room_number'])): r['id'] for _, r in rooms_df.iterrows()}
+            # --- 預載結束 ---
+
+            for index, row in df.iterrows():
+                try:
+                    # --- 查找 worker_id (共用邏輯) ---
+                    employer = str(row.get('雇主', '')).strip()
+                    name = str(row.get('姓名', '')).strip()
+                    passport = str(row.get('護照號碼 (選填)', '')).strip()
+                    if not employer or not name: raise ValueError("雇主和姓名為必填欄位")
+                    worker_id = None
+                    if passport:
+                        unique_id = f"{employer}_{name}_{passport}"
+                        cursor.execute('SELECT unique_id FROM "Workers" WHERE unique_id = %s', (unique_id,))
+                        worker_record = cursor.fetchone()
+                        if worker_record: worker_id = worker_record['unique_id']
+                        else: raise ValueError(f"找不到工人: {unique_id}")
+                    else:
+                        cursor.execute('SELECT unique_id FROM "Workers" WHERE employer_name = %s AND worker_name = %s', (employer, name))
+                        workers_found = cursor.fetchall()
+                        if len(workers_found) == 1: worker_id = workers_found[0]['unique_id']
+                        elif len(workers_found) == 0: raise ValueError(f"找不到工人: {employer}_{name}")
+                        else: raise ValueError(f"找到 {len(workers_found)} 位同名工人，請提供護照號碼以作區分")
+                    if not worker_id: raise ValueError("無法確定唯一的工人紀錄")
+                    # --- 查找 worker_id 結束 ---
+
+                    # --- 查找 new_room_id (共用邏輯) ---
+                    address = row.get('實際住宿地址')
+                    room_number_str = str(row.get('房號')).strip()
+                    if not address or pd.isna(address) or not room_number_str: raise ValueError("實際住宿地址和房號為必填欄位")
+                    addr_stripped = str(address).strip()
+                    dorm_id = original_addr_map.get(addr_stripped) or normalized_addr_map.get(normalize_taiwan_address(addr_stripped)['full'])
+                    if not dorm_id: raise ValueError(f"找不到宿舍地址: {address}")
+                    room_key = (dorm_id, room_number_str)
+                    new_room_id = room_map.get(room_key)
+                    if not new_room_id:
+                        room_details = {'dorm_id': dorm_id, 'room_number': room_number_str, 'capacity': 4, 'gender_policy': '可混住'}
+                        cols = ', '.join(f'"{k}"' for k in room_details.keys()); vals = ', '.join(['%s'] * len(room_details))
+                        cursor.execute(f'INSERT INTO "Rooms" ({cols}) VALUES ({vals}) RETURNING id', tuple(room_details.values()))
+                        new_room_id = cursor.fetchone()['id']; room_map[room_key] = new_room_id
+                    # --- 查找 new_room_id 結束 ---
+                    
+                    bed_number_val = row.get('床位編號 (選填)')
+                    bed_number = str(bed_number_val).strip() if pd.notna(bed_number_val) and str(bed_number_val).strip() else None
+                    
+                    # --- "Overwrite" (覆蓋) 邏輯 ---
+                    move_in_date_input = row.get('入住日 (換宿/指定日期時填寫)')
+                    effective_date_from_excel = pd.to_datetime(move_in_date_input).date() if pd.notna(move_in_date_input) and move_in_date_input else None
+
+                    cursor.execute(
+                        'SELECT ah.id, ah.room_id FROM "AccommodationHistory" ah WHERE ah.worker_unique_id = %s AND ah.end_date IS NULL ORDER BY ah.start_date DESC, ah.id DESC LIMIT 1',
+                        (worker_id,)
+                    )
+                    latest_history = cursor.fetchone()
+                    
+                    if not latest_history:
+                        # 如果沒有最新紀錄 (例如新員工)，則執行 "新增"
+                        start_date = effective_date_from_excel if effective_date_from_excel else date.today()
+                        cursor.execute(
+                            'INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, bed_number) VALUES (%s, %s, %s, %s)',
+                            (worker_id, new_room_id, start_date, bed_number)
+                        )
+                    else:
+                        # 如果有最新紀錄，則執行 "更新"
+                        latest_history_id = latest_history['id']
+                        
+                        # 準備要更新的欄位
+                        updates = {"room_id": new_room_id, "bed_number": bed_number}
+                        # 只有當 Excel 中明確提供了日期時，才更新 start_date
+                        if effective_date_from_excel:
+                            updates["start_date"] = effective_date_from_excel
+                        
+                        # 組合 SQL
+                        fields = ', '.join([f'"{key}" = %s' for key in updates.keys()])
+                        values = list(updates.values()) + [latest_history_id]
+                        update_sql = f'UPDATE "AccommodationHistory" SET {fields} WHERE id = %s'
+                        cursor.execute(update_sql, tuple(values))
+                    # --- 邏輯結束 ---
+
+                    cursor.execute('UPDATE "Workers" SET data_source = %s WHERE unique_id = %s', ('手動調整', worker_id))
+                    success_count += 1
+                
+                except Exception as row_error:
+                    row['錯誤原因'] = str(row_error)
+                    failed_records.append(row)
+
+        conn.commit()
+    except Exception as e:
+        if conn: conn.rollback()
+        print(f"批次匯入住宿(覆蓋)時發生嚴重錯誤: {e}")
+        # 處理系統層級錯誤
+        start_index = len(failed_records)
+        remaining_rows_df = df.iloc[start_index:]
+        if not remaining_rows_df.empty:
+            remaining_rows_list = remaining_rows_df.to_dict('records')
+            for row in remaining_rows_list:
+                row['錯誤原因'] = f"系統層級錯誤: {e}"
+            failed_records.extend(remaining_rows_list)
+    finally:
+        if conn: conn.close()
+    return success_count, pd.DataFrame(failed_records)
+
 def batch_import_leases(df: pd.DataFrame):
     """
     【v1.1 修改版】批次匯入【房租合約】的核心邏輯。
