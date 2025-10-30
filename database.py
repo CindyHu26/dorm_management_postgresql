@@ -219,6 +219,7 @@ def create_all_tables_and_indexes():
             CREATE TABLE IF NOT EXISTS "Leases" (
                 "id" SERIAL PRIMARY KEY, "dorm_id" INTEGER NOT NULL, 
                 "vendor_id" INTEGER, 
+                "payer" VARCHAR(50) DEFAULT '我司',
                 "contract_item" VARCHAR(100) DEFAULT '房租',
                 "lease_start_date" DATE,
                 "lease_end_date" DATE, "monthly_rent" INTEGER, "deposit" INTEGER,

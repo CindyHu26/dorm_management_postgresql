@@ -228,7 +228,7 @@ def get_employer_financial_summary(employer_names: list, year_month: str):
                 LEFT JOIN (
                     SELECT l.dorm_id, SUM(l.monthly_rent) as contract_expense
                     FROM "Leases" l JOIN "Dormitories" d_filter ON l.dorm_id = d_filter.id CROSS JOIN DateParams dp
-                    WHERE d_filter.rent_payer = '我司' AND l.lease_start_date <= dp.last_day_of_month AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month) GROUP BY l.dorm_id
+                    WHERE l.payer = '我司' AND l.lease_start_date <= dp.last_day_of_month AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month) GROUP BY l.dorm_id
                 ) l ON d.id = l.dorm_id
                 LEFT JOIN (
                     SELECT b.dorm_id,
@@ -378,7 +378,7 @@ def get_employer_financial_summary_annual(employer_names: list, year: int):
             AnnualRent AS (
                 SELECT l.dorm_id, SUM(COALESCE(l.monthly_rent, 0) * ((LEAST(COALESCE(l.lease_end_date, dp.last_day_of_year), dp.last_day_of_year)::date - GREATEST(l.lease_start_date, dp.first_day_of_year)::date + 1) / 30.4375)) as total_rent
                 FROM "Leases" l JOIN "Dormitories" d ON l.dorm_id = d.id CROSS JOIN DateParams dp
-                WHERE d.rent_payer = '我司' AND l.lease_start_date <= dp.last_day_of_year AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_year) GROUP BY l.dorm_id
+                WHERE l.payer = '我司' AND l.lease_start_date <= dp.last_day_of_year AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_year) GROUP BY l.dorm_id
             ),
             AnnualUtilities AS (
                  SELECT b.dorm_id, SUM(COALESCE(b.amount, 0) * (LEAST(b.bill_end_date, dp.last_day_of_year)::date - GREATEST(b.bill_start_date, dp.first_day_of_year)::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)) as total_utils
@@ -545,7 +545,7 @@ def get_employer_financial_details_for_dorm(employer_names: list, dorm_id: int, 
             SELECT
                 l.contract_item as "費用項目",
                 SUM(ROUND(l.monthly_rent * ((LEAST(COALESCE(l.lease_end_date, dp.end_date), dp.end_date)::date - GREATEST(l.lease_start_date, dp.start_date)::date + 1) / 30.4375)))::numeric as "原始總額",
-                d.rent_payer as "支付方"
+                l.payer as "支付方"
             FROM "Leases" l JOIN "Dormitories" d ON l.dorm_id = d.id CROSS JOIN DateParams dp
             WHERE l.dorm_id = %(dorm_id)s AND l.lease_start_date <= dp.end_date AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.start_date) GROUP BY l.contract_item, d.rent_payer
             UNION ALL

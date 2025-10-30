@@ -15,7 +15,7 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_leases_for_view(dorm_id_filter=None):
     """
-    【v1.1 項目擴充版】查詢合約，並顯示合約項目。
+    【v1.2 支付方修改版】查詢合約，並顯示合約項目與支付方。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -25,6 +25,7 @@ def get_leases_for_view(dorm_id_filter=None):
                 l.id,
                 d.original_address AS "宿舍地址",
                 l.contract_item AS "合約項目",
+                l.payer AS "支付方",
                 v.vendor_name AS "房東/廠商", 
                 l.lease_start_date AS "合約起始日",
                 l.lease_end_date AS "合約截止日",

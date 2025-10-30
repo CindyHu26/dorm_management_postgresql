@@ -25,18 +25,37 @@ def render():
             vendor_options = {v['id']: f"{v['服務項目']} - {v['廠商名稱']}" for _, v in vendors.iterrows()} if not vendors.empty else {}
             
             selected_dorm_id = st.selectbox("選擇宿舍地址*", options=dorm_options.keys(), format_func=lambda x: dorm_options.get(x, "未知宿舍"))
-            
+
+            default_payer = '我司' # 預設值
+            if selected_dorm_id:
+                # 獲取所選宿舍的詳細資訊
+                dorm_details = dormitory_model.get_dorm_details_by_id(selected_dorm_id)
+                if dorm_details:
+                    # 獲取 'rent_payer' (房租支付方)
+                    default_payer = dorm_details.get('rent_payer', '我司')
+
+            payer_options = ["我司", "雇主", "工人"]
+            try:
+                # 找出預設支付方在選項中的索引
+                default_payer_index = payer_options.index(default_payer)
+            except ValueError:
+                default_payer_index = 0 # 如果找不到，預設為 "我司"
+
             # --- 新增廠商選擇器和備註欄位 ---
-            c1_item, c2_item, c3_item = st.columns(3) 
+            c1_item, c2_item, c3_item, c4_item = st.columns(4) # 【修改】改為 4 欄
             item_options = ["房租", "清運費", "其他(手動輸入)"]
             selected_item = c1_item.selectbox("合約項目*", options=item_options)
             custom_item = c1_item.text_input("自訂項目名稱", help="若上方選擇「其他(手動輸入)」，請在此處填寫")
             
             monthly_rent = c2_item.number_input("每月固定金額*", min_value=0, step=1000)
 
-            # 將廠商選擇器放在第三欄
             selected_vendor_id = c3_item.selectbox("房東/廠商 (選填)", options=[None] + list(vendor_options.keys()), format_func=lambda x: "未指定" if x is None else vendor_options.get(x))
 
+            payer = c4_item.selectbox(
+                "支付方*", 
+                payer_options, 
+                index=default_payer_index # 使用我們計算好的索引
+            )
             c1, c2 = st.columns(2)
             lease_start_date = c1.date_input("合約起始日", value=None, min_value=thirty_years_ago, max_value=thirty_years_from_now)
             with c2:
@@ -58,6 +77,7 @@ def render():
                     details = {
                         "dorm_id": selected_dorm_id,
                         "vendor_id": selected_vendor_id,
+                        "payer": payer,
                         "contract_item": final_item,
                         "lease_start_date": str(lease_start_date) if lease_start_date else None,
                         "lease_end_date": str(lease_end_date) if lease_end_date else None,
@@ -90,7 +110,8 @@ def render():
     
     # --- 顯示的欄位名稱 ---
     st.dataframe(leases_df, width="stretch", hide_index=True, column_config={
-        "月費金額": st.column_config.NumberColumn(format="NT$ %d")
+        "月費金額": st.column_config.NumberColumn(format="NT$ %d"),
+        "id": None
     })
     
     st.markdown("---")
@@ -128,8 +149,7 @@ def render():
                 with st.form(f"edit_lease_form_{selected_lease_id}"):
                     st.text_input("宿舍地址", value=dorm_options.get(lease_details['dorm_id'], "未知"), disabled=True)
                     
-                    # --- 新增廠商和備註的編輯欄位 ---
-                    ec1_item, ec2_item, ec3_item = st.columns(3) # 改為 3 欄
+                    ec1_item, ec2_item, ec3_item, ec4_item = st.columns(4) # 改為 3 欄
                     current_item = lease_details.get('contract_item', '')
                     item_options = ["房租", "清運費", "其他(手動輸入)"] # 確保 item_options 存在
                     if current_item in item_options:
@@ -150,6 +170,14 @@ def render():
                         options=[None] + list(vendor_options.keys()), 
                         index=([None] + list(vendor_options.keys())).index(current_vendor_id) if current_vendor_id in [None] + list(vendor_options.keys()) else 0,
                         format_func=lambda x: "未指定" if x is None else vendor_options.get(x)
+                    )
+
+                    payer_options = ["我司", "雇主", "工人"]
+                    current_payer = lease_details.get('payer', '我司')
+                    e_payer = ec4_item.selectbox(
+                        "支付方*", 
+                        payer_options, 
+                        index=payer_options.index(current_payer) if current_payer in payer_options else 0
                     )
 
                     ec1, ec2 = st.columns(2)
@@ -178,6 +206,7 @@ def render():
                         # --- 將新欄位加入 updated_details 字典 ---
                         updated_details = {
                             "vendor_id": e_selected_vendor_id, 
+                            "payer": e_payer,
                             "contract_item": e_final_item,
                             "lease_start_date": str(e_lease_start_date) if e_lease_start_date else None,
                             "lease_end_date": final_end_date,

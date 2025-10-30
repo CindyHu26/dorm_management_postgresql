@@ -314,7 +314,7 @@ def get_annual_financial_summary_report(year: int):
             TotalExpense AS (
                 SELECT l.dorm_id, SUM(COALESCE(l.monthly_rent, 0) * ((LEAST(COALESCE(l.lease_end_date, dp.end_date), dp.end_date)::date - GREATEST(l.lease_start_date, dp.start_date)::date + 1) / 30.4375)) as expense
                 FROM "Leases" l JOIN "Dormitories" d ON l.dorm_id = d.id CROSS JOIN DateParams dp
-                WHERE l.lease_start_date <= dp.end_date AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.start_date) AND d.rent_payer = '我司' GROUP BY l.dorm_id
+                WHERE l.lease_start_date <= dp.end_date AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.start_date) AND l.payer = '我司' GROUP BY l.dorm_id
                 UNION ALL
                 SELECT dorm_id, SUM(COALESCE(amount, 0) * (LEAST(bill_end_date, dp.end_date)::date - GREATEST(bill_start_date, dp.start_date)::date + 1) / NULLIF((bill_end_date - bill_start_date + 1), 0))
                 FROM "UtilityBills" CROSS JOIN DateParams dp WHERE bill_start_date <= dp.end_date AND bill_end_date >= dp.start_date AND payer = '我司' GROUP BY dorm_id
@@ -428,7 +428,7 @@ def get_employer_profit_loss_report(employer_names: list, year_month: str):
                         WHERE l.lease_start_date <= dp.last_day_of_month 
                           -- 【核心修正】確保無截止日的合約也能被納入計算
                           AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month)
-                          AND d_filter.rent_payer = '我司'
+                          AND l.payer = '我司'
                     ) as sub_leases WHERE rn = 1
                 ) l ON d.id = l.dorm_id
                 LEFT JOIN (

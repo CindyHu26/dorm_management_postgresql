@@ -100,12 +100,11 @@ def get_financial_dashboard_data(year_month: str):
             MonthlyContracts AS ( 
                 SELECT l.dorm_id, SUM(l.monthly_rent) as contract_expense
                 FROM "Leases" l
-                JOIN "Dormitories" d ON l.dorm_id = d.id
                 CROSS JOIN DateParams dp
-                WHERE d.rent_payer = '我司'
+                WHERE l.payer = '我司' -- 【核心修改】d.rent_payer -> l.payer
                   AND l.lease_start_date <= dp.last_day_of_month
                   AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month)
-                GROUP BY l.dorm_id -- 【核心修正】重新加入此 GROUP BY 子句
+                GROUP BY l.dorm_id
             ),
             ProratedUtilities AS (
                 SELECT b.dorm_id,

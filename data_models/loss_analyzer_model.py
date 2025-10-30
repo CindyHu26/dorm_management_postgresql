@@ -49,8 +49,9 @@ def get_loss_making_dorms(period: str):
                 AnnualExpenses AS (
                     -- 合約支出 (不再只是租金)
                     SELECT l.dorm_id, SUM(l.monthly_rent * ((LEAST(COALESCE(l.lease_end_date, (SELECT end_date FROM DateRange)), (SELECT end_date FROM DateRange))::date - GREATEST(l.lease_start_date, (SELECT start_date FROM DateRange))::date) / 30.4375)) as total_expense
-                    FROM "Leases" l JOIN "Dormitories" d ON l.dorm_id = d.id CROSS JOIN DateRange dr 
-                    WHERE d.rent_payer = '我司' AND l.lease_start_date <= dr.end_date AND (l.lease_end_date IS NULL OR l.lease_end_date >= dr.start_date) GROUP BY l.dorm_id
+                    FROM "Leases" l CROSS JOIN DateRange dr 
+                    WHERE l.payer = '我司' -- 【核心修改】d.rent_payer -> l.payer
+                      AND l.lease_start_date <= dr.end_date AND (l.lease_end_date IS NULL OR l.lease_end_date >= dr.start_date) GROUP BY l.dorm_id
                     UNION ALL
                     -- 雜費支出
                     SELECT b.dorm_id, SUM(b.amount::decimal * ((LEAST(b.bill_end_date, (SELECT end_date FROM DateRange))::date - GREATEST(b.bill_start_date, (SELECT start_date FROM DateRange))::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)::decimal))
@@ -92,7 +93,7 @@ def get_loss_making_dorms(period: str):
                 DormContracts AS ( -- 從 DormRent 改名
                     SELECT l.dorm_id, SUM(l.monthly_rent) as "合約支出" -- 從 AVG 改 SUM 以處理多筆合約
                     FROM "Leases" l JOIN "Dormitories" d ON l.dorm_id = d.id
-                    WHERE d.rent_payer = '我司' 
+                    WHERE l.payer = '我司' -- 【核心修改】d.rent_payer -> l.payer 
                       AND l.lease_start_date <= (TO_DATE('{period}', 'YYYY-MM') + INTERVAL '1 month - 1 day')::date
                       AND (l.lease_end_date IS NULL OR l.lease_end_date >= TO_DATE('{period}', 'YYYY-MM'))
                     GROUP BY l.dorm_id
@@ -157,7 +158,7 @@ def get_daily_loss_making_dorms(period: str):
                 DailyExpenses AS (
                     SELECT l.dorm_id, SUM(l.monthly_rent * ((LEAST(COALESCE(l.lease_end_date, (SELECT end_date FROM DateRange)), (SELECT end_date FROM DateRange))::date - GREATEST(l.lease_start_date, (SELECT start_date FROM DateRange))::date) / 30.4375)) as total_expense
                     FROM "Leases" l JOIN "Dormitories" d ON l.dorm_id = d.id CROSS JOIN DateRange dr 
-                    WHERE d.rent_payer = '我司' AND l.lease_start_date <= dr.end_date AND (l.lease_end_date IS NULL OR l.lease_end_date >= dr.start_date) GROUP BY l.dorm_id
+                    WHERE l.payer = '我司' AND l.lease_start_date <= dr.end_date AND (l.lease_end_date IS NULL OR l.lease_end_date >= dr.start_date) GROUP BY l.dorm_id
                     UNION ALL
                     SELECT b.dorm_id, SUM(b.amount::decimal * ((LEAST(b.bill_end_date, (SELECT end_date FROM DateRange))::date - GREATEST(b.bill_start_date, (SELECT start_date FROM DateRange))::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)::decimal))
                     FROM "UtilityBills" b JOIN "Dormitories" d ON b.dorm_id = d.id CROSS JOIN DateRange dr 

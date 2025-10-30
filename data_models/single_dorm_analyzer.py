@@ -167,7 +167,7 @@ def get_expense_summary(dorm_ids: list, year_month: str):
             WHERE d.id = ANY(%(dorm_ids)s) -- 【核心修改】
               AND l.lease_start_date <= dp.last_day_of_month
               AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month)
-            GROUP BY l.contract_item, d.rent_payer
+            GROUP BY l.contract_item, l.payer
 
             UNION ALL
             
@@ -547,7 +547,7 @@ def get_monthly_financial_trend(dorm_ids: list):
             MonthlyContract AS (
                 SELECT TO_CHAR(dp.month_start, 'YYYY-MM') as year_month, SUM(l.monthly_rent) as contract_expense
                 FROM "Leases" l JOIN "Dormitories" d ON l.dorm_id = d.id JOIN DateParams dp ON l.lease_start_date <= dp.month_end AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.month_start)
-                WHERE l.dorm_id = ANY(%(dorm_ids)s) AND d.rent_payer = '我司' GROUP BY 1
+                WHERE l.dorm_id = ANY(%(dorm_ids)s) AND l.payer = '我司' GROUP BY 1
             ),
             MonthlyUtilities AS (
                  SELECT TO_CHAR(dp.month_start, 'YYYY-MM') as year_month,
