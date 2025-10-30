@@ -546,16 +546,26 @@ def get_employer_financial_details_for_dorm(employer_names: list, dorm_id: int, 
                 l.contract_item as "費用項目",
                 SUM(ROUND(l.monthly_rent * ((LEAST(COALESCE(l.lease_end_date, dp.end_date), dp.end_date)::date - GREATEST(l.lease_start_date, dp.start_date)::date + 1) / 30.4375)))::numeric as "原始總額",
                 l.payer as "支付方"
-            FROM "Leases" l JOIN "Dormitories" d ON l.dorm_id = d.id CROSS JOIN DateParams dp
-            WHERE l.dorm_id = %(dorm_id)s AND l.lease_start_date <= dp.end_date AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.start_date) GROUP BY l.contract_item, d.rent_payer
+            FROM "Leases" l 
+            -- 【修改】不再需要 JOIN Dormitories
+            CROSS JOIN DateParams dp
+            WHERE l.dorm_id = %(dorm_id)s 
+              AND l.lease_start_date <= dp.end_date 
+              AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.start_date) 
+            -- 【核心修改】將 GROUP BY d.rent_payer 改為 l.payer
+            GROUP BY l.contract_item, l.payer
+            
             UNION ALL
+            
             SELECT
                 b.bill_type || CASE WHEN b.is_pass_through THEN ' (代收代付)' ELSE '' END,
                 SUM(ROUND(b.amount::decimal * (LEAST(b.bill_end_date, dp.end_date)::date - GREATEST(b.bill_start_date, dp.start_date)::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)))::numeric,
                 CASE WHEN b.is_pass_through THEN '代收代付' WHEN b.bill_type IN ('水費', '電費') THEN d.utilities_payer ELSE b.payer END as "支付方"
             FROM "UtilityBills" b JOIN "Dormitories" d ON b.dorm_id = d.id CROSS JOIN DateParams dp
             WHERE b.dorm_id = %(dorm_id)s AND b.bill_start_date <= dp.end_date AND b.bill_end_date >= dp.start_date GROUP BY b.bill_type, b.is_pass_through, d.utilities_payer, b.payer
+            
             UNION ALL
+            
             SELECT
                 expense_item || ' (攤銷)',
                 SUM(ROUND((total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0)) * GREATEST(0, (EXTRACT(YEAR FROM age(LEAST(TO_DATE(amortization_end_month, 'YYYY-MM'), dp.end_date), GREATEST(TO_DATE(amortization_start_month, 'YYYY-MM'), dp.start_date)))*12 + EXTRACT(MONTH FROM age(LEAST(TO_DATE(amortization_end_month, 'YYYY-MM'), dp.end_date), GREATEST(TO_DATE(amortization_start_month, 'YYYY-MM'), dp.start_date))) + 1)))::numeric), '我司'

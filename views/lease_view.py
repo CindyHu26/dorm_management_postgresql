@@ -16,83 +16,87 @@ def render():
     thirty_years_from_now = today + relativedelta(years=30)
 
     with st.expander("➕ 新增長期合約"):
-        with st.form("new_lease_form", clear_on_submit=True):
-            dorms = dormitory_model.get_dorms_for_selection() or []
-            dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms}
-            
-            # --- 預先載入廠商列表 ---
-            vendors = vendor_model.get_vendors_for_view()
-            vendor_options = {v['id']: f"{v['服務項目']} - {v['廠商名稱']}" for _, v in vendors.iterrows()} if not vendors.empty else {}
-            
-            selected_dorm_id = st.selectbox("選擇宿舍地址*", options=dorm_options.keys(), format_func=lambda x: dorm_options.get(x, "未知宿舍"))
+        dorms = dormitory_model.get_dorms_for_selection() or []
+        dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms}
+        
+        selected_dorm_id = st.selectbox(
+            "選擇宿舍地址*", 
+            options=dorm_options.keys(), 
+            format_func=lambda x: dorm_options.get(x, "未知宿舍"),
+            index=None, # 預設不選
+            placeholder="請先選擇宿舍..."
+        )
+        
+        # --- 【核心修改 2】計算預設值的邏輯移到 Form 外面 ---
+        default_payer = '我司' # 預設值
+        if selected_dorm_id:
+            dorm_details = dormitory_model.get_dorm_details_by_id(selected_dorm_id)
+            if dorm_details:
+                default_payer = dorm_details.get('rent_payer', '我司')
 
-            default_payer = '我司' # 預設值
-            if selected_dorm_id:
-                # 獲取所選宿舍的詳細資訊
-                dorm_details = dormitory_model.get_dorm_details_by_id(selected_dorm_id)
-                if dorm_details:
-                    # 獲取 'rent_payer' (房租支付方)
-                    default_payer = dorm_details.get('rent_payer', '我司')
+        payer_options = ["我司", "雇主", "工人"]
+        try:
+            default_payer_index = payer_options.index(default_payer)
+        except ValueError:
+            default_payer_index = 0
 
-            payer_options = ["我司", "雇主", "工人"]
-            try:
-                # 找出預設支付方在選項中的索引
-                default_payer_index = payer_options.index(default_payer)
-            except ValueError:
-                default_payer_index = 0 # 如果找不到，預設為 "我司"
+        # 只有在選了宿舍後才顯示表單
+        if selected_dorm_id:
+            with st.form("new_lease_form", clear_on_submit=True):
+                # 預載廠商列表
+                vendors = vendor_model.get_vendors_for_view()
+                vendor_options = {v['id']: f"{v['服務項目']} - {v['廠商名稱']}" for _, v in vendors.iterrows()} if not vendors.empty else {}
+                
+                # --- 【核心修改 3】將支付方 selectbox 的 index 設為 default_payer_index ---
+                c1_item, c2_item, c3_item, c4_item = st.columns(4) 
+                item_options = ["房租", "清運費", "其他(手動輸入)"]
+                selected_item = c1_item.selectbox("合約項目*", options=item_options)
+                custom_item = c1_item.text_input("自訂項目名稱", help="若上方選擇「其他(手動輸入)」，請在此處填寫")
+                
+                monthly_rent = c2_item.number_input("每月固定金額*", min_value=0, step=1000)
+                selected_vendor_id = c3_item.selectbox("房東/廠商 (選填)", options=[None] + list(vendor_options.keys()), format_func=lambda x: "未指定" if x is None else vendor_options.get(x))
+                payer = c4_item.selectbox(
+                    "支付方*", 
+                    payer_options, 
+                    index=default_payer_index # <-- 使用計算好的索引
+                )
+                c1, c2 = st.columns(2)
+                lease_start_date = c1.date_input("合約起始日", value=None, min_value=thirty_years_ago, max_value=thirty_years_from_now)
+                with c2:
+                    lease_end_date = st.date_input("合約截止日 (可留空)", value=None, min_value=thirty_years_ago, max_value=thirty_years_from_now)
+                    st.write("若為長期合約，此處請留空。")
+                
+                c3, c4 = st.columns([1, 3])
+                deposit = c3.number_input("押金", min_value=0, step=1000)
+                utilities_included = c4.checkbox("費用是否包含水電 (通常用於房租)")
 
-            # --- 新增廠商選擇器和備註欄位 ---
-            c1_item, c2_item, c3_item, c4_item = st.columns(4) # 【修改】改為 4 欄
-            item_options = ["房租", "清運費", "其他(手動輸入)"]
-            selected_item = c1_item.selectbox("合約項目*", options=item_options)
-            custom_item = c1_item.text_input("自訂項目名稱", help="若上方選擇「其他(手動輸入)」，請在此處填寫")
-            
-            monthly_rent = c2_item.number_input("每月固定金額*", min_value=0, step=1000)
+                notes = st.text_area("合約備註")
 
-            selected_vendor_id = c3_item.selectbox("房東/廠商 (選填)", options=[None] + list(vendor_options.keys()), format_func=lambda x: "未指定" if x is None else vendor_options.get(x))
-
-            payer = c4_item.selectbox(
-                "支付方*", 
-                payer_options, 
-                index=default_payer_index # 使用我們計算好的索引
-            )
-            c1, c2 = st.columns(2)
-            lease_start_date = c1.date_input("合約起始日", value=None, min_value=thirty_years_ago, max_value=thirty_years_from_now)
-            with c2:
-                lease_end_date = st.date_input("合約截止日 (可留空)", value=None, min_value=thirty_years_ago, max_value=thirty_years_from_now)
-                st.write("若為長期合約，此處請留空。")
-            
-            c3, c4 = st.columns([1, 3])
-            deposit = c3.number_input("押金", min_value=0, step=1000)
-            utilities_included = c4.checkbox("費用是否包含水電 (通常用於房租)")
-
-            notes = st.text_area("合約備註")
-
-            submitted = st.form_submit_button("儲存新合約")
-            if submitted:
-                final_item = custom_item if selected_item == "其他(手動輸入)" and custom_item else selected_item
-                if not final_item:
-                    st.error("「合約項目」為必填欄位！")
-                else:
-                    details = {
-                        "dorm_id": selected_dorm_id,
-                        "vendor_id": selected_vendor_id,
-                        "payer": payer,
-                        "contract_item": final_item,
-                        "lease_start_date": str(lease_start_date) if lease_start_date else None,
-                        "lease_end_date": str(lease_end_date) if lease_end_date else None,
-                        "monthly_rent": monthly_rent,
-                        "deposit": deposit,
-                        "utilities_included": utilities_included,
-                        "notes": notes
-                    }
-                    success, message, _ = lease_model.add_lease(details)
-                    if success:
-                        st.success(message)
-                        st.cache_data.clear()
-                        st.rerun()
+                submitted = st.form_submit_button("儲存新合約")
+                if submitted:
+                    final_item = custom_item if selected_item == "其他(手動輸入)" and custom_item else selected_item
+                    if not final_item:
+                        st.error("「合約項目」為必填欄位！")
                     else:
-                        st.error(message)
+                        details = {
+                            "dorm_id": selected_dorm_id, # selected_dorm_id 現在來自 Form 外部
+                            "vendor_id": selected_vendor_id,
+                            "payer": payer,
+                            "contract_item": final_item,
+                            "lease_start_date": str(lease_start_date) if lease_start_date else None,
+                            "lease_end_date": str(lease_end_date) if lease_end_date else None,
+                            "monthly_rent": monthly_rent,
+                            "deposit": deposit,
+                            "utilities_included": utilities_included,
+                            "notes": notes
+                        }
+                        success, message, _ = lease_model.add_lease(details)
+                        if success:
+                            st.success(message)
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.error(message)
 
     st.markdown("---")
 

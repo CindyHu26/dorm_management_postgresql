@@ -29,7 +29,7 @@ def get_dorm_basic_info(dorm_id: int):
         with conn.cursor() as cursor:
             query = """
                 SELECT 
-                    d.primary_manager, d.rent_payer, d.utilities_payer,
+                    d.primary_manager, l.payer, d.utilities_payer,
                     l.lease_start_date, l.lease_end_date, l.monthly_rent
                 FROM "Dormitories" d
                 LEFT JOIN "Leases" l ON d.id = l.dorm_id
@@ -159,7 +159,7 @@ def get_expense_summary(dorm_ids: list, year_month: str):
             )
             -- 1. 長期合約支出
             SELECT 
-                l.contract_item || ' (' || d.rent_payer || '支付)' AS "費用項目", 
+                l.contract_item || ' (' || l.payer || '支付)' AS "費用項目", 
                 SUM(l.monthly_rent) AS "金額"
             FROM "Dormitories" d
             JOIN "Leases" l ON d.id = l.dorm_id
