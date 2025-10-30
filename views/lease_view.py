@@ -114,8 +114,7 @@ def render():
     
     # --- 顯示的欄位名稱 ---
     st.dataframe(leases_df, width="stretch", hide_index=True, column_config={
-        "月費金額": st.column_config.NumberColumn(format="NT$ %d"),
-        "id": None
+        "月費金額": st.column_config.NumberColumn(format="NT$ %d")
     })
     
     st.markdown("---")
