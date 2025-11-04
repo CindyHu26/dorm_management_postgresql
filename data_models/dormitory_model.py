@@ -412,3 +412,21 @@ def add_new_dormitory(details: dict):
         return False, f"新增宿舍時發生錯誤: {e}"
     finally:
         if conn: conn.close()
+
+def get_distinct_person_in_charge():
+    """獲取所有不重複的「負責人」列表，用於下拉選單。"""
+    conn = database.get_db_connection()
+    if not conn: return []
+    try:
+        with conn.cursor() as cursor:
+            # 查詢所有不為空值且不為空字串的
+            query = 'SELECT DISTINCT person_in_charge FROM "Dormitories" WHERE person_in_charge IS NOT NULL AND person_in_charge != \'\' ORDER BY person_in_charge'
+            cursor.execute(query)
+            records = cursor.fetchall()
+            # 將查詢結果 (字典列表) 轉換為 名字的列表
+            return [row['person_in_charge'] for row in records]
+    except Exception as e:
+        print(f"查詢負責人列表時發生錯誤: {e}")
+        return [] # 發生錯誤時回傳空列表
+    finally:
+        if conn: conn.close()

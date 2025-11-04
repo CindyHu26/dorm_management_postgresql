@@ -1,4 +1,4 @@
-# views/dormitory_view.py (房東關聯版)
+# views/dormitory_view.py
 
 import streamlit as st
 import pandas as pd
@@ -6,9 +6,16 @@ from datetime import datetime
 from data_models import dormitory_model, vendor_model # 匯入 vendor_model
 from data_processor import normalize_taiwan_address
 
+# --- 修改 1：匯入 cache_data ---
 @st.cache_data
 def get_dorms_df(search=None):
     return dormitory_model.get_all_dorms_for_view(search_term=search)
+
+# --- 修改 2：建立一個函式來快取負責人選項 ---
+@st.cache_data
+def get_person_options():
+    # 呼叫我們在
+    return dormitory_model.get_distinct_person_in_charge()
 
 def render():
     """渲染「地址管理」頁面的所有 Streamlit UI 元件。"""
@@ -38,6 +45,11 @@ def render():
     # 我們特別為房東建立一個篩選過的選項
     landlord_options = {v['id']: v['廠商名稱'] for _, v in vendors[vendors['服務項目'] == '房東'].iterrows()} if not vendors.empty else {}
 
+    # --- 修改 3：在 render 函式開頭載入選項 ---
+    person_options = get_person_options()
+    # 建立一個包含「空白」選項的完整列表
+    all_person_options = [""] + person_options
+
     # --- 新增宿舍區塊 ---
     with st.expander("➕ 新增宿舍地址", expanded=False):
         with st.form("new_dorm_form", clear_on_submit=True):
@@ -46,7 +58,7 @@ def render():
             legacy_code = c1.text_input("宿舍編號 (選填)")
             original_address = c1.text_input("原始地址 (必填)")
             dorm_name = c2.text_input("宿舍自訂名稱 (例如: 中山A棟)")
-            person_in_charge = c3.text_input("負責人")
+            person_in_charge = c3.selectbox("負責人", options=all_person_options, index=0)
             
             # --- 【核心修改 1】新增房東下拉選單 ---
             landlord_id = c2.selectbox("房東 (請先至廠商資料建立)", options=[None] + list(landlord_options.keys()), format_func=lambda x: "未指定" if x is None else landlord_options.get(x))
@@ -85,7 +97,10 @@ def render():
                     }
                     success, message = dormitory_model.add_new_dormitory(dorm_details)
                     if success:
-                        st.success(message); get_dorms_df.clear(); st.rerun()
+                        st.success(message)
+                        get_dorms_df.clear()
+                        get_person_options.clear() # --- 修改 6：清除快取 ---
+                        st.rerun()
                     else:
                         st.error(message)
 
@@ -131,8 +146,24 @@ def render():
                         
                         # --- 【核心修改 3】在編輯表單中新增房東下拉選單 ---
                         edit_c3, edit_c4 = st.columns(2)
-                        person_in_charge = edit_c3.text_input("負責人", value=dorm_details.get('person_in_charge', ''))
+                        current_person = dorm_details.get('person_in_charge', '')
                         
+                        # 準備一個包含目前值（即使它不在標準列表內）的選項列表
+                        edit_person_options = all_person_options[:] # 複製列表
+                        if current_person and current_person not in edit_person_options:
+                            edit_person_options.append(current_person)
+                            
+                        try:
+                            person_index = edit_person_options.index(current_person)
+                        except ValueError:
+                            person_index = 0 # 預設選空白
+                            
+                        person_in_charge = edit_c3.selectbox(
+                            "負責人", 
+                            options=edit_person_options, 
+                            index=person_index
+                        )
+
                         current_landlord_id = dorm_details.get('landlord_id')
                         landlord_keys = [None] + list(landlord_options.keys())
                         landlord_index = landlord_keys.index(current_landlord_id) if current_landlord_id in landlord_keys else 0
@@ -171,7 +202,10 @@ def render():
                             }
                             success, message = dormitory_model.update_dormitory_details(dorm_id, updated_details)
                             if success:
-                                st.success(message); get_dorms_df.clear(); st.rerun()
+                                st.success(message)
+                                get_dorms_df.clear()
+                                get_person_options.clear() # --- 修改 9：清除快取 ---
+                                st.rerun()
                             else:
                                 st.error(message)
 
