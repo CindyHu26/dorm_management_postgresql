@@ -206,6 +206,31 @@ def get_single_room_details(room_id: int):
     finally:
         if conn: conn.close()
 
+def update_dormitory_details(dorm_id: int, details: dict):
+    """【v2.0 修改版】更新宿舍的詳細資料，自動更新縣市區域。"""
+    conn = database.get_db_connection()
+    if not conn: return False, "無法連接到資料庫"
+    try:
+        # 如果原始地址被修改，就重新正規化並更新縣市區域
+        if 'original_address' in details:
+            addr_info = normalize_taiwan_address(details['original_address'])
+            details['normalized_address'] = addr_info['full']
+            details['city'] = addr_info['city']
+            details['district'] = addr_info['district']
+
+        with conn.cursor() as cursor:
+            fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
+            values = list(details.values()) + [dorm_id]
+            sql = f'UPDATE "Dormitories" SET {fields} WHERE id = %s'
+            cursor.execute(sql, tuple(values))
+        conn.commit()
+        return True, "宿舍資料更新成功！"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"更新宿舍時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
+
 def update_room_details(room_id: int, details: dict):
     """更新一筆已存在的房間紀錄。"""
     conn = database.get_db_connection()

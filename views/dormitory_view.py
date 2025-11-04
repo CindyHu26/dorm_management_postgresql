@@ -43,7 +43,7 @@ def render():
         with st.form("new_dorm_form", clear_on_submit=True):
             st.subheader("宿舍基本資料")
             c1, c2, c3 = st.columns(3)
-            legacy_code = c1.text_input("舊系統編號 (選填)")
+            legacy_code = c1.text_input("宿舍編號 (選填)")
             original_address = c1.text_input("原始地址 (必填)")
             dorm_name = c2.text_input("宿舍自訂名稱 (例如: 中山A棟)")
             person_in_charge = c3.text_input("負責人")
@@ -125,7 +125,7 @@ def render():
                     with st.form("edit_dorm_form"):
                         st.markdown("##### 基本資料")
                         edit_c1, edit_c2 = st.columns(2)
-                        legacy_code = edit_c1.text_input("舊系統編號", value=dorm_details.get('legacy_dorm_code', ''))
+                        legacy_code = edit_c1.text_input("宿舍編號", value=dorm_details.get('legacy_dorm_code', ''))
                         original_address = edit_c1.text_input("原始地址", value=dorm_details.get('original_address', ''))
                         dorm_name = edit_c2.text_input("宿舍自訂名稱", value=dorm_details.get('dorm_name', ''))
                         
