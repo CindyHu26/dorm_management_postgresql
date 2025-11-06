@@ -4,7 +4,8 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
-from data_models import dormitory_model, single_dorm_analyzer
+# 【核心修改 1】匯入 analytics_model
+from data_models import dormitory_model, single_dorm_analyzer, analytics_model
 
 def render():
     """渲染「宿舍深度分析」頁面"""
@@ -18,7 +19,6 @@ def render():
 
     dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in my_dorms}
     
-    # --- 【核心修改 1】st.selectbox 改為 st.multiselect ---
     selected_dorm_ids = st.multiselect(
         "請選擇要分析的宿舍 (可複選)：",
         options=list(dorm_options.keys()),
@@ -33,7 +33,6 @@ def render():
 
     # --- 2. 顯示基本資訊 (僅在選取單一宿舍時顯示) ---
     
-    # --- 【核心修改 2】根據選擇的數量決定是否顯示此區塊 ---
     if len(selected_dorm_ids) == 1:
         selected_dorm_id = selected_dorm_ids[0]
         basic_info = single_dorm_analyzer.get_dorm_basic_info(selected_dorm_id)
@@ -70,7 +69,6 @@ def render():
     selected_month = sc2.selectbox("選擇月份", options=range(1, 13), index=today.month - 1)
     year_month_str = f"{selected_year}-{selected_month:02d}"
 
-    # --- 【核心修改 3】傳入 selected_dorm_ids (list) ---
     resident_data = single_dorm_analyzer.get_resident_summary(selected_dorm_ids, year_month_str)
     
     st.markdown(f"#### {year_month_str} 住宿人員分析 (彙總)")
@@ -88,7 +86,6 @@ def render():
         st.dataframe(resident_data['rent_summary'],  width="stretch", hide_index=True)
 
     st.subheader(f"{year_month_str} 宿舍營運分析 (彙總)")
-    # --- 【核心修改 4】傳入 selected_dorm_ids (list) ---
     analysis_data = single_dorm_analyzer.get_dorm_analysis_data(selected_dorm_ids, year_month_str)
     if not analysis_data:
         st.error("分析數據時發生錯誤，請檢查資料庫連線。")
@@ -118,7 +115,6 @@ def render():
 
     st.subheader(f"{year_month_str} 財務分析 (我司視角 - 彙總)")
 
-    # --- 【核心修改 5】傳入 selected_dorm_ids (list) ---
     income_total = single_dorm_analyzer.get_income_summary(selected_dorm_ids, year_month_str)
     expense_data_df = single_dorm_analyzer.get_expense_summary(selected_dorm_ids, year_month_str)
     
@@ -132,18 +128,132 @@ def render():
     fin_col2.metric("我司預估總支出 (彙總)", f"NT$ {expense_total_our_company:,}", help="僅加總支付方為「我司」的費用項目")
     fin_col3.metric("我司預估淨損益 (彙總)", f"NT$ {profit_loss:,}", delta=f"{profit_loss:,}")
 
+    # --- 【核心修改 2】重構支出細項區塊 ---
     with st.expander("點此查看支出細項 (彙總 - 含所有支付方)"):
         st.dataframe(expense_data_df.sort_values(by="金額", ascending=False), width="stretch", hide_index=True)
+        
+        st.markdown("---")
+        st.markdown("##### 鑽研費用細節")
+        
+        # --- 建立快取函式 ---
+        @st.cache_data
+        def get_lease_details_data(dorm_ids, year_month):
+            return single_dorm_analyzer.get_lease_expense_details(dorm_ids, year_month)
+        
+        @st.cache_data
+        def get_utility_details_data(dorm_ids, year_month):
+            return single_dorm_analyzer.get_utility_bill_details(dorm_ids, year_month)
+
+        @st.cache_data
+        def get_amortized_details_data(dorm_ids, year_month):
+            return single_dorm_analyzer.get_amortized_expense_details(dorm_ids, year_month)
+
+        @st.cache_data
+        def get_meter_history(meter_id):
+            return analytics_model.get_bill_history_for_meter(meter_id)
+        
+        # --- 篩選器 UI ---
+        sel_col1, sel_col2 = st.columns(2)
+        
+        selected_main_category = sel_col1.selectbox(
+            "步驟一：選擇費用主類別",
+            options=["請選擇...", "長期合約支出", "變動雜費", "長期攤銷"],
+            key="main_cat_select"
+        )
+        
+        lease_details_df = pd.DataFrame()
+        utility_details_df = pd.DataFrame()
+        amortized_details_df = pd.DataFrame()
+        sub_options = ["(請先選主類別)"]
+        
+        # --- 根據主類別載入資料並產生子類別選項 ---
+        if selected_main_category == "長期合約支出":
+            lease_details_df = get_lease_details_data(selected_dorm_ids, year_month_str)
+            if not lease_details_df.empty:
+                sub_options = ["全部"] + sorted(list(lease_details_df["合約項目"].unique()))
+        
+        elif selected_main_category == "變動雜費":
+            utility_details_df = get_utility_details_data(selected_dorm_ids, year_month_str)
+            if not utility_details_df.empty:
+                sub_options = ["全部"] + sorted(list(utility_details_df["費用類型"].unique()))
+        
+        elif selected_main_category == "長期攤銷":
+            amortized_details_df = get_amortized_details_data(selected_dorm_ids, year_month_str)
+            if not amortized_details_df.empty:
+                sub_options = ["全部"] + sorted(list(amortized_details_df["費用項目"].unique()))
+
+        selected_sub_category = sel_col2.selectbox(
+            "步驟二：選擇費用子項目",
+            options=sub_options,
+            key="sub_cat_select"
+        )
+
+        st.markdown("##### 查詢結果")
+
+        # --- 顯示篩選後的明細表 ---
+        if selected_main_category == "長期合約支出" and not lease_details_df.empty:
+            df_to_show = lease_details_df
+            if selected_sub_category != "全部":
+                df_to_show = lease_details_df[lease_details_df["合約項目"] == selected_sub_category]
+            st.dataframe(df_to_show, width="stretch", hide_index=True)
+
+        elif selected_main_category == "變動雜費" and not utility_details_df.empty:
+            df_to_show = utility_details_df
+            if selected_sub_category != "全部":
+                df_to_show = utility_details_df[utility_details_df["費用類型"] == selected_sub_category]
+            
+            st.dataframe(df_to_show.drop(columns=["meter_id"]), width="stretch", hide_index=True) # 隱藏 meter_id
+
+            # --- 變動雜費的特殊邏輯：顯示錶號篩選器 ---
+            available_meter_ids = df_to_show['meter_id'].dropna().unique()
+            
+            if len(available_meter_ids) > 0:
+                meter_selector_options = {
+                    row['meter_id']: f"{row['宿舍地址']} - {row['費用類型']} ({row['對應錶號'] or 'N/A'})"
+                    for _, row in df_to_show[df_to_show['meter_id'].isin(available_meter_ids)].drop_duplicates('meter_id').iterrows()
+                }
+                
+                if meter_selector_options:
+                    st.markdown("---")
+                    st.markdown("##### 鑽研單一錶號歷史")
+                    selected_meter_id_for_history = st.selectbox(
+                        "選擇單一錶號查看其完整歷史帳單：",
+                        options=[None] + list(meter_selector_options.keys()),
+                        format_func=lambda x: "請選擇..." if x is None else meter_selector_options[x]
+                    )
+                    
+                    if selected_meter_id_for_history:
+                        meter_history_df = get_meter_history(selected_meter_id_for_history)
+                        if meter_history_df.empty:
+                            st.info("此錶號沒有歷史帳單紀錄。")
+                        else:
+                            st.markdown("###### 金額趨勢圖")
+                            st.line_chart(meter_history_df.set_index('帳單結束日')['帳單金額'])
+                            
+                            if '用量(度/噸)' in meter_history_df.columns and meter_history_df['用量(度/噸)'].notna().any():
+                                st.markdown("###### 用量趨勢圖")
+                                meter_history_df['用量(度/噸)'] = pd.to_numeric(meter_history_df['用量(度/噸)'], errors='coerce')
+                                st.line_chart(meter_history_df[meter_history_df['用量(度/噸)'].notna()].set_index('帳單結束日')['用量(度/噸)'])
+                            
+                            st.dataframe(meter_history_df, width="stretch", hide_index=True)
+
+        elif selected_main_category == "長期攤銷" and not amortized_details_df.empty:
+            df_to_show = amortized_details_df
+            if selected_sub_category != "全部":
+                df_to_show = amortized_details_df[amortized_details_df["費用項目"] == selected_sub_category]
+            st.dataframe(df_to_show, width="stretch", hide_index=True)
+
+        elif selected_main_category != "請選擇...":
+            st.info(f"在 {year_month_str} 期間，找不到「{selected_main_category}」的任何明細紀錄。")
+    # --- 核心修改結束 ---
 
     st.markdown("---")
     st.subheader("歷史財務趨勢 (近24個月 - 彙總)")
     
     @st.cache_data
     def get_trend_data(dorm_ids):
-        # --- 【核心修改 6】傳入 selected_dorm_ids (list) ---
         return single_dorm_analyzer.get_monthly_financial_trend(dorm_ids)
 
-    # --- 【核心修改】移除 tuple() 轉換，直接傳遞 list ---
     trend_df = get_trend_data(selected_dorm_ids)
 
     if not trend_df.empty:
@@ -173,7 +283,6 @@ def render():
             st.error("錯誤：起始日不能晚于結束日！")
         else:
             with st.spinner("正在計算中..."):
-                # --- 【核心修改 7】傳入 selected_dorm_ids (list) ---
                 summary_data = single_dorm_analyzer.calculate_financial_summary_for_period(selected_dorm_ids, start_date, end_date)
             
             if summary_data:
@@ -185,17 +294,17 @@ def render():
                 m_col3.metric("平均每月淨損益", f"NT$ {avg_pl:,}", delta=f"{avg_pl:,}")
 
                 st.markdown("##### 平均每月支出結構 (彙總)")
-                ex_col1, ex_col2, ex_col3 = st.columns(3)
+                ex_col1, ex_col2, ex_col3, ex_col4 = st.columns(4) # 多加一欄給代收代付
                 ex_col1.metric("平均合約支出", f"NT$ {summary_data.get('avg_monthly_contract', 0):,}")
                 ex_col2.metric("平均變動雜費", f"NT$ {summary_data.get('avg_monthly_utilities', 0):,}")
-                ex_col3.metric("平均長期攤銷", f"NT$ {summary_data.get('avg_monthly_amortized', 0):,}")
+                ex_col3.metric("平均代收代付雜費", f"NT$ {summary_data.get('avg_monthly_passthrough', 0):,}")
+                ex_col4.metric("平均長期攤銷", f"NT$ {summary_data.get('avg_monthly_amortized', 0):,}")
             else:
                 st.warning("在此期間內查無任何財務數據可供計算。")
 
     st.markdown("---")
     st.subheader(f"{year_month_str} 在住人員詳細名單 (彙總)")
     
-    # --- 【核心修改 8】傳入 selected_dorm_ids (list) ---
     resident_details_df = single_dorm_analyzer.get_resident_details_as_df(selected_dorm_ids, year_month_str)
 
     if resident_details_df.empty:

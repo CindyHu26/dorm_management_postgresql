@@ -645,3 +645,106 @@ def calculate_financial_summary_for_period(dorm_ids: list, start_date: date, end
     except Exception as e:
         print(f"計算自訂區間財務摘要時發生錯誤: {e}")
         return {}
+    
+def get_lease_expense_details(dorm_ids: list, year_month: str):
+    """【v2.4 新增】查詢指定月份、所選宿舍的「長期合約」原始細項。"""
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        params = {"dorm_ids": dorm_ids, "year_month": year_month}
+        query = """
+            WITH DateParams AS (
+                SELECT 
+                    TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
+                    (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
+            )
+            SELECT 
+                d.original_address AS "宿舍地址",
+                l.contract_item AS "合約項目",
+                l.payer AS "支付方",
+                v.vendor_name AS "房東/廠商",
+                l.monthly_rent AS "月費金額",
+                l.lease_start_date AS "合約起始日",
+                l.lease_end_date AS "合約截止日",
+                l.notes AS "備註"
+            FROM "Leases" l
+            JOIN "Dormitories" d ON l.dorm_id = d.id
+            LEFT JOIN "Vendors" v ON l.vendor_id = v.id
+            CROSS JOIN DateParams dp
+            WHERE d.id = ANY(%(dorm_ids)s)
+              AND l.lease_start_date <= dp.last_day_of_month
+              AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month)
+            ORDER BY d.original_address, l.contract_item;
+        """
+        return _execute_query_to_dataframe(conn, query, params)
+    finally:
+        if conn: conn.close()
+
+def get_utility_bill_details(dorm_ids: list, year_month: str):
+    """【v2.4 新增】查詢指定月份、所選宿舍的「變動雜費」原始帳單細項。"""
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        params = {"dorm_ids": dorm_ids, "year_month": year_month}
+        query = """
+            WITH DateParams AS (
+                SELECT 
+                    TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
+                    (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
+            )
+            SELECT 
+                d.original_address AS "宿舍地址",
+                b.bill_type AS "費用類型",
+                m.meter_number AS "對應錶號",
+                m.id AS "meter_id",
+                b.bill_start_date AS "帳單起始日",
+                b.bill_end_date AS "帳單結束日",
+                b.amount AS "帳單金額",
+                b.usage_amount AS "用量(度/噸)",
+                b.payer AS "支付方",
+                b.is_pass_through AS "是否為代收代付",
+                b.notes AS "備註"
+            FROM "UtilityBills" b
+            JOIN "Dormitories" d ON b.dorm_id = d.id
+            LEFT JOIN "Meters" m ON b.meter_id = m.id
+            CROSS JOIN DateParams dp
+            WHERE b.dorm_id = ANY(%(dorm_ids)s)
+              AND b.bill_start_date <= dp.last_day_of_month 
+              AND b.bill_end_date >= dp.first_day_of_month
+            ORDER BY d.original_address, b.bill_type, m.meter_number, b.bill_start_date;
+        """
+        return _execute_query_to_dataframe(conn, query, params)
+    finally:
+        if conn: conn.close()
+
+def get_amortized_expense_details(dorm_ids: list, year_month: str):
+    """【v2.4 新增】查詢指定月份、所選宿舍的「長期攤銷」原始細項。"""
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        params = {"dorm_ids": dorm_ids, "year_month": year_month}
+        query = """
+            WITH DateParams AS (
+                SELECT 
+                    TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
+                    (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
+            )
+            SELECT 
+                d.original_address AS "宿舍地址",
+                ae.expense_item AS "費用項目",
+                ae.payment_date AS "支付日期",
+                ae.total_amount AS "總金額",
+                ae.amortization_start_month AS "攤提起始月",
+                ae.amortization_end_month AS "攤提結束月",
+                ae.notes AS "備註"
+            FROM "AnnualExpenses" ae
+            JOIN "Dormitories" d ON ae.dorm_id = d.id
+            CROSS JOIN DateParams dp
+            WHERE ae.dorm_id = ANY(%(dorm_ids)s)
+              AND TO_DATE(ae.amortization_start_month, 'YYYY-MM') <= dp.first_day_of_month
+              AND TO_DATE(ae.amortization_end_month, 'YYYY-MM') >= dp.first_day_of_month
+            ORDER BY d.original_address, ae.expense_item, ae.payment_date;
+        """
+        return _execute_query_to_dataframe(conn, query, params)
+    finally:
+        if conn: conn.close()
