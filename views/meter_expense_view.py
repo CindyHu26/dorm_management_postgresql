@@ -52,60 +52,6 @@ def render():
     selected_meter_info = next((m for m in all_meters if m['id'] == selected_meter_id), None)
 
     st.markdown("---")
-    with st.container(border=True):
-        st.subheader(f"目前操作對象: {meter_options[selected_meter_id]}")
-        col1, col2 = st.columns(2)
-        col1.info(f"**編號:** {dorm_details.get('legacy_dorm_code') or '未設定'}")
-        col2.info(f"**變動費用備註:** {dorm_details.get('utility_bill_notes') or '無'}")
-
-
-    # --- 3. 新增帳單紀錄 ---
-    with st.expander("📝 新增一筆費用帳單", expanded=True):
-        meter_type_to_bill_type = {"電錶": "電費", "水錶": "水費", "天然氣": "天然氣", "電信": "網路費"}
-        default_bill_type = meter_type_to_bill_type.get(selected_meter_info.get('meter_type'), "其他 (請手動輸入)")
-        bill_type_options = ["電費", "水費", "天然氣", "瓦斯費", "網路費", "子母車", "其他 (請手動輸入)"]
-        try:
-            default_index = bill_type_options.index(default_bill_type)
-        except ValueError:
-            default_index = len(bill_type_options) - 1
-
-        with st.form("new_bill_form", clear_on_submit=True):
-            c1, c2, c3 = st.columns(3)
-            bill_type = c1.selectbox("費用類型", bill_type_options, index=default_index)
-            custom_bill_type = c1.text_input("自訂費用類型")
-            amount = c2.number_input("帳單總金額", min_value=0, step=100)
-            usage_amount = c3.number_input("用量(度/噸) (選填)", value=None, min_value=0.0, format="%.2f")
-
-            dc1, dc2, dc3 = st.columns(3)
-            bill_start_date = dc1.date_input("帳單起始日", value=None)
-            bill_end_date = dc2.date_input("帳單結束日", value=None)
-            
-            default_payer = dorm_details.get('utilities_payer', '我司')
-            payer_options = ["我司", "雇主", "工人"]
-            payer = dc3.selectbox("費用支付方", payer_options, index=payer_options.index(default_payer) if default_payer in payer_options else 0)
-            
-            is_invoiced = st.checkbox("已向雇主/員工請款?")
-            is_pass_through = st.checkbox("此筆為「代收代付」帳款")
-            notes = st.text_area("備註")
-            
-            if st.form_submit_button("儲存帳單紀錄", type="primary"):
-                final_bill_type = custom_bill_type if bill_type == "其他 (請手動輸入)" else bill_type
-                if not all([bill_start_date, bill_end_date, amount >= 0, final_bill_type]):
-                    st.error("「費用類型」、「帳單起訖日」和「總金額」為必填欄位！")
-                elif bill_start_date > bill_end_date:
-                    st.error("帳單起始日不能晚於結束日！")
-                else:
-                    details = {"dorm_id": dorm_id, "meter_id": selected_meter_id, "bill_type": final_bill_type, "amount": amount, "usage_amount": usage_amount, "bill_start_date": str(bill_start_date), "bill_end_date": str(bill_end_date), "is_invoiced": is_invoiced, "notes": notes, "payer": payer, "is_pass_through": is_pass_through}
-                    success, message, _ = finance_model.add_bill_record(details)
-                    if success:
-                        st.success(message)
-                        st.cache_data.clear()
-                        st.rerun()
-                    else:
-                        st.error(message)
-
-    # --- 4. 顯示、編輯、刪除歷史帳單 ---
-    st.markdown("---")
     st.subheader("歷史帳單總覽")
     
     @st.cache_data
@@ -192,3 +138,57 @@ def render():
                         st.rerun()
                     else:
                         st.error(message)
+
+    st.markdown("---")
+    with st.container(border=True):
+        st.subheader(f"目前操作對象: {meter_options[selected_meter_id]}")
+        col1, col2 = st.columns(2)
+        col1.info(f"**編號:** {dorm_details.get('legacy_dorm_code') or '未設定'}")
+        col2.info(f"**變動費用備註:** {dorm_details.get('utility_bill_notes') or '無'}")
+
+    # --- 3. 新增帳單紀錄 ---
+    with st.expander("📝 新增一筆費用帳單", expanded=True):
+        meter_type_to_bill_type = {"電錶": "電費", "水錶": "水費", "天然氣": "天然氣", "電信": "網路費"}
+        default_bill_type = meter_type_to_bill_type.get(selected_meter_info.get('meter_type'), "其他 (請手動輸入)")
+        bill_type_options = ["電費", "水費", "天然氣", "瓦斯費", "網路費", "子母車", "其他 (請手動輸入)"]
+        try:
+            default_index = bill_type_options.index(default_bill_type)
+        except ValueError:
+            default_index = len(bill_type_options) - 1
+
+        with st.form("new_bill_form", clear_on_submit=True):
+            c1, c2, c3 = st.columns(3)
+            bill_type = c1.selectbox("費用類型", bill_type_options, index=default_index)
+            custom_bill_type = c1.text_input("自訂費用類型")
+            amount = c2.number_input("帳單總金額", min_value=0, step=100)
+            usage_amount = c3.number_input("用量(度/噸) (選填)", value=None, min_value=0.0, format="%.2f")
+
+            dc1, dc2, dc3 = st.columns(3)
+            bill_start_date = dc1.date_input("帳單起始日", value=None)
+            bill_end_date = dc2.date_input("帳單結束日", value=None)
+            
+            default_payer = dorm_details.get('utilities_payer', '我司')
+            payer_options = ["我司", "雇主", "工人"]
+            payer = dc3.selectbox("費用支付方", payer_options, index=payer_options.index(default_payer) if default_payer in payer_options else 0)
+            
+            is_invoiced = st.checkbox("已向雇主/員工請款?")
+            is_pass_through = st.checkbox("此筆為「代收代付」帳款")
+            notes = st.text_area("備註")
+            
+            if st.form_submit_button("儲存帳單紀錄", type="primary"):
+                final_bill_type = custom_bill_type if bill_type == "其他 (請手動輸入)" else bill_type
+                if not all([bill_start_date, bill_end_date, amount >= 0, final_bill_type]):
+                    st.error("「費用類型」、「帳單起訖日」和「總金額」為必填欄位！")
+                elif bill_start_date > bill_end_date:
+                    st.error("帳單起始日不能晚於結束日！")
+                else:
+                    details = {"dorm_id": dorm_id, "meter_id": selected_meter_id, "bill_type": final_bill_type, "amount": amount, "usage_amount": usage_amount, "bill_start_date": str(bill_start_date), "bill_end_date": str(bill_end_date), "is_invoiced": is_invoiced, "notes": notes, "payer": payer, "is_pass_through": is_pass_through}
+                    success, message, _ = finance_model.add_bill_record(details)
+                    if success:
+                        st.success(message)
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(message)
+
+    # --- 4. 顯示、編輯、刪除歷史帳單 ---
