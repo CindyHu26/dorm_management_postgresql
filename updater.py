@@ -18,13 +18,10 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], None]):
     """
-    【v2.20 "[未分配房間] 修復版"】執行核心的資料庫更新流程。
-    - 新增 "修復程序"，自動為缺少 [未分配房間] 的舊宿舍補上紀錄。
-    - "手動管理(他仲)": 完全跳過。
-    - "手動調整": 只更新 "離住日"。
-    - "系統自動更新": 更新所有資訊。
+    【v2.21 "日誌精確" 修正版】執行核心的資料庫更新流程。
+    - "手動調整" 模式下，只在 "離住日" 真正發生變更時才印出日誌。
     """
-    log_callback("\n===== 開始執行核心資料庫更新程序 (v2.20 修復版) =====")
+    log_callback("\n===== 開始執行核心資料庫更新程序 (v2.21 日誌精確版) =====")
     today = datetime.now().date()
     yesterday = today - timedelta(days=1)
     
@@ -50,12 +47,10 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                     placeholders = ', '.join(['%s'] * len(dorm_details))
                     cursor.execute(f'INSERT INTO "Dormitories" ({columns}) VALUES ({placeholders}) RETURNING id', tuple(dorm_details.values()))
                     dorm_id = cursor.fetchone()['id']
-                    # 新增宿舍時，一併新增 [未分配房間]
                     cursor.execute('INSERT INTO "Rooms" (dorm_id, room_number) VALUES (%s, %s)', (dorm_id, "[未分配房間]"))
             
-            # --- 【核心修改】步驟 2/5：修復現有宿舍 ---
+            # --- 步驟 2/5：修復現有宿舍 (維持不變) ---
             log_callback("INFO: 步驟 2/5 - 正在檢查並修復缺少 [未分配房間] 的現有宿舍...")
-            # 找出所有 "沒有" [未分配房間] 的宿舍 ID
             repair_query = """
                 SELECT d.id, d.original_address
                 FROM "Dormitories" d
@@ -76,13 +71,11 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
             else:
                 log_callback("INFO: 所有宿舍均有關聯的 [未分配房間] 紀錄，無需修復。")
             
-            # --- 步驟 3/5：準備資料與映射 ---
+            # --- 步驟 3/5：準備資料與映射 (維持不變) ---
             log_callback("INFO: 步驟 3/5 - 準備資料與映射...")
-            # 重新查詢資料庫，確保包含剛剛修復/新增的宿舍與房間
             address_room_df = _execute_query_to_dataframe(conn, 'SELECT d.normalized_address, r.id as room_id FROM "Rooms" r JOIN "Dormitories" d ON r.dorm_id = d.id WHERE r.room_number = %s', ("[未分配房間]",))
             address_room_map = pd.Series(address_room_df.room_id.values, index=address_room_df.normalized_address).to_dict()
             
-            # 建立一個備用的 original_address 映射 (以防正規化地址出錯)
             original_addr_map = pd.Series(db_dorms_df.id.values, index=db_dorms_df.original_address).to_dict()
             original_addr_to_room_map = {}
             for dorm_id, addr in original_addr_map.items():
@@ -90,13 +83,12 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                 if norm_addr in address_room_map:
                     original_addr_to_room_map[addr] = address_room_map[norm_addr]
 
-            # 優先使用正規化地址映射，如果失敗，則嘗試使用原始地址映射
             fresh_df['room_id'] = fresh_df['normalized_address'].map(address_room_map)
             if fresh_df['room_id'].isnull().any():
                 log_callback("INFO: 偵測到部分正規化地址無法映射，嘗試使用原始地址進行第二次映射...")
                 fresh_df['room_id'] = fresh_df['room_id'].fillna(fresh_df['original_address'].map(original_addr_to_room_map))
 
-            # --- 步驟 4/5：取得現有工人狀態 ---
+            # --- 步驟 4/5：取得現有工人狀態 (維持不變) ---
             log_callback("INFO: 步驟 4/5 - 正在取得現有工人的最新住宿與來源狀態...")
             all_workers_info_df = _execute_query_to_dataframe(conn, """
                 SELECT w.unique_id, w.data_source, ah.room_id, ah.end_date
@@ -128,7 +120,6 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                 raw_room_id = fresh_worker.get('room_id')
                 new_room_id = int(raw_room_id) if pd.notna(raw_room_id) else None
                 
-                # --- 【關鍵防呆】---
                 if new_room_id is None:
                     log_callback(f"CRITICAL: 工人 {unique_id} (地址: {fresh_worker.get('original_address')}) 找不到對應的 [未分配房間] ID。**修復程序已執行但仍失敗**。已跳過此筆紀錄。")
                     continue
@@ -142,24 +133,39 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                 if existing_worker:
                     # --- 更新現有工人 ---
                     if data_source == '手動調整':
-                        update_details = {
-                            'accommodation_end_date': final_departure_date
-                        }
-                        log_callback(f"INFO: [保護] 工人 '{unique_id}' 為手動調整，僅同步「離住日」。")
+                        
+                        # --- 【核心修改】---
+                        # 1. 先執行更新，只在 "accommodation_end_date" 確實不同的情況下
+                        cursor.execute(
+                            'UPDATE "Workers" SET "accommodation_end_date" = %s WHERE unique_id = %s AND "accommodation_end_date" IS DISTINCT FROM %s',
+                            (final_departure_date, unique_id, final_departure_date)
+                        )
+                        
+                        # 2. 檢查是否有任何行被更新 (cursor.rowcount)
+                        if cursor.rowcount > 0:
+                            # 3. 只有在真正更新時才印出日誌
+                            log_callback(f"INFO: [保護] 工人 '{unique_id}' (手動調整) 偵測到離住日變更，已同步。")
+                            updated_count += 1
+                        else:
+                            # (無變更，保持安靜，不印日誌)
+                            pass
+                        # --- 修改結束 ---
                     
                     else: 
+                        # "系統自動更新" (或其他)：更新所有核心資料
                         update_cols = ['native_name', 'gender', 'nationality', 'passport_number', 'arc_number', 'work_permit_expiry_date']
                         update_details = {col: fresh_worker.get(col) for col in update_cols if col in fresh_worker}
                         update_details['accommodation_end_date'] = final_departure_date
                         update_details['room_id'] = new_room_id 
 
-                    fields = ', '.join([f'"{key}" = %s' for key in update_details.keys()])
-                    values = list(update_details.values()) + [unique_id]
-                    
-                    cursor.execute(f'UPDATE "Workers" SET {fields} WHERE unique_id = %s', tuple(values))
-                    updated_count += 1
-                    
-                    if data_source != '手動調整':
+                        fields = ', '.join([f'"{key}" = %s' for key in update_details.keys()])
+                        values = list(update_details.values()) + [unique_id]
+                        
+                        cursor.execute(f'UPDATE "Workers" SET {fields} WHERE unique_id = %s', tuple(values))
+                        updated_count += 1 
+                        
+                        # --- 住宿歷史更新 (AccommodationHistory) ---
+                        # (此邏輯只在 '系統自動更新' 時觸發，是正確的)
                         current_room_id = current_accommodation_records.get(unique_id)
                         current_end_date = current_accommodation_end_dates.get(unique_id)
 
@@ -178,7 +184,7 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                                  log_callback(f"INFO: [自動] 工人 '{unique_id}' 在房間 {new_room_id} 移除離住日。")
                     
                 else:
-                    # --- 新增工人 ---
+                    # --- 新增工人 (邏輯維持不變) ---
                     new_worker_details = fresh_worker.to_dict()
                     new_worker_details['data_source'] = '系統自動更新'
                     new_worker_details['special_status'] = '在住'
@@ -199,7 +205,7 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                 
                 processed_ids.add(unique_id)
             
-            # --- "工人消失" 邏輯 ---
+            # --- "工人消失" 邏輯 (維持不變) ---
             cursor.execute('SELECT unique_id, data_source FROM "Workers" WHERE data_source != %s', ('手動管理(他仲)',))
             db_syncable_workers = {rec['unique_id']: rec['data_source'] for rec in cursor.fetchall()}
             
