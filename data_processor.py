@@ -185,15 +185,34 @@ def parse_and_process_reports(
     log_callback: Callable[[str], None]
 ) -> pd.DataFrame:
     """
-    【v2.11 地址過濾版】解析所有下載的XML報表檔案，進行清理、正規化。
+    【v2.19 "日誌增強" 修正版】
+    在過濾掉缺少必要欄位的資料列時，印出明確的警告日誌，
+    讓使用者能追蹤是哪個檔案的哪筆資料被跳過了。
     """
-    log_callback("INFO: 開始執行報表解析與資料處理程序 (新版系統)...")
-    all_dataframes = []
+    log_callback("INFO: 開始執行報表解析與資料處理程序 (v2.19 日誌增強版)...")
+    all_workers_data = [] # 儲存 {欄位名: 值} 的字典列表
     ns = {'ss': 'urn:schemas-microsoft-com:office:spreadsheet'}
-
     parser = etree.XMLParser(recover=True, encoding='utf-8')
 
+    # 1. 定義我們系統真正需要的欄位
+    REQUIRED_COLS_MAP = {
+        '客戶簡稱': 'employer_name',
+        '姓名(中)': 'worker_name',
+        '英文姓名': 'native_name',
+        '性別': 'gender',
+        '國籍': 'nationality',
+        '護照號碼': 'passport_number',
+        '居留證號': 'arc_number',
+        '交工日': 'accommodation_start_date',
+        '聘僱期滿日': 'work_permit_expiry_date',
+        '居留證地': 'original_address',
+        '出境日期': 'departure_date'
+    }
+    
     for file_path in file_paths:
+        header_index_map = {}
+        is_data_section = False
+        
         try:
             with open(file_path, 'rb') as f:
                 file_content = f.read()
@@ -204,80 +223,100 @@ def parse_and_process_reports(
 
             tree = etree.fromstring(file_content, parser=parser)
             rows_xml = tree.xpath('.//ss:Row', namespaces=ns)
-            header, all_rows_data, is_data_section = [], [], False
+            
+            log_callback(f"INFO: 正在解析檔案: {os.path.basename(file_path)}...")
             
             for row in rows_xml:
-                cells_text = [(data.text or "").strip() for cell in row.findall('ss:Cell', ns) for data in cell.findall('ss:Data', ns)]
+                
+                cells_text = []
+                for cell in row.findall('ss:Cell', ns):
+                    data_element = cell.find('ss:Data', ns)
+                    if data_element is not None and data_element.text is not None:
+                        cells_text.append(data_element.text.strip())
+                    else:
+                        cells_text.append("") 
+                
                 if not cells_text: continue
                 
                 if "客戶簡稱" in cells_text and "姓名(中)" in cells_text and not is_data_section:
                     is_data_section = True
-                    header = [h.replace('\n', '') for h in cells_text]
-                    # log_callback(f"INFO: 在檔案 {os.path.basename(file_path)} 中找到資料標頭。")
-                    continue
+                    log_callback(f"INFO: 在檔案 {os.path.basename(file_path)} 中找到資料標頭，正在建立欄位索引...")
+                    
+                    header_index_map = {}
+                    for i, col_name in enumerate(cells_text):
+                        if col_name in REQUIRED_COLS_MAP:
+                            if col_name not in header_index_map: 
+                                header_index_map[col_name] = i
+                    
+                    missing_cols = set(REQUIRED_COLS_MAP.keys()) - set(header_index_map.keys())
+                    if missing_cols:
+                        log_callback(f"CRITICAL: 檔案 {os.path.basename(file_path)} 的標頭中缺少必要欄位: {missing_cols}。跳過此檔案。")
+                        is_data_section = False
+                        header_index_map = {}
+                        break 
+                    
+                    log_callback(f"INFO: 欄位索引建立成功。 '居留證地' 位於索引 {header_index_map.get('居留證地', 'N/A')}, '交工日' 位於索引 {header_index_map.get('交工日', 'N/A')}。")
+                    continue 
 
                 if is_data_section:
-                    row_data = cells_text[:len(header)]
-                    while len(row_data) < len(header):
-                        row_data.append("")
-                    all_rows_data.append(row_data)
-            
-            if header and all_rows_data:
-                df = pd.DataFrame(all_rows_data, columns=header)
-                all_dataframes.append(df)
-            elif not header:
-                 log_callback(f"WARNING: 在檔案 {os.path.basename(file_path)} 中找不到有效的資料標頭，已略過。")
+                    worker_dict = {}
+                    try:
+                        for xml_col_name, internal_col_name in REQUIRED_COLS_MAP.items():
+                            col_index = header_index_map[xml_col_name]
+                            if col_index < len(cells_text):
+                                worker_dict[internal_col_name] = cells_text[col_index]
+                            else:
+                                worker_dict[internal_col_name] = ""
+                        
+                        # --- 【核心修改】 ---
+                        # 基礎驗證，並在失敗時印出日誌
+                        emp_name = worker_dict.get('employer_name')
+                        w_name = worker_dict.get('worker_name')
+                        addr = worker_dict.get('original_address') # "居留證地"
+
+                        if not emp_name or not w_name or not addr:
+                            # 新增日誌，讓被跳過的資料不再是 "安靜" 的
+                            log_callback(f"WARNING: [資料過濾] 在檔案 {os.path.basename(file_path)} 中跳過一筆資料，因缺少必要欄位。 (雇主: '{emp_name}', 姓名: '{w_name}', 居留證地: '{addr}')")
+                            continue # 跳過缺少雇主、姓名、或居留證地的資料
+                        # --- 修改結束 ---
+
+                        all_workers_data.append(worker_dict)
+                    
+                    except IndexError:
+                        log_callback(f"WARNING: 偵測到資料列長度不足或格式不符，已跳過。")
+                    except Exception as e:
+                         log_callback(f"WARNING: 解析資料列時出錯: {e}")
 
         except Exception as e:
-            log_callback(f"ERROR: 解析檔案 {os.path.basename(file_path)} 時發生錯誤: {e}")
+            log_callback(f"ERROR: 解析檔案 {os.path.basename(file_path)} 時發生嚴重錯誤: {e}")
 
-    if not all_dataframes:
-        log_callback("CRITICAL: 所有檔案均解析失敗或為空。")
+    if not all_workers_data:
+        log_callback("CRITICAL: 所有檔案均解析失敗或為空，未抓取到任何有效資料。")
         return pd.DataFrame()
 
-    master_df = pd.concat(all_dataframes, ignore_index=True)
-    log_callback(f"INFO: 所有報表已成功合併！總共有 {len(master_df)} 筆原始資料。")
+    master_df = pd.DataFrame(all_workers_data)
+    log_callback(f"INFO: 所有報表已成功合併！總共有 {len(master_df)} 筆有效資料。")
 
-    log_callback("INFO: 正在過濾無效的空白資料列...")
+    log_callback("INFO: 正在過濾地址 (居留證地) 為空的資料列...")
     original_rows = len(master_df)
-    master_df.dropna(subset=['客戶簡稱', '姓名(中)'], inplace=True)
-    master_df = master_df[master_df['客戶簡稱'].str.strip() != '']
-    master_df = master_df[master_df['姓名(中)'].str.strip() != '']
-    log_callback(f"INFO: 已過濾 {original_rows - len(master_df)} 筆客戶或姓名為空的資料列。")
-
-    # --- 【核心修改】在此處新增地址過濾邏輯 ---
-    log_callback("INFO: 正在過濾地址為空的資料列...")
-    original_rows = len(master_df)
-    # 確保 '居住地址' 欄位存在
-    if '居住地址' in master_df.columns:
-        # 使用 .loc 來避免 SettingWithCopyWarning
-        master_df = master_df.loc[master_df['居住地址'].notna() & (master_df['居住地址'].str.strip() != '')].copy()
-        log_callback(f"INFO: 已過濾 {original_rows - len(master_df)} 筆地址為空的資料列。")
-    else:
-        log_callback("WARNING: 在報表中找不到 '居住地址' 欄位，無法進行地址過濾。")
-
-
-    log_callback("INFO: 正在進行資料欄位標準化與正規化...")
-    column_mapping = {
-        '客戶簡稱': 'employer_name', 
-        '姓名(中)': 'worker_name', 
-        '英文姓名': 'native_name',
-        '性別': 'gender', 
-        '國籍': 'nationality', 
-        '護照號碼': 'passport_number', 
-        '居留證號': 'arc_number', 
-        '聘僱起始日': 'accommodation_start_date',
-        '聘僱期滿日': 'work_permit_expiry_date', 
-        '居住地址': 'original_address',
-    }
-    master_df.rename(columns=column_mapping, inplace=True)
+    master_df = master_df.loc[master_df['original_address'].notna() & (master_df['original_address'].str.strip() != '')].copy()
+    log_callback(f"INFO: 已過濾 {original_rows - len(master_df)} 筆地址為空的資料列。")
 
     log_callback("INFO: 正在強制統一所有日期欄位格式為 YYYY-MM-DD...")
-    date_columns = ['accommodation_start_date', 'work_permit_expiry_date']
+    date_columns = ['accommodation_start_date', 'work_permit_expiry_date', 'departure_date']
+    
+    def robust_date_converter(x):
+        if pd.isna(x) or str(x).strip() == "":
+            return None
+        dt = pd.to_datetime(x, errors='coerce')
+        if pd.isna(dt):
+            log_callback(f"WARNING: 發現無效日期格式 '{x}'，將其設定為 NULL。")
+            return None
+        return dt.strftime('%Y-%m-%d')
+
     for col in date_columns:
         if col in master_df.columns:
-            master_df[col] = pd.to_datetime(master_df[col], errors='coerce').dt.strftime('%Y-%m-%d')
-            master_df[col] = master_df[col].where(pd.notna(master_df[col]), None)
+            master_df[col] = master_df[col].apply(robust_date_converter)
 
     regex_pattern = r'\s?\(接\)$|\s?\(遞:.*?\)$'
     master_df['employer_name'] = master_df['employer_name'].str.replace(regex_pattern, '', regex=True).str.strip()
@@ -303,6 +342,7 @@ def parse_and_process_reports(
         'passport_number', 'arc_number', 
         'accommodation_start_date',
         'work_permit_expiry_date', 
+        'departure_date', 
         'original_address', 'normalized_address', 'city', 'district'
     ]
     existing_final_columns = [col for col in final_columns if col in master_df.columns]

@@ -121,7 +121,6 @@ def render():
             payer = c10.selectbox("付款人", ["", "我司", "工人", "雇主"])
             invoice_date = c11.date_input("請款日期", value=None)
 
-            # 在新增時，也預先帶入宿舍的發票資訊
             dorm_details_for_new = dormitory_model.get_dorm_details_by_id(dorm_id) if dorm_id else {}
             default_invoice_info_new = dorm_details_for_new.get('invoice_info', '')
             invoice_info = c12.text_input("發票資訊 (如: 抬頭、統編)", value=default_invoice_info_new)
@@ -239,7 +238,31 @@ def render():
             with st.form(f"edit_log_form_{selected_log_id}"):
                 st.subheader("案件資訊")
                 ec1, ec2, ec3, ec4 = st.columns(4)
-                ec1.text_input("宿舍地址", value=dorm_options.get(details.get('dorm_id')), disabled=True)
+                
+                # --- 替換 text_input 為 selectbox ---
+                current_dorm_id = details.get('dorm_id')
+                dorm_keys = list(dorm_options.keys())
+                try:
+                    current_dorm_index = dorm_keys.index(current_dorm_id)
+                except ValueError:
+                    # 如果 dorm_id 存在但不在 dorm_options (例如是一個非我司管理的宿舍)，
+                    # 嘗試從資料庫直接獲取其名稱並添加到選項中
+                    temp_dorm_details = dormitory_model.get_dorm_details_by_id(current_dorm_id)
+                    if temp_dorm_details:
+                        dorm_name = temp_dorm_details.get('original_address', f"ID {current_dorm_id}")
+                        dorm_options[current_dorm_id] = f"(其他) {dorm_name}"
+                        dorm_keys = list(dorm_options.keys())
+                        current_dorm_index = dorm_keys.index(current_dorm_id)
+                    else:
+                        current_dorm_index = 0
+                
+                e_dorm_id = ec1.selectbox(
+                    "宿舍地址", 
+                    options=dorm_keys, 
+                    format_func=lambda x: dorm_options.get(x, "未知宿舍"), 
+                    index=current_dorm_index,
+                    key=f"edit_dorm_id_{selected_log_id}"
+                )
                 
                 record_dorm_id = details.get('dorm_id')
                 equipment_in_dorm_edit = equipment_model.get_equipment_for_view({"dorm_id": record_dorm_id}) if record_dorm_id else pd.DataFrame()
@@ -294,7 +317,6 @@ def render():
                 e_payer = ec10.selectbox("付款人", ["", "我司", "工人", "雇主"], index=(["", "我司", "工人", "雇主"]).index(details.get('payer')) if details.get('payer') in ["", "我司", "工人", "雇主"] else 0)
                 e_invoice_date = ec11.date_input("請款日期", value=details.get('invoice_date'))
                 
-                # --- 【核心修改】智慧帶入發票資訊 ---
                 dorm_details_for_edit = dormitory_model.get_dorm_details_by_id(record_dorm_id) if record_dorm_id else {}
                 default_invoice_info_edit = dorm_details_for_edit.get('invoice_info', '')
                 current_invoice_info = details.get('invoice_info', '')
@@ -326,7 +348,9 @@ def render():
                                 path = maintenance_model.save_uploaded_photo(file, file_info_dict)
                                 final_file_paths.append(path)
 
+                        # --- 將 e_dorm_id 加入 update_data ---
                         update_data = {
+                            'dorm_id': e_dorm_id, # <-- 新增此行
                             'equipment_id': e_equipment_id,
                             'status': final_status, 
                             'vendor_id': e_vendor_id, 'notification_date': e_notification_date,

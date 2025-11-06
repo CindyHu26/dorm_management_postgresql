@@ -14,19 +14,32 @@ from datetime import datetime, timedelta # 引入 timedelta 來計算日期
 
 def generate_code_ranges() -> List[Tuple[str, str]]:
     """
-    自動產生所有雇主編號的查詢區間，用於後續的批次下載。
+    自動產生所有雇主編號的查詢區間 (v2 - 更細分的版本)。
+    將數字和字母範圍都拆分得更小，以應對大量資料查詢。
     """
     ranges = []
-    # A01~H99，每10個一組
-    for prefix in 'ABCDEFGH':
-        for start in range(1, 100, 10):
-            ranges.append((f"{prefix}{start:02d}", f"{prefix}{min(start + 9, 99):02d}"))
-    
-    # AA~ZZ，每26個一組 (一個字母開頭的所有組合)
     letters = string.ascii_uppercase
-    all_codes = [a + b for a in letters for b in letters]
-    for i in range(0, len(all_codes), 26):
-        ranges.append((all_codes[i], all_codes[min(i + 25, len(all_codes) - 1)]))
+
+    # 1. 處理數字範圍 (A01~H99)
+    # 原本: 每 10 個一組 (A01-A10, A11-A20...)
+    # 新版: 改為每 2 個一組 (A01-A02, A03-A04...)，大幅增加請求次數
+    numeric_chunk_size = 2
+    for prefix in 'ABCDEFGH':
+        for start in range(1, 100, numeric_chunk_size):
+            end_num = min(start + numeric_chunk_size - 1, 99)
+            ranges.append((f"{prefix}{start:02d}", f"{prefix}{end_num:02d}"))
+    
+    # 2. 處理字母範圍 (AA~ZZ)
+    all_letter_codes = [a + b for a in letters for b in letters] # 總共 676 個
+    
+    # 原本: 每 26 個一組 (AA-AZ, BA-BZ...)
+    # 新版: 改為每 5 個一組 (AA-AE, AF-AJ, ...)
+    letter_chunk_size = 5 
+    for i in range(0, len(all_letter_codes), letter_chunk_size):
+        start_code = all_letter_codes[i]
+        end_code_index = min(i + letter_chunk_size - 1, len(all_letter_codes) - 1)
+        end_code = all_letter_codes[end_code_index]
+        ranges.append((start_code, end_code))
     
     return ranges
 
@@ -54,33 +67,32 @@ def download_all_reports(
     downloaded_files = []
     total_ranges = len(query_ranges)
 
-    # --- 計算基準日期 (今天 + 14天) ---
-    base_date_str = (datetime.today() + timedelta(days=14)).strftime('%Y-%m-%d')
-    log_callback(f"INFO: 將使用基準日期: {base_date_str} 進行查詢。")
+    # --- 【核心修改 1】計算基準日期 (改為今天) ---
+    base_date_str = datetime.today().strftime('%Y-%m-%d')
+    log_callback(f"INFO: 將使用基準日期: {base_date_str} (今日) 進行查詢。")
 
     for i, (start_code, end_code) in enumerate(query_ranges):
         # log_callback(f"INFO: 正在下載第 {i+1}/{total_ranges} 批: {start_code} - {end_code} ...")
         
-        # --- 【核心修改 2】更新 payload 以符合新版系統的表單欄位 ---
+        # --- 【核心修改 2】更新 payload ---
         payload = {
             'CU00_BNO1': start_code,         # 起始雇主編號
             'CU00_ENO1': end_code,           # 截止雇主編號
             'CU00_SDATE': '2',              # 期間別: 2 (接管日)
-            'CU00_BDATE': '',               # 空白
-            'CU00_EDATE': '',               # 空白
+            'CU00_BDATE': '',               # 期間...起始日 (依需求留空)
+            'CU00_EDATE': '',               # 期間...截止日 (依需求留空)
             'CU00_BDATE1': '',              # 空白
             'CU00_EDATE1': '',              # 空白
             'CU00_BDATE2': '',              # 空白
             'CU00_EDATE2': '',              # 空白
-            'CU00_BASE': base_date_str,     # 基準日期 (今日+14天)
+            'CU00_BASE': base_date_str,     # 基準日期 (依需求改為今日)
             'CU00_BASE_I': 'Y',             # 廢止聘可移工算任用中?: Y
             'CU00_LA04': '0',               # 接管身份代號: 所有
             'CU00_LA19': '0',               # 離管身份代號: 所有
             'CU00_LA198': '0',              # 申請類別: 全部
             'CU00_ORG1': 'A',               # 任用來源: 全部
             'CU00_WORK': '0',               
-            'CU00_PNO': '0',                # 移工類別: 全部
-            'CU00_LNO': '0',                # 工種類別: 全部
+            'CU00_PNO': '0',                # 移工類別: 全部 (依需求確認為 '0')
             'CU00_LA28': '0',               # 外勞國籍: 全部
             'CU00_SALERS': 'A',             # 業務人員: 全部
             'CU00_MEMBER': 'A',             # 負責行政人員: 全部

@@ -757,3 +757,111 @@ def delete_fee_history(history_id: int):
         return False, f"刪除費用歷史時發生錯誤: {e}"
     finally:
         if conn: conn.close()
+
+def batch_update_workers_complex(worker_ids: list, updates: dict):
+    """
+    【v2.13 新增】執行複雜的批次更新，包含住宿、費用和離住。
+    此函式在單一資料庫交易 (Transaction) 中執行所有操作。
+    """
+    if not worker_ids:
+        return False, "未選擇任何員工。"
+
+    conn = database.get_db_connection()
+    if not conn:
+        return False, "資料庫連線失敗。"
+
+    # --- 從 updates 字典中解析操作 ---
+    
+    # 1. 住宿異動 (換宿)
+    new_room_id = updates.get("new_room_id")
+    new_start_date = updates.get("new_start_date")
+    accommodation_change = new_room_id is not None and new_start_date is not None
+
+    # 2. 費用更新
+    fees_to_update = updates.get("fees_to_update", {}) # 這是 { 'monthly_fee': 2500, ... }
+    fee_effective_date = updates.get("fee_effective_date")
+    fee_change = bool(fees_to_update) and fee_effective_date is not None
+
+    # 3. 離住日設定
+    new_end_date = updates.get("new_end_date")
+    departure_change = new_end_date is not None
+
+    # --- 驗證 ---
+    if not accommodation_change and not fee_change and not departure_change:
+        return False, "沒有偵測到任何有效的更新操作（請確保日期等必填欄位已填寫）。"
+    
+    # 系統定義的費用名稱映射
+    fee_key_to_name_map = {
+        'monthly_fee': '房租',
+        'utilities_fee': '水電費',
+        'cleaning_fee': '清潔費',
+        'charging_cleaning_fee': '充電清潔費',
+        'restoration_fee': '宿舍復歸費'
+    }
+
+    try:
+        with conn.cursor() as cursor:
+            for worker_id in worker_ids:
+                
+                # --- 1. 處理住宿異動 (換宿) ---
+                if accommodation_change:
+                    # 結束目前所有未結束的住宿紀錄
+                    end_date_for_old = new_start_date - timedelta(days=1)
+                    cursor.execute(
+                        'UPDATE "AccommodationHistory" SET end_date = %s WHERE worker_unique_id = %s AND end_date IS NULL',
+                        (end_date_for_old, worker_id)
+                    )
+                    # 新增一筆住宿紀錄
+                    cursor.execute(
+                        'INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date) VALUES (%s, %s, %s)',
+                        (worker_id, new_room_id, new_start_date)
+                    )
+                    # 更新 Workers 表的 data_source 標記，鎖定住宿
+                    cursor.execute(
+                        'UPDATE "Workers" SET data_source = %s WHERE unique_id = %s',
+                        ('手動調整', worker_id)
+                    )
+
+                # --- 2. 處理離住日設定 ---
+                if departure_change:
+                    # 更新 Workers 表的最終離住日
+                    cursor.execute(
+                        'UPDATE "Workers" SET accommodation_end_date = %s WHERE unique_id = %s',
+                        (new_end_date, worker_id)
+                    )
+                    # 結束該員工最新的一筆住宿紀錄
+                    # (使用子查詢找出最新一筆紀錄的 ID)
+                    cursor.execute(
+                        """
+                        UPDATE "AccommodationHistory" 
+                        SET end_date = %s 
+                        WHERE id = (
+                            SELECT id FROM "AccommodationHistory" 
+                            WHERE worker_unique_id = %s 
+                            ORDER BY start_date DESC, id DESC 
+                            LIMIT 1
+                        )
+                        """,
+                        (new_end_date, worker_id)
+                    )
+
+                # --- 3. 處理費用更新 ---
+                if fee_change:
+                    for fee_key, fee_amount in fees_to_update.items():
+                        if fee_key in fee_key_to_name_map:
+                            fee_type_name = fee_key_to_name_map[fee_key]
+                            # 新增一筆費用歷史
+                            cursor.execute(
+                                'INSERT INTO "FeeHistory" (worker_unique_id, fee_type, amount, effective_date) VALUES (%s, %s, %s, %s)',
+                                (worker_id, fee_type_name, int(fee_amount), fee_effective_date)
+                            )
+
+            # --- 所有員工都成功處理後，提交交易 ---
+            conn.commit()
+            return True, f"成功批次更新 {len(worker_ids)} 位員工的資料。"
+
+    except Exception as e:
+        if conn: conn.rollback() # 發生任何錯誤，全部復原
+        return False, f"批次更新時發生嚴重錯誤，所有操作已復原: {e}"
+    finally:
+        if conn: conn.close()
