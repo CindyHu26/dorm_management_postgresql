@@ -224,7 +224,7 @@ def parse_and_process_reports(
             tree = etree.fromstring(file_content, parser=parser)
             rows_xml = tree.xpath('.//ss:Row', namespaces=ns)
             
-            log_callback(f"INFO: 正在解析檔案: {os.path.basename(file_path)}...")
+            # log_callback(f"INFO: 正在解析檔案: {os.path.basename(file_path)}...")
             
             for row in rows_xml:
                 
@@ -240,8 +240,8 @@ def parse_and_process_reports(
                 
                 if "客戶簡稱" in cells_text and "姓名(中)" in cells_text and not is_data_section:
                     is_data_section = True
-                    log_callback(f"INFO: 在檔案 {os.path.basename(file_path)} 中找到資料標頭，正在建立欄位索引...")
-                    
+                    # log_callback(f"INFO: 在檔案 {os.path.basename(file_path)} 中找到資料標頭，正在建立欄位索引...")
+                     
                     header_index_map = {}
                     for i, col_name in enumerate(cells_text):
                         if col_name in REQUIRED_COLS_MAP:
@@ -255,7 +255,7 @@ def parse_and_process_reports(
                         header_index_map = {}
                         break 
                     
-                    log_callback(f"INFO: 欄位索引建立成功。 '居留證地' 位於索引 {header_index_map.get('居留證地', 'N/A')}, '交工日' 位於索引 {header_index_map.get('交工日', 'N/A')}。")
+                    # log_callback(f"INFO: 欄位索引建立成功。 '居留證地' 位於索引 {header_index_map.get('居留證地', 'N/A')}, '交工日' 位於索引 {header_index_map.get('交工日', 'N/A')}。")
                     continue 
 
                 if is_data_section:
@@ -268,7 +268,6 @@ def parse_and_process_reports(
                             else:
                                 worker_dict[internal_col_name] = ""
                         
-                        # --- 【核心修改】 ---
                         # 基礎驗證，並在失敗時印出日誌
                         emp_name = worker_dict.get('employer_name')
                         w_name = worker_dict.get('worker_name')
@@ -278,7 +277,6 @@ def parse_and_process_reports(
                             # 新增日誌，讓被跳過的資料不再是 "安靜" 的
                             log_callback(f"WARNING: [資料過濾] 在檔案 {os.path.basename(file_path)} 中跳過一筆資料，因缺少必要欄位。 (雇主: '{emp_name}', 姓名: '{w_name}', 居留證地: '{addr}')")
                             continue # 跳過缺少雇主、姓名、或居留證地的資料
-                        # --- 修改結束 ---
 
                         all_workers_data.append(worker_dict)
                     

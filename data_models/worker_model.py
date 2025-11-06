@@ -1,6 +1,7 @@
 import pandas as pd
 from datetime import datetime, date, timedelta
 import database
+import numpy as np
 
 def _execute_query_to_dataframe(conn, query, params=None):
     """一個輔助函式，用來手動執行查詢並回傳 DataFrame。"""
@@ -758,10 +759,11 @@ def delete_fee_history(history_id: int):
     finally:
         if conn: conn.close()
 
-def batch_update_workers_complex(worker_ids: list, updates: dict):
+def batch_update_workers_complex(worker_ids: list, updates: dict, protection_level: str):
     """
-    【v2.13 新增】執行複雜的批次更新，包含住宿、費用和離住。
+    【v2.14 新增】執行複雜的批次更新，包含住宿、費用和離住。
     此函式在單一資料庫交易 (Transaction) 中執行所有操作。
+    新增 protection_level 參數，允許使用者指定更新後的資料保護狀態。
     """
     if not worker_ids:
         return False, "未選擇任何員工。"
@@ -816,11 +818,7 @@ def batch_update_workers_complex(worker_ids: list, updates: dict):
                         'INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date) VALUES (%s, %s, %s)',
                         (worker_id, new_room_id, new_start_date)
                     )
-                    # 更新 Workers 表的 data_source 標記，鎖定住宿
-                    cursor.execute(
-                        'UPDATE "Workers" SET data_source = %s WHERE unique_id = %s',
-                        ('手動調整', worker_id)
-                    )
+                    # (註：保護層級將在步驟 4 統一設定)
 
                 # --- 2. 處理離住日設定 ---
                 if departure_change:
@@ -830,7 +828,6 @@ def batch_update_workers_complex(worker_ids: list, updates: dict):
                         (new_end_date, worker_id)
                     )
                     # 結束該員工最新的一筆住宿紀錄
-                    # (使用子查詢找出最新一筆紀錄的 ID)
                     cursor.execute(
                         """
                         UPDATE "AccommodationHistory" 
@@ -840,7 +837,7 @@ def batch_update_workers_complex(worker_ids: list, updates: dict):
                             WHERE worker_unique_id = %s 
                             ORDER BY start_date DESC, id DESC 
                             LIMIT 1
-                        )
+                        ) AND end_date IS NULL -- 只更新尚未結束的
                         """,
                         (new_end_date, worker_id)
                     )
@@ -855,13 +852,172 @@ def batch_update_workers_complex(worker_ids: list, updates: dict):
                                 'INSERT INTO "FeeHistory" (worker_unique_id, fee_type, amount, effective_date) VALUES (%s, %s, %s, %s)',
                                 (worker_id, fee_type_name, int(fee_amount), fee_effective_date)
                             )
+                
+                # --- 4. 【核心修改】統一設定保護層級 ---
+                # 無論執行了 1, 2, 還是 3，最後都根據使用者的選擇來設定 data_source
+                if protection_level:
+                    cursor.execute(
+                        'UPDATE "Workers" SET data_source = %s WHERE unique_id = %s',
+                        (protection_level, worker_id)
+                    )
 
             # --- 所有員工都成功處理後，提交交易 ---
             conn.commit()
-            return True, f"成功批次更新 {len(worker_ids)} 位員工的資料。"
+            return True, f"成功批次更新 {len(worker_ids)} 位員工的資料，並將他們的保護層級設為「{protection_level}」。"
 
     except Exception as e:
         if conn: conn.rollback() # 發生任何錯誤，全部復原
+        return False, f"批次更新時發生嚴重錯誤，所有操作已復原: {e}"
+    finally:
+        if conn: conn.close()
+
+def get_accommodation_history_for_workers(worker_ids: list):
+    """
+    【v2.15 新增】為一批工人查詢其所有的住宿歷史紀錄，用於批次編輯器。
+    """
+    if not worker_ids:
+        return pd.DataFrame()
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        query = """
+            SELECT 
+                ah.id, 
+                ah.worker_unique_id, 
+                w.worker_name AS "員工姓名", 
+                d.original_address AS "宿舍地址", 
+                r.room_number AS "房號", 
+                ah.bed_number AS "床位編號", 
+                ah.start_date AS "入住日", 
+                ah.end_date AS "離住日", 
+                ah.notes AS "備註"
+            FROM "AccommodationHistory" ah
+            JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+            JOIN "Rooms" r ON ah.room_id = r.id
+            JOIN "Dormitories" d ON r.dorm_id = d.id
+            WHERE ah.worker_unique_id = ANY(%s)
+            ORDER BY w.worker_name, ah.start_date DESC
+        """
+        df = _execute_query_to_dataframe(conn, query, (worker_ids,))
+        if not df.empty:
+            # 確保日期是 date 物件，而不是 datetime
+            df['入住日'] = pd.to_datetime(df['入住日']).dt.date
+            df['離住日'] = pd.to_datetime(df['離住日']).dt.date
+        return df
+    finally:
+        if conn: conn.close()
+
+def get_fee_history_for_workers(worker_ids: list):
+    """
+    【v2.15 新增】為一批工人查詢其所有的費用歷史紀錄，用於批次編輯器。
+    """
+    if not worker_ids:
+        return pd.DataFrame()
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        query = """
+            SELECT 
+                fh.id, 
+                fh.worker_unique_id, 
+                w.worker_name AS "員工姓名", 
+                fh.fee_type AS "費用類型", 
+                fh.amount AS "金額", 
+                fh.effective_date AS "生效日期"
+            FROM "FeeHistory" fh
+            JOIN "Workers" w ON fh.worker_unique_id = w.unique_id
+            WHERE fh.worker_unique_id = ANY(%s)
+            ORDER BY w.worker_name, fh.effective_date DESC, fh.fee_type
+        """
+        df = _execute_query_to_dataframe(conn, query, (worker_ids,))
+        if not df.empty:
+            df['生效日期'] = pd.to_datetime(df['生效日期']).dt.date
+        return df
+    finally:
+        if conn: conn.close()
+
+def batch_edit_history(original_df: pd.DataFrame, edited_df: pd.DataFrame, table_name: str, key_column: str, columns_to_update: list):
+    """
+    【v2.15 新增】通用的歷史紀錄批次編輯器後端邏輯。
+    """
+    # 確保日期格式一致
+    for col in columns_to_update:
+        if 'date' in col or '日' in col:
+            original_df[col] = pd.to_datetime(original_df[col], errors='coerce').dt.date
+            edited_df[col] = pd.to_datetime(edited_df[col], errors='coerce').dt.date
+
+    # 將 NaN/NaT 轉換為 None (與資料庫 NULL 一致)
+    original_df = original_df.replace({np.nan: None})
+    edited_df = edited_df.replace({np.nan: None})
+
+    # 設置索引以便比對
+    original_indexed = original_df.set_index(key_column)
+    edited_indexed = edited_df.set_index(key_column)
+
+    # 找出有變更的行
+    # compare() 只會顯示有差異的行
+    try:
+        diff_df = edited_indexed[columns_to_update].compare(original_indexed[columns_to_update])
+    except Exception as e:
+        # 如果欄位型別不符 (例如日期 vs 字串)，compare 可能會失敗
+        return False, f"資料比對時發生型別錯誤: {e}。請確保日期格式正確。"
+
+    if diff_df.empty:
+        return True, "沒有偵測到任何變更。"
+
+    changed_ids = diff_df.index.tolist()
+    # 從「編輯後」的 DataFrame 中獲取這些變更的完整資料
+    rows_to_update = edited_indexed.loc[changed_ids]
+
+    # 找出所有被影響的 worker_unique_id，以便最後設定保護
+    unique_worker_ids_to_protect = rows_to_update['worker_unique_id'].unique()
+    
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗。"
+
+    try:
+        with conn.cursor() as cursor:
+            update_count = 0
+            # 遍歷每一筆被修改的紀錄
+            for record_id, row_data in rows_to_update.iterrows():
+                
+                # 構建 UPDATE 語句
+                set_clauses = []
+                set_values = []
+                for col_name in columns_to_update:
+                    # 將 DataFrame 的欄位名 (中文) 轉換為資料庫的欄位名 (英文)
+                    db_col = col_name # 預設
+                    if col_name == "入住日": db_col = "start_date"
+                    elif col_name == "離住日": db_col = "end_date"
+                    elif col_name == "備註": db_col = "notes"
+                    elif col_name == "床位編號": db_col = "bed_number"
+                    elif col_name == "金額": db_col = "amount"
+                    elif col_name == "生效日期": db_col = "effective_date"
+                    # ( '員工姓名', '宿舍地址', '房號', '費用類型' 不允許被修改 )
+                    
+                    if db_col in row_data:
+                        set_clauses.append(f'"{db_col}" = %s')
+                        set_values.append(row_data[db_col])
+                
+                if set_clauses:
+                    set_sql = ", ".join(set_clauses)
+                    sql = f'UPDATE "{table_name}" SET {set_sql} WHERE "{key_column}" = %s'
+                    set_values.append(record_id)
+                    cursor.execute(sql, tuple(set_values))
+                    update_count += 1
+            
+            # --- 核心：自動設定資料保護 ---
+            if unique_worker_ids_to_protect.size > 0:
+                cursor.execute(
+                    'UPDATE "Workers" SET data_source = %s WHERE unique_id = ANY(%s) AND data_source != %s',
+                    ('手動調整', list(unique_worker_ids_to_protect), '手動管理(他仲)')
+                )
+                
+            conn.commit()
+            return True, f"成功更新 {update_count} 筆歷史紀錄，並已為 {len(unique_worker_ids_to_protect)} 位員工設定資料保護（手動調整）。"
+
+    except Exception as e:
+        if conn: conn.rollback()
         return False, f"批次更新時發生嚴重錯誤，所有操作已復原: {e}"
     finally:
         if conn: conn.close()

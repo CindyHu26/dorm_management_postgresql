@@ -127,6 +127,23 @@ def render():
             form_new_end_date = st.date_input("最終離住日期", value=None)
             st.caption("**重要**：必須填寫「最終離住日期」，此項操作才會生效。")
 
+        st.markdown("---") 
+
+        st.subheader("步驟四：設定保護層級")
+        st.info("執行此次批次作業後，您希望這些員工的資料狀態變為？")
+        
+        protection_options = {
+            "手動調整": "保護「住宿位置/日期」，但允許爬蟲未來更新「離住日」。 (建議選項)",
+            "系統自動更新": "不保護。在下次執行時，用系統資料覆蓋此次修改。",
+            "手動管理(他仲)": "完全鎖定。未來將跳過這些人，不更新任何資料（包括離住日）。"
+        }
+        
+        form_protection_level = st.selectbox(
+            "選擇更新後的保護層級*",
+            options=list(protection_options.keys()),
+            format_func=lambda x: protection_options[x],
+            index=0 # 預設選取 "手動調整"
+        )
         st.markdown("---")
         submitted = st.form_submit_button("🚀 執行批次更新", type="primary")
         
