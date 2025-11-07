@@ -1,9 +1,10 @@
-# views/residency_analyzer_view.py (新增「新增入住」區塊與擴充欄位)
+# views/residency_analyzer_view.py (v1.2 - 新增雇主與歷史篩選)
 
 import streamlit as st
 import pandas as pd
 from datetime import date
-from data_models import residency_analyzer_model, dormitory_model
+# 【核心修改 1】匯入 employer_dashboard_model
+from data_models import residency_analyzer_model, dormitory_model, employer_dashboard_model
 
 def render():
     """渲染「歷史在住查詢」頁面"""
@@ -11,30 +12,56 @@ def render():
     st.info("您可以透過設定日期區間和宿舍，來查詢過去、現在或未來的住宿人員名單及其費用狀況。")
 
     # --- 篩選器區塊 ---
-    dorms = dormitory_model.get_dorms_for_selection()
+    @st.cache_data
+    def get_dorms_list():
+        return dormitory_model.get_dorms_for_selection()
+
+    @st.cache_data
+    def get_employers_list():
+        return employer_dashboard_model.get_all_employers()
+
+    dorms = get_dorms_list()
     dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms} if dorms else {}
+    
+    employers_list = get_employers_list()
+    if not employers_list:
+        st.warning("目前資料庫中沒有任何雇主資料可供篩選。")
+        return
 
     st.markdown("##### 篩選條件")
-    c1, c2, c3 = st.columns([1, 1, 2])
+    c1, c2 = st.columns(2)
     start_date = c1.date_input("查詢起始日", value=date.today())
     end_date = c2.date_input("查詢結束日", value=date.today())
-    selected_dorm_ids = c3.multiselect(
+    
+    c3, c4 = st.columns(2)
+    # 【核心修改 2】新增雇主多選
+    selected_employer_names = c3.multiselect(
+        "篩選雇主 (可不選，預設為全部)",
+        options=employers_list
+    )
+    selected_dorm_ids = c4.multiselect(
         "篩選宿舍 (可不選，預設為全部)",
         options=list(dorm_options.keys()),
         format_func=lambda x: dorm_options.get(x)
     )
     
+    # 【核心修改 3】新增住宿歷史篩選
+    min_history_filter = st.checkbox("僅顯示 2 段以上住宿歷史者 (曾換宿/搬遷者)")
+    
     if st.button("🔍 開始查詢", type="primary"):
         if start_date > end_date:
             st.error("錯誤：起始日不能晚於結束日！")
         else:
+            # 【核心修改 4】將新篩選器加入 filters
             filters = {
                 "start_date": start_date,
                 "end_date": end_date,
-                "dorm_ids": selected_dorm_ids if selected_dorm_ids else None
+                "dorm_ids": selected_dorm_ids if selected_dorm_ids else None,
+                "employer_names": selected_employer_names if selected_employer_names else None,
+                "min_history_count": 2 if min_history_filter else None
             }
             with st.spinner("正在查詢中..."):
-                # 同時執行兩種查詢
+                # 兩種查詢都會接收到新的 filters
                 results_df = residency_analyzer_model.get_residents_for_period(filters)
                 new_residents_df = residency_analyzer_model.get_new_residents_for_period(filters)
             

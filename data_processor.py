@@ -205,7 +205,7 @@ def parse_and_process_reports(
         '居留證號': 'arc_number',
         '交工日': 'accommodation_start_date',
         '聘僱期滿日': 'work_permit_expiry_date',
-        '居留證地': 'original_address',
+        '居住地址': 'original_address',
         '出境日期': 'departure_date'
     }
     
@@ -255,7 +255,7 @@ def parse_and_process_reports(
                         header_index_map = {}
                         break 
                     
-                    # log_callback(f"INFO: 欄位索引建立成功。 '居留證地' 位於索引 {header_index_map.get('居留證地', 'N/A')}, '交工日' 位於索引 {header_index_map.get('交工日', 'N/A')}。")
+                    # log_callback(f"INFO: 欄位索引建立成功。 '居住地址' 位於索引 {header_index_map.get('居住地址', 'N/A')}, '交工日' 位於索引 {header_index_map.get('交工日', 'N/A')}。")
                     continue 
 
                 if is_data_section:
@@ -271,12 +271,12 @@ def parse_and_process_reports(
                         # 基礎驗證，並在失敗時印出日誌
                         emp_name = worker_dict.get('employer_name')
                         w_name = worker_dict.get('worker_name')
-                        addr = worker_dict.get('original_address') # "居留證地"
+                        addr = worker_dict.get('original_address') # "居住地址"
 
                         if not emp_name or not w_name or not addr:
                             # 新增日誌，讓被跳過的資料不再是 "安靜" 的
-                            log_callback(f"WARNING: [資料過濾] 在檔案 {os.path.basename(file_path)} 中跳過一筆資料，因缺少必要欄位。 (雇主: '{emp_name}', 姓名: '{w_name}', 居留證地: '{addr}')")
-                            continue # 跳過缺少雇主、姓名、或居留證地的資料
+                            log_callback(f"WARNING: [資料過濾] 在檔案 {os.path.basename(file_path)} 中跳過一筆資料，因缺少必要欄位。 (雇主: '{emp_name}', 姓名: '{w_name}', 居住地址: '{addr}')")
+                            continue # 跳過缺少雇主、姓名、或居住地址的資料
 
                         all_workers_data.append(worker_dict)
                     
@@ -295,7 +295,7 @@ def parse_and_process_reports(
     master_df = pd.DataFrame(all_workers_data)
     log_callback(f"INFO: 所有報表已成功合併！總共有 {len(master_df)} 筆有效資料。")
 
-    log_callback("INFO: 正在過濾地址 (居留證地) 為空的資料列...")
+    log_callback("INFO: 正在過濾地址 (居住地址) 為空的資料列...")
     original_rows = len(master_df)
     master_df = master_df.loc[master_df['original_address'].notna() & (master_df['original_address'].str.strip() != '')].copy()
     log_callback(f"INFO: 已過濾 {original_rows - len(master_df)} 筆地址為空的資料列。")
