@@ -1,4 +1,4 @@
-# views/worker_view.py (v2.9 - 費用唯讀版)
+# views/worker_view.py (v2.10 - NaN 修正版)
 
 import streamlit as st
 import pandas as pd
@@ -6,7 +6,7 @@ from datetime import datetime, date
 from data_models import worker_model, dormitory_model
 
 def render():
-    """【v2.9 修改版】渲染「人員管理」頁面，費用欄位改為唯讀"""
+    """【v2.10 修改版】渲染「人員管理」頁面，修正 NaN 錯誤"""
     st.header("移工住宿人員管理")
     
     # --- Session State 初始化 (維持不變) ---
@@ -120,7 +120,6 @@ def render():
     st.session_state.worker_view_filters['dorm_id'] = f_c2_view.selectbox("篩選宿舍 ", options=[None] + list(dorm_options.keys()), format_func=lambda x: "全部宿舍" if x is None else dorm_options.get(x), index=[None, *dorm_options.keys()].index(st.session_state.worker_view_filters['dorm_id']))
     st.session_state.worker_view_filters['status'] = f_c3_view.selectbox("篩選在住狀態 ", ["全部", "在住", "已離住"], index=["全部", "在住", "已離住"].index(st.session_state.worker_view_filters['status']))
     
-    # --- 【核心修改 1】確保 worker_model.get_workers_for_view 已被更新 (稍後提供程式碼) ---
     workers_df = worker_model.get_workers_for_view(st.session_state.worker_view_filters)
     
     st.dataframe(workers_df, width="stretch", hide_index=True, column_config={"unique_id": None}) 
@@ -153,8 +152,6 @@ def render():
         )
 
         if selected_worker_id:
-            # --- 【核心修改 2】這裡讀取的 worker_details 仍是 Workers 主表 ---
-            # --- 但我們在下方 number_input 的 value 會使用 workers_df (來自 FeeHistory) 的值 ---
             worker_details = worker_model.get_single_worker_details(selected_worker_id)
             if not worker_details:
                 st.error("找不到選定的移工資料，可能已被刪除。")
@@ -181,20 +178,28 @@ def render():
                         st.markdown("##### 住宿分配")
                         st.info("工人的住宿地點管理已移至「🏠 住宿歷史管理」分頁。")
                         
-                        # --- 【核心修改 3】新增提示，並將費用欄位設為 disabled ---
                         st.markdown("##### 費用 (唯讀)")
                         st.info("ℹ️ 費用項目應至「💰 費用歷史」頁籤進行新增/修改，以保留完整的變更紀錄。此處僅顯示當前最新費用。")
                         
                         # 試著從總覽的 dataframe (已查詢 FeeHistory) 中獲取最新費用
                         worker_row_from_df = workers_df[workers_df['unique_id'] == selected_worker_id].iloc[0]
 
+                        # --- 【核心修改】---
+                        # 建立一個輔助函式來安全地轉換 NaN
+                        def get_fee_value(fee_name):
+                            val = worker_row_from_df.get(fee_name)
+                            if pd.isna(val):
+                                return 0
+                            return int(val)
+                        
                         fc1, fc2, fc3 = st.columns(3)
-                        monthly_fee = fc1.number_input("月費(房租)", value=int(worker_row_from_df.get('月費(房租)') or 0), disabled=True)
-                        utilities_fee = fc2.number_input("水電費", value=int(worker_row_from_df.get('水電費') or 0), disabled=True)
-                        cleaning_fee = fc3.number_input("清潔費", value=int(worker_row_from_df.get('清潔費') or 0), disabled=True)
+                        monthly_fee = fc1.number_input("月費(房租)", value=get_fee_value('月費(房租)'), disabled=True)
+                        utilities_fee = fc2.number_input("水電費", value=get_fee_value('水電費'), disabled=True)
+                        cleaning_fee = fc3.number_input("清潔費", value=get_fee_value('清潔費'), disabled=True)
                         fc4, fc5 = st.columns(2)
-                        restoration_fee = fc4.number_input("宿舍復歸費", value=int(worker_row_from_df.get('宿舍復歸費') or 0), disabled=True)
-                        charging_cleaning_fee = fc5.number_input("充電清潔費", value=int(worker_row_from_df.get('充電清潔費') or 0), disabled=True)
+                        restoration_fee = fc4.number_input("宿舍復歸費", value=get_fee_value('宿舍復歸費'), disabled=True)
+                        charging_cleaning_fee = fc5.number_input("充電清潔費", value=get_fee_value('充電清潔費'), disabled=True)
+                        # --- 修正結束 ---
                         
                         st.markdown("##### 狀態 (可手動修改)")
                         fcc1, fcc2 = st.columns(2)
@@ -211,15 +216,12 @@ def render():
                         if st.form_submit_button("儲存核心資料變更"):
                             final_end_date = None if clear_end_date else (str(accommodation_end_date) if accommodation_end_date else None)
                             
-                            # --- 【核心修改 4】從 update_data 移除所有費用欄位 ---
                             update_data = {
                                 'payment_method': payment_method, 
                                 'accommodation_end_date': final_end_date,
                                 'worker_notes': worker_notes
                             }
-                            # --- 修改結束 ---
 
-                            # (後端 worker_model.update_worker_details 會自動跳過 FeeHistory 的紀錄)
                             success, message = worker_model.update_worker_details(selected_worker_id, update_data)
                             if success: st.success(message); st.cache_data.clear(); st.rerun()
                             else: st.error(message)
@@ -443,7 +445,7 @@ def render():
                             history_details = worker_model.get_single_fee_history_details(selected_history_id)
                             if history_details:
                                 with st.form(f"edit_fee_history_form_{selected_history_id}"):
-                                    st.markdown(f"###### 正在編輯 ID: {history_details['id']} 的紀錄")
+                                    st.markdown(f"###### กำลังแก้ไข ID: {history_details['id']} 的紀錄")
                                     fee_type_options = ['房租', '水電費', '清潔費', '宿舍復歸費', '充電清潔費']
                                     try: default_index = fee_type_options.index(history_details.get('fee_type'))
                                     except ValueError: default_index = 0
