@@ -871,19 +871,21 @@ def batch_update_workers_complex(worker_ids: list, updates: dict, protection_lev
     finally:
         if conn: conn.close()
 
-def get_accommodation_history_for_workers(worker_ids: list):
+def get_accommodation_history_for_workers(worker_ids: list, date_range: tuple = None):
     """
-    【v2.15 新增】為一批工人查詢其所有的住宿歷史紀錄，用於批次編輯器。
+    【v2.15 修改版】為一批工人查詢其所有的住宿歷史紀錄，支援日期區間篩選。
     """
     if not worker_ids:
         return pd.DataFrame()
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
+        params = [worker_ids]
         query = """
             SELECT 
                 ah.id, 
                 ah.worker_unique_id, 
+                w.employer_name AS "雇主",
                 w.worker_name AS "員工姓名", 
                 d.original_address AS "宿舍地址", 
                 r.room_number AS "房號", 
@@ -896,9 +898,22 @@ def get_accommodation_history_for_workers(worker_ids: list):
             JOIN "Rooms" r ON ah.room_id = r.id
             JOIN "Dormitories" d ON r.dorm_id = d.id
             WHERE ah.worker_unique_id = ANY(%s)
-            ORDER BY w.worker_name, ah.start_date DESC
         """
-        df = _execute_query_to_dataframe(conn, query, (worker_ids,))
+
+        if date_range:
+            start_date, end_date = date_range
+            query += """
+                AND (
+                    (ah.start_date BETWEEN %s AND %s) OR
+                    (ah.end_date BETWEEN %s AND %s) OR
+                    (ah.start_date < %s AND (ah.end_date IS NULL OR ah.end_date > %s))
+                )
+            """
+            params.extend([start_date, end_date, start_date, end_date, start_date, end_date])
+
+        query += " ORDER BY w.worker_name, ah.start_date DESC"
+
+        df = _execute_query_to_dataframe(conn, query, tuple(params))
         if not df.empty:
             # 確保日期是 date 物件，而不是 datetime
             df['入住日'] = pd.to_datetime(df['入住日']).dt.date
@@ -907,19 +922,21 @@ def get_accommodation_history_for_workers(worker_ids: list):
     finally:
         if conn: conn.close()
 
-def get_fee_history_for_workers(worker_ids: list):
+def get_fee_history_for_workers(worker_ids: list, date_range: tuple = None):
     """
-    【v2.15 新增】為一批工人查詢其所有的費用歷史紀錄，用於批次編輯器。
+    【v2.15 修改版】為一批工人查詢其所有的費用歷史紀錄，支援日期區間篩選。
     """
     if not worker_ids:
         return pd.DataFrame()
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
+        params = [worker_ids]
         query = """
             SELECT 
                 fh.id, 
                 fh.worker_unique_id, 
+                w.employer_name AS "雇主",
                 w.worker_name AS "員工姓名", 
                 fh.fee_type AS "費用類型", 
                 fh.amount AS "金額", 
@@ -927,9 +944,16 @@ def get_fee_history_for_workers(worker_ids: list):
             FROM "FeeHistory" fh
             JOIN "Workers" w ON fh.worker_unique_id = w.unique_id
             WHERE fh.worker_unique_id = ANY(%s)
-            ORDER BY w.worker_name, fh.effective_date DESC, fh.fee_type
         """
-        df = _execute_query_to_dataframe(conn, query, (worker_ids,))
+
+        if date_range:
+            start_date, end_date = date_range
+            query += " AND fh.effective_date BETWEEN %s AND %s"
+            params.extend([start_date, end_date])
+
+        query += " ORDER BY w.worker_name, fh.effective_date DESC, fh.fee_type"
+
+        df = _execute_query_to_dataframe(conn, query, tuple(params))
         if not df.empty:
             df['生效日期'] = pd.to_datetime(df['生效日期']).dt.date
         return df
@@ -1019,5 +1043,25 @@ def batch_edit_history(original_df: pd.DataFrame, edited_df: pd.DataFrame, table
     except Exception as e:
         if conn: conn.rollback()
         return False, f"批次更新時發生嚴重錯誤，所有操作已復原: {e}"
+    finally:
+        if conn: conn.close()
+
+def get_worker_ids_by_history_count(min_count: int = 1):
+    """
+    【v2.15 新增】查詢住宿歷史紀錄大於等於 min_count 的所有工人 ID。
+    """
+    conn = database.get_db_connection()
+    if not conn: return []
+    try:
+        query = """
+            SELECT worker_unique_id
+            FROM "AccommodationHistory"
+            GROUP BY worker_unique_id
+            HAVING COUNT(id) >= %s;
+        """
+        with conn.cursor() as cursor:
+            cursor.execute(query, (min_count,))
+            records = cursor.fetchall()
+            return [row['worker_unique_id'] for row in records]
     finally:
         if conn: conn.close()

@@ -12,7 +12,6 @@ def render():
     # --- Session State 初始化 ---
     if 'worker_active_tab' not in st.session_state:
         st.session_state.worker_active_tab = "✏️ 編輯核心資料"
-    # 如果選擇了新的工人，重置頁籤到第一個
     if 'selected_worker_id' not in st.session_state:
         st.session_state.selected_worker_id = None
     if 'last_selected_worker_id' not in st.session_state:
@@ -79,10 +78,8 @@ def render():
                     'unique_id': unique_id, 'employer_name': emp_clean, 'worker_name': name_clean,
                     'passport_number': pass_clean if pass_clean else None,
                     'gender': gender, 'nationality': final_nationality, 'arc_number': arc_number,
-                    # --- 加入 dorm_id ---
                     'dorm_id': selected_dorm_id_new,
-                    # --- 加入結束 ---
-                    'room_id': selected_room_id_new, # room_id 保持傳遞，後端會處理 None 的情況
+                    'room_id': selected_room_id_new, 
                     'monthly_fee': monthly_fee,
                     'utilities_fee': utilities_fee, 'cleaning_fee': cleaning_fee,
                     'restoration_fee': restoration_fee, 'charging_cleaning_fee': charging_cleaning_fee,
@@ -105,7 +102,7 @@ def render():
 
     st.markdown("---")
 
-    # --- 移工總覽區塊 (移到前面) ---
+    # --- 移工總覽區塊 ---
     st.subheader("移工總覽 (所有宿舍)")
 
     if 'worker_view_filters' not in st.session_state:
@@ -123,23 +120,20 @@ def render():
     st.session_state.worker_view_filters['dorm_id'] = f_c2_view.selectbox("篩選宿舍 ", options=[None] + list(dorm_options.keys()), format_func=lambda x: "全部宿舍" if x is None else dorm_options.get(x), index=[None, *dorm_options.keys()].index(st.session_state.worker_view_filters['dorm_id']))
     st.session_state.worker_view_filters['status'] = f_c3_view.selectbox("篩選在住狀態 ", ["全部", "在住", "已離住"], index=["全部", "在住", "已離住"].index(st.session_state.worker_view_filters['status']))
     
-    # 執行查詢，取得篩選後的 DataFrame
     workers_df = worker_model.get_workers_for_view(st.session_state.worker_view_filters)
     
-    # 顯示總覽表格
-    st.dataframe(workers_df, width="stretch", hide_index=True, column_config={"unique_id": None}) # 隱藏 unique_id
+    st.dataframe(workers_df, width="stretch", hide_index=True, column_config={"unique_id": None}) 
 
     st.markdown("---")
 
-    # --- 編輯/檢視單一移工資料區塊 (移到後面) ---
+    # --- 編輯/檢視單一移工資料區塊 ---
     st.subheader("編輯/檢視單一移工資料")
 
     if workers_df.empty:
         st.info("目前沒有符合篩選條件的工人資料可供編輯。")
     else:
-        # --- 【核心修改】直接使用 workers_df 來建立選項 ---
         worker_options = {
-            row['unique_id']: ( # 這裡現在可以正確讀取
+            row['unique_id']: ( 
                 f"{row.get('雇主', 'N/A')} / "
                 f"{row.get('姓名', 'N/A')} / "
                 f"護照:{row.get('護照號碼') or '無'} / "
@@ -147,15 +141,14 @@ def render():
                 f"({row.get('實際地址', 'N/A')})"
                 f"{' (已離住)' if row.get('在住狀態') == '已離住' else ''}"
             )
-            for _, row in workers_df.iterrows() # 使用篩選後的 workers_df
+            for _, row in workers_df.iterrows()
         }
         
-        # --- 【核心修改】將 selected_worker_id 存入 session_state ---
         selected_worker_id = st.selectbox(
             "請從上方總覽列表選擇要操作的移工：",
             options=[None] + list(worker_options.keys()),
             format_func=lambda x: "請選擇..." if x is None else worker_options.get(x),
-            key="selected_worker_id" # 使用 session_state key
+            key="selected_worker_id"
         )
 
         if selected_worker_id:
@@ -166,11 +159,10 @@ def render():
                 st.markdown(f"#### 管理移工: {worker_details.get('worker_name')} ({worker_details.get('employer_name')})")
                 
                 tab_names = ["✏️ 編輯核心資料", "🏠 住宿歷史管理", "🕒 狀態歷史管理", "💰 費用歷史"]
-                # 使用 session_state 來控制頁籤
                 selected_tab = st.radio(
                     "管理選項:",
                     tab_names,
-                    key="worker_active_tab", # 使用 session_state key
+                    key="worker_active_tab",
                     horizontal=True,
                     label_visibility="collapsed"
                 )
@@ -282,11 +274,9 @@ def render():
                                 with st.form(f"edit_history_form_{selected_history_id}"):
                                     st.markdown(f"###### 正在編輯 ID: {history_details['id']} 的紀錄")
 
-                                    # --- 替換住宿位置輸入 ---
                                     current_room_id = history_details.get('room_id')
                                     current_dorm_id = dormitory_model.get_dorm_id_from_room_id(current_room_id)
 
-                                    # 取得所有宿舍選項
                                     all_dorms_edit = dormitory_model.get_dorms_for_selection() or []
                                     all_dorm_options_edit = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in all_dorms_edit}
                                     dorm_keys_edit = list(all_dorm_options_edit.keys())
@@ -297,12 +287,10 @@ def render():
 
                                     edit_dorm_id = st.selectbox("宿舍地址", options=dorm_keys_edit, format_func=lambda x: all_dorm_options_edit.get(x), index=dorm_index, key=f"edit_hist_dorm_{selected_history_id}")
 
-                                    # 根據選擇的宿舍動態載入房間選項
                                     rooms_edit = dormitory_model.get_rooms_for_selection(edit_dorm_id) or []
                                     room_options_edit = {r['id']: r['room_number'] for r in rooms_edit}
                                     room_keys_edit = list(room_options_edit.keys())
                                     try:
-                                        # 如果目前房間在新宿舍的選項中，則預選它，否則不預選(index=0)
                                         room_index = room_keys_edit.index(current_room_id) if current_room_id in room_keys_edit else 0
                                     except ValueError:
                                         room_index = 0
@@ -311,7 +299,13 @@ def render():
 
                                     ehc1, ehc2, ehc3 = st.columns(3)
                                     edit_start_date = ehc1.date_input("起始日", value=history_details.get('start_date'))
-                                    edit_end_date = ehc2.date_input("結束日 (留空表示仍在住)", value=history_details.get('end_date'))
+                                    
+                                    # --- 【核心修改 1】新增 checkbox ---
+                                    with ehc2:
+                                        edit_end_date = st.date_input("結束日 (留空表示仍在住)", value=history_details.get('end_date'))
+                                        clear_end_date_history = st.checkbox("清除結束日 (設為仍在住)", key=f"clear_end_hist_{selected_history_id}")
+                                    # --- 修改結束 ---
+                                    
                                     edit_bed_number = ehc3.text_input("床位編號", value=history_details.get('bed_number') or "")
                                     edit_notes = st.text_area("備註", value=history_details.get('notes', ''))
 
@@ -319,14 +313,18 @@ def render():
                                         if not edit_room_id:
                                              st.error("必須選擇一個房間！")
                                         else:
-                                             # --- 將 edit_room_id 加入 update_data ---
+                                             # --- 【核心修改 2】檢查 checkbox ---
+                                             final_end_date = None if clear_end_date_history else (str(edit_end_date) if edit_end_date else None)
+                                            
                                              update_data = {
-                                                 "room_id": edit_room_id, # <-- 加入房間 ID
-                                                 "start_date": edit_start_date,
-                                                 "end_date": edit_end_date,
+                                                 "room_id": edit_room_id,
+                                                 "start_date": str(edit_start_date) if edit_start_date else None,
+                                                 "end_date": final_end_date, # <-- 使用新變數
                                                  "bed_number": edit_bed_number,
                                                  "notes": edit_notes
                                              }
+                                             # --- 修改結束 ---
+                                             
                                              success, message = worker_model.update_accommodation_history(selected_history_id, update_data)
                                              if success: st.success(message); st.cache_data.clear(); st.rerun()
                                              else: st.error(message)
@@ -376,11 +374,21 @@ def render():
                                     edit_status = es_c1.selectbox("狀態", status_options_edit, index=index)
                                     start_val, end_val = status_details.get('start_date'), status_details.get('end_date')
                                     edit_start_date = es_c2.date_input("起始日", value=start_val)
-                                    edit_end_date = es_c3.date_input("結束日 (若留空代表此為當前狀態)", value=end_val)
+                                    
+                                    # --- 【核心修改 3】新增 checkbox ---
+                                    with es_c3:
+                                        edit_end_date = st.date_input("結束日 (若留空代表此為當前狀態)", value=end_val)
+                                        clear_end_date_status = st.checkbox("清除結束日", key=f"clear_end_status_{selected_status_id}")
+                                    # --- 修改結束 ---
+                                    
                                     edit_notes = st.text_area("狀態備註", value=status_details.get('notes', ''))
 
                                     if st.form_submit_button("儲存狀態變更"):
-                                        updated_details = {"status": edit_status, "start_date": str(edit_start_date) if edit_start_date else None, "end_date": str(edit_end_date) if edit_end_date else None, "notes": edit_notes}
+                                        # --- 【核心修改 4】檢查 checkbox ---
+                                        final_end_date_status = None if clear_end_date_status else (str(edit_end_date) if edit_end_date else None)
+                                        updated_details = {"status": edit_status, "start_date": str(edit_start_date) if edit_start_date else None, "end_date": final_end_date_status, "notes": edit_notes}
+                                        # --- 修改結束 ---
+                                        
                                         success, message = worker_model.update_worker_status(selected_status_id, updated_details)
                                         if success: st.success(message); st.cache_data.clear(); st.rerun()
                                         else: st.error(message)
