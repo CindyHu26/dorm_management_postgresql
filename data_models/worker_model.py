@@ -17,8 +17,9 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_workers_for_view(filters: dict):
     """
-    【v2.9 費用來源修正版】根據篩選條件，查詢移工的詳細住宿資訊。
-    所有費用欄位 (房租、水電等) 改為從 FeeHistory 查詢最新一筆紀錄。
+    【v2.11 離住日修正版】根據篩選條件，查詢移工的詳細住宿資訊。
+    「入住日期」欄位現在顯示 "最後一筆" 住宿歷史的起始日，無論是否在住。
+    費用欄位 (房租、水電等) 改為從 FeeHistory 查詢最新一筆紀錄。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -27,7 +28,10 @@ def get_workers_for_view(filters: dict):
 
     try:
         base_query = f"""
-            WITH CurrentAccommodation AS (
+            WITH 
+            -- 【核心修改 1】將 'CurrentAccommodation' 改為 'LastAccommodation'
+            -- 並且移除 "WHERE" 條件，使其能抓到 "已離住" 員工的最後一筆紀錄
+            LastAccommodation AS (
                 SELECT
                     worker_unique_id,
                     room_id,
@@ -35,15 +39,15 @@ def get_workers_for_view(filters: dict):
                     start_date,
                     ROW_NUMBER() OVER(PARTITION BY worker_unique_id ORDER BY start_date DESC, id DESC) as rn
                 FROM "AccommodationHistory"
-                WHERE start_date <= {current_date_func} AND (end_date IS NULL OR end_date >= {current_date_func})
+                -- (原有的 "WHERE start_date <= ... AND (end_date IS NULL OR ...)" 已被移除)
             ),
-            -- 【核心修改 1】建立 CTE 查詢所有費用的最新一筆歷史
+            -- 查詢所有費用的最新一筆歷史
             LatestFeeHistory AS (
                 SELECT
                     worker_unique_id, fee_type, amount,
                     ROW_NUMBER() OVER(PARTITION BY worker_unique_id, fee_type ORDER BY effective_date DESC) as rn
                 FROM "FeeHistory"
-                WHERE effective_date <= {current_date_func} -- 確保生效日在今天或之前
+                WHERE effective_date <= {current_date_func}
             )
             SELECT
                 w.unique_id,
@@ -51,10 +55,10 @@ def get_workers_for_view(filters: dict):
                 w.worker_name AS "姓名",
                 d_actual.original_address AS "實際地址",
                 r_actual.room_number AS "實際房號",
-                ca.bed_number AS "床位編號",
+                la.bed_number AS "床位編號", -- 【核心修改 2】從 'la' (LastAccommodation) 取得
                 w.gender AS "性別",
                 w.nationality AS "國籍",
-                ca.start_date AS "入住日期",
+                la.start_date AS "入住日期", -- 【核心修改 2】從 'la' (LastAccommodation) 取得
                 w.accommodation_end_date AS "離住日期",
                 w.work_permit_expiry_date AS "工作期限",
                 w.special_status as "特殊狀況",
@@ -63,7 +67,6 @@ def get_workers_for_view(filters: dict):
                     THEN '已離住' ELSE '在住'
                 END as "在住狀態",
                 
-                -- 【核心修改 2】將所有費用欄位改為從 LatestFeeHistory 抓取
                 COALESCE(rent.amount, 0) AS "月費(房租)",
                 COALESCE(util.amount, 0) AS "水電費",
                 COALESCE(clean.amount, 0) AS "清潔費",
@@ -76,13 +79,13 @@ def get_workers_for_view(filters: dict):
                 d_system.original_address AS "系統地址",
                 w.data_source as "資料來源"
             FROM "Workers" w
-            LEFT JOIN (SELECT * FROM CurrentAccommodation WHERE rn = 1) ca ON w.unique_id = ca.worker_unique_id
-            LEFT JOIN "Rooms" r_actual ON ca.room_id = r_actual.id
+            -- 【核心修改 3】JOIN 'LastAccommodation' (簡稱 la)
+            LEFT JOIN (SELECT * FROM LastAccommodation WHERE rn = 1) la ON w.unique_id = la.worker_unique_id
+            LEFT JOIN "Rooms" r_actual ON la.room_id = r_actual.id
             LEFT JOIN "Dormitories" d_actual ON r_actual.dorm_id = d_actual.id
             LEFT JOIN "Rooms" r_system ON w.room_id = r_system.id
             LEFT JOIN "Dormitories" d_system ON r_system.dorm_id = d_system.id
             
-            -- 【核心修改 3】LEFT JOIN 每一個費用類型
             LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '房租' AND rn = 1) rent ON w.unique_id = rent.worker_unique_id
             LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '水電費' AND rn = 1) util ON w.unique_id = util.worker_unique_id
             LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '清潔費' AND rn = 1) clean ON w.unique_id = clean.worker_unique_id
@@ -111,95 +114,6 @@ def get_workers_for_view(filters: dict):
         if where_clauses:
             base_query += " WHERE " + " AND ".join(where_clauses)
 
-        base_query += ' ORDER BY d_actual.primary_manager, w.employer_name, w.worker_name'
-
-        return _execute_query_to_dataframe(conn, base_query, params)
-    finally:
-        if conn: conn.close()
-
-def get_workers_for_view(filters: dict):
-    """
-    【v2.4 入住日修正版】根據篩選條件，查詢移工的詳細住宿資訊。
-    「入住日期」欄位現在顯示最新一筆住宿歷史的起始日。
-    """
-    conn = database.get_db_connection()
-    if not conn: return pd.DataFrame()
-
-    current_date_func = "CURRENT_DATE"
-
-    try:
-        base_query = f"""
-            WITH CurrentAccommodation AS (
-                SELECT
-                    worker_unique_id,
-                    room_id,
-                    bed_number,
-                    start_date, -- 【核心修改 1】選取最新住宿歷史的 start_date
-                    ROW_NUMBER() OVER(PARTITION BY worker_unique_id ORDER BY start_date DESC, id DESC) as rn
-                FROM "AccommodationHistory"
-                -- 保留原本的邏輯，找出 "目前" 的住宿紀錄
-                WHERE start_date <= {current_date_func} AND (end_date IS NULL OR end_date >= {current_date_func})
-            )
-            SELECT
-                w.unique_id,
-                w.employer_name AS "雇主",
-                w.worker_name AS "姓名",
-                d_actual.original_address AS "實際地址",
-                r_actual.room_number AS "實際房號",
-                ca.bed_number AS "床位編號",
-                w.gender AS "性別",
-                w.nationality AS "國籍",
-                -- 【核心修改 2】將入住日期來源改為 ca.start_date
-                ca.start_date AS "入住日期",
-                w.accommodation_end_date AS "離住日期", -- 離住日期維持 Workers 表的欄位
-                w.work_permit_expiry_date AS "工作期限",
-                w.special_status as "特殊狀況",
-                CASE
-                    WHEN w.accommodation_end_date IS NOT NULL AND w.accommodation_end_date <= {current_date_func}
-                    THEN '已離住' ELSE '在住'
-                END as "在住狀態",
-                w.monthly_fee AS "月費(房租)", w.utilities_fee AS "水電費", w.cleaning_fee AS "清潔費",
-                w.restoration_fee AS "宿舍復歸費",
-                w.charging_cleaning_fee AS "充電清潔費",
-                w.worker_notes AS "個人備註",
-                w.passport_number AS "護照號碼", w.arc_number AS "居留證號碼",
-                d_actual.primary_manager AS "主要管理人",
-                d_system.original_address AS "系統地址", -- 系統地址可能還是有用，先保留
-                w.data_source as "資料來源"
-            FROM "Workers" w
-            -- JOIN CTE，條件 rn = 1 不變，確保只取最新一筆
-            LEFT JOIN (SELECT * FROM CurrentAccommodation WHERE rn = 1) ca ON w.unique_id = ca.worker_unique_id
-            LEFT JOIN "Rooms" r_actual ON ca.room_id = r_actual.id
-            LEFT JOIN "Dormitories" d_actual ON r_actual.dorm_id = d_actual.id
-            LEFT JOIN "Rooms" r_system ON w.room_id = r_system.id -- 系統地址相關JOIN維持
-            LEFT JOIN "Dormitories" d_system ON r_system.dorm_id = d_system.id -- 系統地址相關JOIN維持
-        """
-
-        where_clauses = []
-        params = []
-
-        # --- 篩選條件 (WHERE 子句) 邏輯維持不變 ---
-        if filters.get('name_search'):
-            term = f"%{filters['name_search']}%"
-            where_clauses.append('(w.worker_name ILIKE %s OR w.employer_name ILIKE %s OR d_actual.original_address ILIKE %s OR d_system.original_address ILIKE %s)')
-            params.extend([term, term, term, term])
-
-        if filters.get('dorm_id'):
-            # 篩選條件應針對實際地址
-            where_clauses.append("d_actual.id = %s")
-            params.append(filters['dorm_id'])
-
-        status_filter = filters.get('status')
-        if status_filter == '在住':
-            where_clauses.append(f"(w.accommodation_end_date IS NULL OR w.accommodation_end_date > {current_date_func})")
-        elif status_filter == '已離住':
-            where_clauses.append(f"(w.accommodation_end_date IS NOT NULL AND w.accommodation_end_date <= {current_date_func})")
-        # --- 篩選條件結束 ---
-
-        if where_clauses:
-            base_query += " WHERE " + " AND ".join(where_clauses)
-
-        # 排序條件維持不變
         base_query += ' ORDER BY d_actual.primary_manager, w.employer_name, w.worker_name'
 
         return _execute_query_to_dataframe(conn, base_query, params)
