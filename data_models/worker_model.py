@@ -17,7 +17,7 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_workers_for_view(filters: dict):
     """
-    【v2.11 離住日修正版】根據篩選條件，查詢移工的詳細住宿資訊。
+    【v2.11.1 語法修正版】根據篩選條件，查詢移工的詳細住宿資訊。
     「入住日期」欄位現在顯示 "最後一筆" 住宿歷史的起始日，無論是否在住。
     費用欄位 (房租、水電等) 改為從 FeeHistory 查詢最新一筆紀錄。
     """
@@ -29,8 +29,6 @@ def get_workers_for_view(filters: dict):
     try:
         base_query = f"""
             WITH 
-            -- 【核心修改 1】將 'CurrentAccommodation' 改為 'LastAccommodation'
-            -- 並且移除 "WHERE" 條件，使其能抓到 "已離住" 員工的最後一筆紀錄
             LastAccommodation AS (
                 SELECT
                     worker_unique_id,
@@ -39,9 +37,7 @@ def get_workers_for_view(filters: dict):
                     start_date,
                     ROW_NUMBER() OVER(PARTITION BY worker_unique_id ORDER BY start_date DESC, id DESC) as rn
                 FROM "AccommodationHistory"
-                -- (原有的 "WHERE start_date <= ... AND (end_date IS NULL OR ...)" 已被移除)
             ),
-            -- 查詢所有費用的最新一筆歷史
             LatestFeeHistory AS (
                 SELECT
                     worker_unique_id, fee_type, amount,
@@ -55,17 +51,17 @@ def get_workers_for_view(filters: dict):
                 w.worker_name AS "姓名",
                 d_actual.original_address AS "實際地址",
                 r_actual.room_number AS "實際房號",
-                la.bed_number AS "床位編號", -- 【核心修改 2】從 'la' (LastAccommodation) 取得
+                la.bed_number AS "床位編號",
                 w.gender AS "性別",
                 w.nationality AS "國籍",
-                la.start_date AS "入住日期", -- 【核心修改 2】從 'la' (LastAccommodation) 取得
+                la.start_date AS "入住日期",
                 w.accommodation_end_date AS "離住日期",
                 w.work_permit_expiry_date AS "工作期限",
                 w.special_status as "特殊狀況",
                 CASE
                     WHEN w.accommodation_end_date IS NOT NULL AND w.accommodation_end_date <= {current_date_func}
                     THEN '已離住' ELSE '在住'
-                END as "在住狀態",
+                END as "在住狀態", 
                 
                 COALESCE(rent.amount, 0) AS "月費(房租)",
                 COALESCE(util.amount, 0) AS "水電費",
@@ -79,7 +75,6 @@ def get_workers_for_view(filters: dict):
                 d_system.original_address AS "系統地址",
                 w.data_source as "資料來源"
             FROM "Workers" w
-            -- 【核心修改 3】JOIN 'LastAccommodation' (簡稱 la)
             LEFT JOIN (SELECT * FROM LastAccommodation WHERE rn = 1) la ON w.unique_id = la.worker_unique_id
             LEFT JOIN "Rooms" r_actual ON la.room_id = r_actual.id
             LEFT JOIN "Dormitories" d_actual ON r_actual.dorm_id = d_actual.id

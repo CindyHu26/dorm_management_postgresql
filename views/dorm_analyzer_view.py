@@ -112,7 +112,51 @@ def render():
             )
             
     st.markdown("---")
+    # --- 房況總覽區塊 ---
+    st.subheader(f"{year_month_str} 宿舍房況總覽 (彙總)")
 
+    @st.cache_data
+    def get_room_view_data(dorm_ids, year_month):
+        return single_dorm_analyzer.get_room_occupancy_view(list(dorm_ids), year_month)
+    
+    # 將 dorm_ids 轉為 tuple 才能被快取
+    room_view_df = get_room_view_data(tuple(selected_dorm_ids), year_month_str)
+    
+    if room_view_df.empty:
+        st.info("所選宿舍中沒有建立房間 (或僅有 [未分配房間])。")
+    else:
+        # 依照宿舍地址和房號排序
+        room_view_df.sort_values(by=['original_address', 'room_number'], inplace=True)
+        
+        # 依照 (宿舍, 房號) 進行分組
+        for (dorm_address, room_number), occupants in room_view_df.groupby(['original_address', 'room_number']):
+            
+            # .iloc[0] 取得第一筆資料 (因為同房號的 capacity 都一樣)
+            room_capacity = occupants['capacity'].iloc[0]
+            
+            # 計算實際人數 (只計算 worker_name 不是空值)
+            num_occupants = occupants['worker_name'].apply(lambda x: 1 if x else 0).sum()
+            vacancies = room_capacity - num_occupants
+            
+            room_title = f"{dorm_address} - {room_number} (容量: {room_capacity}, 空床: {vacancies})"
+            
+            # 根據空床數決定顏色
+            if vacancies == 0:
+                room_title = f"🔴 {room_title} (已滿)"
+            elif vacancies > 0:
+                room_title = f"🟢 {room_title}"
+
+            with st.expander(room_title):
+                if num_occupants == 0:
+                    st.text("此房間目前無人居住。")
+                else:
+                    # 篩選掉 'worker_name' 為空的列 (這些是 left join 產生的空房)
+                    occupant_details = occupants[occupants['worker_name'] != ''][['worker_name', 'employer_name', 'bed_number']]
+                    occupant_details.rename(columns={'worker_name': '姓名', 'employer_name': '雇主', 'bed_number': '床位編號'}, inplace=True)
+                    st.dataframe(occupant_details, hide_index=True, width="stretch")
+    # --- 房況總覽區塊結束 ---
+
+    st.markdown("---")
     st.subheader(f"{year_month_str} 財務分析 (我司視角 - 彙總)")
 
     income_total = single_dorm_analyzer.get_income_summary(selected_dorm_ids, year_month_str)
@@ -138,15 +182,15 @@ def render():
         # --- 建立快取函式 ---
         @st.cache_data
         def get_lease_details_data(dorm_ids, year_month):
-            return single_dorm_analyzer.get_lease_expense_details(dorm_ids, year_month)
+            return single_dorm_analyzer.get_lease_expense_details(list(dorm_ids), year_month)
         
         @st.cache_data
         def get_utility_details_data(dorm_ids, year_month):
-            return single_dorm_analyzer.get_utility_bill_details(dorm_ids, year_month)
+            return single_dorm_analyzer.get_utility_bill_details(list(dorm_ids), year_month)
 
         @st.cache_data
         def get_amortized_details_data(dorm_ids, year_month):
-            return single_dorm_analyzer.get_amortized_expense_details(dorm_ids, year_month)
+            return single_dorm_analyzer.get_amortized_expense_details(list(dorm_ids), year_month)
 
         @st.cache_data
         def get_meter_history(meter_id):
@@ -252,7 +296,7 @@ def render():
     
     @st.cache_data
     def get_trend_data(dorm_ids):
-        return single_dorm_analyzer.get_monthly_financial_trend(dorm_ids)
+        return single_dorm_analyzer.get_monthly_financial_trend(list(dorm_ids))
 
     trend_df = get_trend_data(selected_dorm_ids)
 

@@ -66,18 +66,21 @@ PAGES = {
         "進階批次作業": batch_operations_view,
         "住宿歷史批次編輯": batch_history_editor_view,
         "其他收入管理": income_view,
+        "資產與庫存管理": inventory_view,
+        "設備管理": equipment_view,
+        "清掃排程管理": cleaning_schedule_view,
+        "廠商資料管理": vendor_view
+    },
+    "支出業務管理": {
         "變動費用管理": expense_view,
         "錶號費用管理": meter_expense_view,
         "年度費用管理": annual_expense_view,
         "維修追蹤管理": maintenance_view,
-        "資產與庫存管理": inventory_view,
         "長期合約管理": lease_view,
         "長期合約分項總覽": contract_view,
-        "設備管理": equipment_view,
-        "清掃排程管理": cleaning_schedule_view,
         "電水錶管理": meter_view,
-        "廠商資料管理": vendor_view
     },
+
     "資料與系統維護": {
         "批次匯入": batch_import_view,
         "系統爬取": scraper_view

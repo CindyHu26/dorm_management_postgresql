@@ -339,6 +339,7 @@ def get_resident_details_as_df(dorm_ids: list, year_month: str):
             ActiveWorkersInMonth AS (
                  SELECT DISTINCT ON (ah.worker_unique_id) -- 確保每人只出現一次
                     ah.worker_unique_id, r.dorm_id, r.room_number,
+                    ah.bed_number,
                     ah.start_date AS accommodation_start, ah.end_date AS accommodation_end
                 FROM "AccommodationHistory" ah
                 JOIN "Rooms" r ON ah.room_id = r.id
@@ -366,6 +367,7 @@ def get_resident_details_as_df(dorm_ids: list, year_month: str):
                 awm.accommodation_start AS "入住此房日",
                 awm.accommodation_end AS "離開此房日",
                 w.work_permit_expiry_date AS "工作期限",
+                awm.bed_number AS "床位編號",
                 -- 從 FeeHistory 獲取各項費用
                 COALESCE(rent.amount, 0) AS "房租",
                 COALESCE(util.amount, 0) AS "水電費",
@@ -746,5 +748,74 @@ def get_amortized_expense_details(dorm_ids: list, year_month: str):
             ORDER BY d.original_address, ae.expense_item, ae.payment_date;
         """
         return _execute_query_to_dataframe(conn, query, params)
+    finally:
+        if conn: conn.close()
+
+def get_room_occupancy_view(dorm_ids: list, year_month: str):
+    """
+    【v2.5 新增】為宿舍深度分析儀表板，查詢房間內的詳細住宿狀況。
+    """
+    conn = database.get_db_connection()
+    if not conn or not dorm_ids: return pd.DataFrame()
+
+    params = {"dorm_ids": dorm_ids, "year_month": year_month}
+    try:
+        # 1. 取得所有房間 (包含容量)
+        rooms_query = """
+            SELECT 
+                r.id as room_id, 
+                d.original_address, 
+                r.room_number, 
+                r.capacity 
+            FROM "Rooms" r
+            JOIN "Dormitories" d ON r.dorm_id = d.id
+            WHERE r.dorm_id = ANY(%(dorm_ids)s)
+              AND r.room_number != '[未分配房間]';
+        """
+        rooms_df = _execute_query_to_dataframe(conn, rooms_query, params)
+        if rooms_df.empty:
+            return pd.DataFrame() # 沒有房間可顯示
+
+        # 2. 取得所有在住人員 (使用 'get_resident_details_as_df' 的邏輯)
+        residents_query = f"""
+            WITH DateParams AS (
+                SELECT
+                    TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
+                    (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
+            ),
+            ActiveWorkersInMonth AS (
+                 SELECT DISTINCT ON (ah.worker_unique_id)
+                    ah.worker_unique_id, 
+                    ah.room_id,
+                    ah.bed_number
+                FROM "AccommodationHistory" ah
+                JOIN "Rooms" r ON ah.room_id = r.id
+                CROSS JOIN DateParams dp
+                WHERE r.dorm_id = ANY(%(dorm_ids)s)
+                  AND ah.start_date <= dp.last_day_of_month
+                  AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
+                ORDER BY ah.worker_unique_id, ah.start_date DESC, ah.id DESC
+            )
+            SELECT 
+                awm.room_id,
+                w.worker_name,
+                w.employer_name,
+                awm.bed_number
+            FROM ActiveWorkersInMonth awm
+            JOIN "Workers" w ON awm.worker_unique_id = w.unique_id
+            -- 不過濾 '掛宿外住'，因為房況總覽應該要看到 *所有* 佔床的人
+        """
+        residents_df = _execute_query_to_dataframe(conn, residents_query, params)
+        
+        # 3. 在 Pandas 中合併
+        merged_df = rooms_df.merge(residents_df, on='room_id', how='left')
+        
+        # 確保 'worker_name' 為空 (空房) 時，其他欄位也是空的
+        merged_df['worker_name'] = merged_df['worker_name'].fillna('')
+        merged_df['employer_name'] = merged_df['employer_name'].fillna('')
+        merged_df['bed_number'] = merged_df['bed_number'].fillna('')
+        
+        return merged_df
+
     finally:
         if conn: conn.close()
