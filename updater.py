@@ -20,12 +20,11 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], None]):
     """
-    【v2.22 "住宿比對" 修正版】執行核心的資料庫更新流程。
-    - "手動調整" 模式下，只在 "離住日" 真正發生變更時才印出日誌。
-    - "自動更新" 模式下，比對 dorm_id 而非 room_id，避免錯誤換宿。
+    【v2.23 "離住邏輯統一" 修正版】執行核心的資料庫更新流程。
+    - "手動調整" 狀態現在只保護 "住宿位置 (room_id)"。
+    - "離住" (無論是消失或有出境日) 會同時更新 Workers 和 AccommodationHistory。
     """
-    # --- 【v2.22 核心修改 1】更新版本號 ---
-    log_callback("\n===== 開始執行核心資料庫更新程序 (v2.22 住宿比對修正版) =====")
+    log_callback("\n===== 開始執行核心資料庫更新程序 (v2.23 離住邏輯統一版) =====")
     today = datetime.now().date()
     yesterday = today - timedelta(days=1)
     
@@ -75,7 +74,7 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
             else:
                 log_callback("INFO: 所有宿舍均有關聯的 [未分配房間] 紀錄，無需修復。")
             
-            # --- 步驟 3/5：準備資料與映射 ---
+            # --- 步驟 3/5：準備資料與映射 (v2.22 邏輯) ---
             log_callback("INFO: 步驟 3/5 - 準備資料與映射...")
             address_room_df = _execute_query_to_dataframe(conn, 'SELECT d.normalized_address, r.id as room_id FROM "Rooms" r JOIN "Dormitories" d ON r.dorm_id = d.id WHERE r.room_number = %s', ("[未分配房間]",))
             address_room_map = pd.Series(address_room_df.room_id.values, index=address_room_df.normalized_address).to_dict()
@@ -87,11 +86,9 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                 if norm_addr in address_room_map:
                     original_addr_to_room_map[addr] = address_room_map[norm_addr]
 
-            # --- 【v2.22 核心修改 2】建立 Room ID -> Dorm ID 的反向映射 ---
             log_callback("INFO: 建立 Room-to-Dorm 映射...")
             all_rooms_df = _execute_query_to_dataframe(conn, 'SELECT id as room_id, dorm_id FROM "Rooms"')
             room_to_dorm_map = pd.Series(all_rooms_df.dorm_id.values, index=all_rooms_df.room_id).to_dict()
-            # --- 修改結束 ---
 
             fresh_df['room_id'] = fresh_df['normalized_address'].map(address_room_map)
             if fresh_df['room_id'].isnull().any():
@@ -139,62 +136,60 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
 
                 cursor.execute('SELECT unique_id FROM "Workers" WHERE unique_id = %s', (unique_id,))
                 existing_worker = cursor.fetchone()
+                
+                current_room_id = current_accommodation_records.get(unique_id)
+                current_end_date = current_accommodation_end_dates.get(unique_id)
 
                 if existing_worker:
                     # --- 更新現有工人 ---
-                    if data_source == '手動調整':
-                        cursor.execute(
-                            'UPDATE "Workers" SET "accommodation_end_date" = %s WHERE unique_id = %s AND "accommodation_end_date" IS DISTINCT FROM %s',
-                            (final_departure_date, unique_id, final_departure_date)
-                        )
-                        if cursor.rowcount > 0:
-                            log_callback(f"INFO: [保護] 工人 '{unique_id}' (手動調整) 偵測到離住日變更，已同步。")
-                            updated_count += 1
-                        else:
-                            pass
                     
+                    # 準備 Workers 表的更新資料
+                    update_cols = ['native_name', 'gender', 'nationality', 'passport_number', 'arc_number', 'work_permit_expiry_date']
+                    update_details = {col: fresh_worker.get(col) for col in update_cols if col in fresh_worker}
+                    update_details['accommodation_end_date'] = final_departure_date
+                    
+                    if data_source == '手動調整':
+                        # '手動調整' 狀態：只更新核心資料和離住日，*不更新* room_id
+                        update_details['room_id'] = current_room_id # 保持現有的 room_id
+                        log_prefix = "INFO: [保護] "
                     else: 
-                        # "系統自動更新" (或其他)：更新所有核心資料
-                        update_cols = ['native_name', 'gender', 'nationality', 'passport_number', 'arc_number', 'work_permit_expiry_date']
-                        update_details = {col: fresh_worker.get(col) for col in update_cols if col in fresh_worker}
-                        update_details['accommodation_end_date'] = final_departure_date
-                        update_details['room_id'] = new_room_id 
+                        # '系統自動更新' 狀態：更新所有資料，包含 room_id
+                        update_details['room_id'] = new_room_id
+                        log_prefix = "INFO: [自動] "
 
-                        fields = ', '.join([f'"{key}" = %s' for key in update_details.keys()])
-                        values = list(update_details.values()) + [unique_id]
+                    fields = ', '.join([f'"{key}" = %s' for key in update_details.keys()])
+                    values = list(update_details.values()) + [unique_id]
+                    
+                    cursor.execute(f'UPDATE "Workers" SET {fields} WHERE unique_id = %s', tuple(values))
+                    updated_count += 1 
+                    
+                    # --- 【核心修改 1】住宿歷史更新 (AccommodationHistory) ---
+                    # 適用於 "系統自動更新" 和 "手動調整" 
+                    
+                    new_dorm_id = room_to_dorm_map.get(new_room_id)
+                    current_dorm_id = room_to_dorm_map.get(current_room_id)
+
+                    # 檢查：宿舍是否不同? 或是工人是否剛被標記為離住 (重新入住)?
+                    # 注意：在 '手動調整' 狀態下，new_dorm_id (來自爬蟲) 會和 current_dorm_id (手動設定的) 不同
+                    # 但因為 data_source == '手動調整'，我們不會執行換宿，所以要多一個判斷
+                    
+                    if data_source != '手動調整' and (new_dorm_id != current_dorm_id or current_end_date is not None):
+                        # --- 情況 A: 執行換宿 (只在 "系統自動更新" 狀態下) ---
+                        if current_end_date is None:
+                            cursor.execute('UPDATE "AccommodationHistory" SET end_date = %s WHERE worker_unique_id = %s AND end_date IS NULL', (yesterday, unique_id))
+                        cursor.execute('INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, end_date) VALUES (%s, %s, %s, %s)', (unique_id, new_room_id, today, final_departure_date))
+                        moved_count += 1
+                        log_callback(f"{log_prefix}偵測到住宿異動！工人 '{unique_id}' 已移至房間 {new_room_id} (宿舍ID: {new_dorm_id})。")
+                    
+                    elif final_departure_date != current_end_date:
+                        # --- 情況 B: 偵測到離住日變更 (適用於 "系統自動更新" 和 "手動調整") ---
+                        cursor.execute('UPDATE "AccommodationHistory" SET end_date = %s WHERE worker_unique_id = %s AND end_date IS NULL', (final_departure_date, unique_id))
                         
-                        cursor.execute(f'UPDATE "Workers" SET {fields} WHERE unique_id = %s', tuple(values))
-                        updated_count += 1 
-                        
-                        # --- 住宿歷史更新 (AccommodationHistory) ---
-                        current_room_id = current_accommodation_records.get(unique_id)
-                        current_end_date = current_accommodation_end_dates.get(unique_id)
-
-                        # --- 【v2.22 核心修改 3】使用新的比對邏輯 ---
-                        # 取得 new_room_id (未分配房間) 所屬的 dorm_id
-                        new_dorm_id = room_to_dorm_map.get(new_room_id)
-                        # 取得 current_room_id (實際房間) 所屬的 dorm_id
-                        current_dorm_id = room_to_dorm_map.get(current_room_id)
-
-                        # 檢查：
-                        # 1. 宿舍是否不同 (new_dorm_id != current_dorm_id)
-                        # 2. 或者，工人是否剛被標記為離住 (current_end_date is not None) 
-                        #    (這表示他們是重新入住，需要新紀錄)
-                        if new_dorm_id != current_dorm_id or current_end_date is not None:
-                        # --- 【修正結束】---
-
-                            if current_end_date is None:
-                                cursor.execute('UPDATE "AccommodationHistory" SET end_date = %s WHERE worker_unique_id = %s AND end_date IS NULL', (yesterday, unique_id))
-                            cursor.execute('INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, end_date) VALUES (%s, %s, %s, %s)', (unique_id, new_room_id, today, final_departure_date))
-                            moved_count += 1
-                            log_callback(f"INFO: [自動] 偵測到住宿異動！工人 '{unique_id}' 已移至房間 {new_room_id} (宿舍ID: {new_dorm_id})。")
-                        
-                        elif final_departure_date != current_end_date:
-                            cursor.execute('UPDATE "AccommodationHistory" SET end_date = %s WHERE worker_unique_id = %s AND end_date IS NULL', (final_departure_date, unique_id))
+                        if cursor.rowcount > 0: # 確保真的有更新 (避免重複印日誌)
                             if final_departure_date:
-                                log_callback(f"INFO: [自動] 工人 '{unique_id}' 在房間 {current_room_id} 更新離住日為 {final_departure_date}。")
+                                log_callback(f"{log_prefix}工人 '{unique_id}' 在房間 {current_room_id} 更新住宿歷史 end_date 為 {final_departure_date}。")
                             else:
-                                 log_callback(f"INFO: [自動] 工人 '{unique_id}' 在房間 {current_room_id} 移除離住日。")
+                                 log_callback(f"{log_prefix}工人 '{unique_id}' 在房間 {current_room_id} 移除住宿歷史 end_date。")
                     
                 else:
                     # --- 新增工人 (邏輯維持不變) ---
@@ -218,7 +213,7 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                 
                 processed_ids.add(unique_id)
             
-            # --- "工人消失" 邏輯 (維持不變) ---
+            # --- 【核心修改 2】"工人消失" 邏輯 (ids_to_check_for_departure) ---
             cursor.execute('SELECT unique_id, data_source FROM "Workers" WHERE data_source != %s', ('手動管理(他仲)',))
             db_syncable_workers = {rec['unique_id']: rec['data_source'] for rec in cursor.fetchall()}
             
@@ -229,20 +224,23 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                     cursor.execute('SELECT accommodation_end_date FROM "Workers" WHERE unique_id = %s', (uid,))
                     worker_status = cursor.fetchone()
                     
+                    # 檢查：如果此人是 '手動調整' 且 *已經* 有手動設定的離住日，那就跳過
                     if db_syncable_workers.get(uid) == '手動調整' and worker_status and worker_status['accommodation_end_date'] is not None:
                         log_callback(f"INFO: [保護] 移工 '{uid}' (手動調整) 已不在名單，但已有手動離住日，跳過自動更新。")
                         continue
 
+                    # 動作 1: 更新 Workers 表 (一律執行)
                     cursor.execute('UPDATE "Workers" SET accommodation_end_date = %s WHERE unique_id = %s AND accommodation_end_date IS NULL', (today, uid))
                     
                     if cursor.rowcount > 0: 
                         marked_as_left_count += 1
                         
-                        if db_syncable_workers.get(uid) != '手動調整':
-                            cursor.execute('UPDATE "AccommodationHistory" SET end_date = %s WHERE worker_unique_id = %s AND end_date IS NULL', (today, uid))
-                            log_callback(f"INFO: [自動] 移工 '{uid}' (資料來源: {db_syncable_workers.get(uid)}) 已不在最新名單，更新住宿迄日並結束住宿歷史。")
-                        else:
-                            log_callback(f"INFO: [自動] 移工 '{uid}' (資料來源: 手動調整) 已不在最新名單，僅更新 Workers 表離住日 (住宿歷史受保護)。")
+                        # 動作 2: 更新 AccommodationHistory 表 (一律執行)
+                        # (移除了 'if db_syncable_workers.get(uid) != '手動調整':' 的判斷)
+                        cursor.execute('UPDATE "AccommodationHistory" SET end_date = %s WHERE worker_unique_id = %s AND end_date IS NULL', (today, uid))
+                        log_callback(f"INFO: [自動] 移工 '{uid}' (資料來源: {db_syncable_workers.get(uid)}) 已不在最新名單，已同步更新 Workers 表與 AccommodationHistory 表的結束日。")
+                        
+                    # (如果 cursor.rowcount == 0，代表 Workers 表本來就有離住日了，無需動作)
 
         conn.commit()
         log_callback(f"SUCCESS: 資料庫更新完成！新增: {added_count}, 更新: {updated_count}, 標記離職: {marked_as_left_count}, 住宿異動: {moved_count}。")
