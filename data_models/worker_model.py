@@ -17,54 +17,89 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_workers_for_view(filters: dict):
     """
-    【v2.0 修改版】根據篩選條件，查詢移工的詳細住宿資訊。
-    現在會從 AccommodationHistory 取得最新的住宿地點。
+    【v2.9 費用來源修正版】根據篩選條件，查詢移工的詳細住宿資訊。
+    所有費用欄位 (房租、水電等) 改為從 FeeHistory 查詢最新一筆紀錄。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
-    
+
     current_date_func = "CURRENT_DATE"
-    
+
     try:
-        # 使用子查詢找到每位工人的最新住宿紀錄
         base_query = f"""
             WITH CurrentAccommodation AS (
-                SELECT 
+                SELECT
                     worker_unique_id,
                     room_id,
-                    ROW_NUMBER() OVER(PARTITION BY worker_unique_id ORDER BY start_date DESC) as rn
+                    bed_number,
+                    start_date,
+                    ROW_NUMBER() OVER(PARTITION BY worker_unique_id ORDER BY start_date DESC, id DESC) as rn
                 FROM "AccommodationHistory"
                 WHERE start_date <= {current_date_func} AND (end_date IS NULL OR end_date >= {current_date_func})
+            ),
+            -- 【核心修改 1】建立 CTE 查詢所有費用的最新一筆歷史
+            LatestFeeHistory AS (
+                SELECT
+                    worker_unique_id, fee_type, amount,
+                    ROW_NUMBER() OVER(PARTITION BY worker_unique_id, fee_type ORDER BY effective_date DESC) as rn
+                FROM "FeeHistory"
+                WHERE effective_date <= {current_date_func} -- 確保生效日在今天或之前
             )
             SELECT
-                w.employer_name AS "雇主", w.worker_name AS "姓名", d.primary_manager AS "主要管理人", w.gender AS "性別",
-                w.nationality AS "國籍", d.original_address as "宿舍地址", r.room_number as "房號",
-                w.accommodation_start_date AS "入住日期", w.accommodation_end_date AS "離住日期",
-                w.arrival_date AS "抵台日期", w.work_permit_expiry_date AS "工作限期",
+                w.unique_id,
+                w.employer_name AS "雇主",
+                w.worker_name AS "姓名",
+                d_actual.original_address AS "實際地址",
+                r_actual.room_number AS "實際房號",
+                ca.bed_number AS "床位編號",
+                w.gender AS "性別",
+                w.nationality AS "國籍",
+                ca.start_date AS "入住日期",
+                w.accommodation_end_date AS "離住日期",
+                w.work_permit_expiry_date AS "工作期限",
                 w.special_status as "特殊狀況",
-                CASE 
+                CASE
                     WHEN w.accommodation_end_date IS NOT NULL AND w.accommodation_end_date <= {current_date_func}
                     THEN '已離住' ELSE '在住'
                 END as "在住狀態",
-                w.monthly_fee AS "月費(房租)", w.utilities_fee AS "水電費", w.cleaning_fee AS "清潔費",
-                w.worker_notes AS "個人備註", w.unique_id, 
-                w.passport_number AS "護照號碼", w.arc_number AS "居留證號碼", w.data_source as "資料來源"
+                
+                -- 【核心修改 2】將所有費用欄位改為從 LatestFeeHistory 抓取
+                COALESCE(rent.amount, 0) AS "月費(房租)",
+                COALESCE(util.amount, 0) AS "水電費",
+                COALESCE(clean.amount, 0) AS "清潔費",
+                COALESCE(resto.amount, 0) AS "宿舍復歸費",
+                COALESCE(charge.amount, 0) AS "充電清潔費",
+                
+                w.worker_notes AS "個人備註",
+                w.passport_number AS "護照號碼", w.arc_number AS "居留證號碼",
+                d_actual.primary_manager AS "主要管理人",
+                d_system.original_address AS "系統地址",
+                w.data_source as "資料來源"
             FROM "Workers" w
             LEFT JOIN (SELECT * FROM CurrentAccommodation WHERE rn = 1) ca ON w.unique_id = ca.worker_unique_id
-            LEFT JOIN "Rooms" r ON ca.room_id = r.id
-            LEFT JOIN "Dormitories" d ON r.dorm_id = d.id
+            LEFT JOIN "Rooms" r_actual ON ca.room_id = r_actual.id
+            LEFT JOIN "Dormitories" d_actual ON r_actual.dorm_id = d_actual.id
+            LEFT JOIN "Rooms" r_system ON w.room_id = r_system.id
+            LEFT JOIN "Dormitories" d_system ON r_system.dorm_id = d_system.id
+            
+            -- 【核心修改 3】LEFT JOIN 每一個費用類型
+            LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '房租' AND rn = 1) rent ON w.unique_id = rent.worker_unique_id
+            LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '水電費' AND rn = 1) util ON w.unique_id = util.worker_unique_id
+            LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '清潔費' AND rn = 1) clean ON w.unique_id = clean.worker_unique_id
+            LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '宿舍復歸費' AND rn = 1) resto ON w.unique_id = resto.worker_unique_id
+            LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '充電清潔費' AND rn = 1) charge ON w.unique_id = charge.worker_unique_id
         """
-        
+
         where_clauses = []
         params = []
-        
+
         if filters.get('name_search'):
             term = f"%{filters['name_search']}%"
-            where_clauses.append('(w.worker_name ILIKE %s OR w.employer_name ILIKE %s OR d.original_address ILIKE %s)')
-            params.extend([term, term, term])
-            
+            where_clauses.append('(w.worker_name ILIKE %s OR w.employer_name ILIKE %s OR d_actual.original_address ILIKE %s OR d_system.original_address ILIKE %s)')
+            params.extend([term, term, term, term])
+
         if filters.get('dorm_id'):
-            where_clauses.append("d.id = %s")
+            where_clauses.append("d_actual.id = %s")
             params.append(filters['dorm_id'])
 
         status_filter = filters.get('status')
@@ -75,9 +110,9 @@ def get_workers_for_view(filters: dict):
 
         if where_clauses:
             base_query += " WHERE " + " AND ".join(where_clauses)
-            
-        base_query += ' ORDER BY d.primary_manager, w.employer_name, w.worker_name'
-        
+
+        base_query += ' ORDER BY d_actual.primary_manager, w.employer_name, w.worker_name'
+
         return _execute_query_to_dataframe(conn, base_query, params)
     finally:
         if conn: conn.close()

@@ -18,23 +18,47 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_dormitory_dashboard_data():
     """
-    【v2.0 修改版】獲取每個宿舍的人數與租金統計，用於「住宿總覽」頁籤。
+    【v2.9 費用來源修正版】獲取每個宿舍的人數與租金統計，用於「住宿總覽」頁籤。
     改為從 AccommodationHistory 查詢實際在住人數。
+    費用改為從 FeeHistory 查詢最新一筆紀錄。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
-        # --- JOIN AccommodationHistory 來計算實際在住人數 ---
         query = """
-            WITH CurrentResidents AS (
+            WITH CurrentAccommodation AS (
                 SELECT
                     ah.room_id,
                     w.unique_id,
-                    w.gender,
-                    (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0) + COALESCE(w.restoration_fee, 0) + COALESCE(w.charging_cleaning_fee, 0)) as total_fee
+                    w.gender
                 FROM "AccommodationHistory" ah
                 JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
-                WHERE ah.end_date IS NULL OR ah.end_date > CURRENT_DATE
+                WHERE (ah.end_date IS NULL OR ah.end_date > CURRENT_DATE)
+                  AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE) -- 雙重保險
+            ),
+            LatestFeeHistory AS (
+                SELECT
+                    worker_unique_id, fee_type, amount,
+                    ROW_NUMBER() OVER(PARTITION BY worker_unique_id, fee_type ORDER BY effective_date DESC) as rn
+                FROM "FeeHistory"
+                WHERE effective_date <= CURRENT_DATE
+            ),
+            CurrentResidents AS (
+                SELECT
+                    ca.room_id,
+                    ca.unique_id,
+                    ca.gender,
+                    (
+                        COALESCE(rent.amount, 0) + COALESCE(util.amount, 0) + 
+                        COALESCE(clean.amount, 0) + COALESCE(resto.amount, 0) + 
+                        COALESCE(charge.amount, 0)
+                    ) as total_fee
+                FROM CurrentAccommodation ca
+                LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '房租' AND rn = 1) rent ON ca.unique_id = rent.worker_unique_id
+                LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '水電費' AND rn = 1) util ON ca.unique_id = util.worker_unique_id
+                LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '清潔費' AND rn = 1) clean ON ca.unique_id = clean.worker_unique_id
+                LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '宿舍復歸費' AND rn = 1) resto ON ca.unique_id = resto.worker_unique_id
+                LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '充電清潔費' AND rn = 1) charge ON ca.unique_id = charge.worker_unique_id
             )
             SELECT 
                 d.original_address AS "宿舍地址", d.primary_manager AS "主要管理人",

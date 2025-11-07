@@ -207,8 +207,8 @@ def get_compliance_records_for_dorm(dorm_id: int, record_type: str):
 # --- 房租管理 (已升級為通用費用管理) ---
 def get_workers_for_fee_management(filters: dict):
     """
-    【v2.1 修改版】根據提供的多重篩選條件(宿舍、雇主)，查詢在住移工的費用資訊。
-    新增「宿舍復歸費」和「充電清潔費」。
+    【v2.9 費用來源修正版】根據提供的多重篩選條件(宿舍、雇主)，查詢在住移工的費用資訊。
+    所有費用欄位 (房租、水電等) 改為從 FeeHistory 查詢最新一筆紀錄。
     """
     dorm_ids = filters.get("dorm_ids")
     employer_names = filters.get("employer_names")
@@ -219,17 +219,38 @@ def get_workers_for_fee_management(filters: dict):
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
+        # 【核心修改 1】建立 CTE 查詢所有費用的最新一筆歷史
         base_query = """
+            WITH LatestFeeHistory AS (
+                SELECT
+                    worker_unique_id, fee_type, amount,
+                    ROW_NUMBER() OVER(PARTITION BY worker_unique_id, fee_type ORDER BY effective_date DESC) as rn
+                FROM "FeeHistory"
+                WHERE effective_date <= CURRENT_DATE
+            )
             SELECT
                 w.unique_id, d.original_address AS "宿舍地址", r.room_number AS "房號",
                 w.employer_name AS "雇主", w.worker_name AS "姓名", 
-                w.monthly_fee AS "月費(房租)", w.utilities_fee as "水電費", w.cleaning_fee as "清潔費",
-                w.restoration_fee as "宿舍復歸費", w.charging_cleaning_fee as "充電清潔費",
+                
+                -- 【核心修改 2】將所有費用欄位改為從 LatestFeeHistory 抓取
+                COALESCE(rent.amount, NULL) AS "月費(房租)", -- 顯示 NULL 而不是 0
+                COALESCE(util.amount, NULL) AS "水電費",
+                COALESCE(clean.amount, NULL) AS "清潔費",
+                COALESCE(resto.amount, NULL) AS "宿舍復歸費",
+                COALESCE(charge.amount, NULL) AS "充電清潔費",
+                
                 w.special_status AS "特殊狀況", w.worker_notes AS "個人備註",
                 w.accommodation_start_date AS "入住日"
             FROM "Workers" w
             JOIN "Rooms" r ON w.room_id = r.id
             JOIN "Dormitories" d ON r.dorm_id = d.id
+            
+            -- 【核心修改 3】LEFT JOIN 每一個費用類型
+            LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '房租' AND rn = 1) rent ON w.unique_id = rent.worker_unique_id
+            LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '水電費' AND rn = 1) util ON w.unique_id = util.worker_unique_id
+            LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '清潔費' AND rn = 1) clean ON w.unique_id = clean.worker_unique_id
+            LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '宿舍復歸費' AND rn = 1) resto ON w.unique_id = resto.worker_unique_id
+            LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '充電清潔費' AND rn = 1) charge ON w.unique_id = charge.worker_unique_id
         """
         
         where_clauses = []
