@@ -104,10 +104,10 @@ def render(config):
             * **更新邏輯**：
                 * **爬蟲名單上「有」此人**：
                     * **住宿異動**：**[受保護]** 系統**不會**更動此員工的住宿歷史（`AccommodationHistory`）。即使爬蟲抓到不同地址，他也會留在您手動指定的房間。
-                    * **離住日**：**[會更新]** 如果爬蟲的「出境日期」有值（或變更），系統會**同時更新** `Workers.accommodation_end_date` 和 `AccommodationHistory.end_date`。
+                    * **離住日**：**[會更新]** 如果爬蟲的「出境日期」有值（或變更），系統會**同時更新** `Workers.accommodation_end_date` 和 `AccommodationHistory.end_date`。(v2.24 新邏輯)
                     * **基本資料**：**[會更新]** 系統會更新基本資料（姓名、護照號碼等）。
                 * **爬蟲名單上「沒有」此人**：
-                    * **[會更新]** 系統會**同時更新兩張表**：
+                    * **[會更新]** 系統會**同時更新兩張表**：(v2.24 新邏輯)
                     * 1. `Workers` 表：設定 `accommodation_end_date` (離住日期) 為今天。
                     * 2. `AccommodationHistory` 表：將**最新一筆**住宿紀錄的 `end_date` (結束日) 也設為今天。
 
