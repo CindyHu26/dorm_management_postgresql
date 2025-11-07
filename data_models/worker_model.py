@@ -960,9 +960,11 @@ def get_fee_history_for_workers(worker_ids: list, date_range: tuple = None):
     finally:
         if conn: conn.close()
 
-def batch_edit_history(original_df: pd.DataFrame, edited_df: pd.DataFrame, table_name: str, key_column: str, columns_to_update: list):
+def batch_edit_history(original_df: pd.DataFrame, edited_df: pd.DataFrame, table_name: str, key_column: str, columns_to_update: list, protection_level: str):
     """
-    【v2.15 新增】通用的歷史紀錄批次編輯器後端邏輯。
+    【v2.16 修改版】通用的歷史紀錄批次編輯器後端邏輯。
+    - 修正了 SQL 更新迴圈中，因欄位名稱 (DataFrame vs DB) 錯用導致更新失敗的 Bug。
+    - 新增 protection_level 參數，允許自訂更新後的資料保護層級。
     """
     # 確保日期格式一致
     for col in columns_to_update:
@@ -979,11 +981,9 @@ def batch_edit_history(original_df: pd.DataFrame, edited_df: pd.DataFrame, table
     edited_indexed = edited_df.set_index(key_column)
 
     # 找出有變更的行
-    # compare() 只會顯示有差異的行
     try:
         diff_df = edited_indexed[columns_to_update].compare(original_indexed[columns_to_update])
     except Exception as e:
-        # 如果欄位型別不符 (例如日期 vs 字串)，compare 可能會失敗
         return False, f"資料比對時發生型別錯誤: {e}。請確保日期格式正確。"
 
     if diff_df.empty:
@@ -994,6 +994,9 @@ def batch_edit_history(original_df: pd.DataFrame, edited_df: pd.DataFrame, table
     rows_to_update = edited_indexed.loc[changed_ids]
 
     # 找出所有被影響的 worker_unique_id，以便最後設定保護
+    if 'worker_unique_id' not in rows_to_update.columns:
+        return False, "資料比對時發生內部錯誤：缺少 'worker_unique_id' 欄位。"
+        
     unique_worker_ids_to_protect = rows_to_update['worker_unique_id'].unique()
     
     conn = database.get_db_connection()
@@ -1008,37 +1011,58 @@ def batch_edit_history(original_df: pd.DataFrame, edited_df: pd.DataFrame, table
                 # 構建 UPDATE 語句
                 set_clauses = []
                 set_values = []
+
+                # (v2.15.1 修正)
                 for col_name in columns_to_update:
-                    # 將 DataFrame 的欄位名 (中文) 轉換為資料庫的欄位名 (英文)
-                    db_col = col_name # 預設
+                    db_col = col_name 
                     if col_name == "入住日": db_col = "start_date"
                     elif col_name == "離住日": db_col = "end_date"
                     elif col_name == "備註": db_col = "notes"
                     elif col_name == "床位編號": db_col = "bed_number"
                     elif col_name == "金額": db_col = "amount"
                     elif col_name == "生效日期": db_col = "effective_date"
-                    # ( '員工姓名', '宿舍地址', '房號', '費用類型' 不允許被修改 )
+                    elif col_name == "worker_unique_id": db_col = "worker_unique_id"
                     
-                    if db_col in row_data:
+                    if col_name in row_data:
                         set_clauses.append(f'"{db_col}" = %s')
-                        set_values.append(row_data[db_col])
+                        set_values.append(row_data[col_name])
                 
                 if set_clauses:
                     set_sql = ", ".join(set_clauses)
                     sql = f'UPDATE "{table_name}" SET {set_sql} WHERE "{key_column}" = %s'
                     set_values.append(record_id)
+                    
                     cursor.execute(sql, tuple(set_values))
                     update_count += 1
             
-            # --- 核心：自動設定資料保護 ---
-            if unique_worker_ids_to_protect.size > 0:
-                cursor.execute(
-                    'UPDATE "Workers" SET data_source = %s WHERE unique_id = ANY(%s) AND data_source != %s',
-                    ('手動調整', list(unique_worker_ids_to_protect), '手動管理(他仲)')
-                )
+            # --- 【v2.16 核心修改】自動設定資料保護 ---
+            protection_msg = "（未設定保護層級）。"
+            if unique_worker_ids_to_protect.size > 0 and protection_level:
+                
+                if protection_level == "手動管理(他仲)":
+                    # 強制升級為最高保護
+                    cursor.execute(
+                        'UPDATE "Workers" SET data_source = %s WHERE unique_id = ANY(%s)',
+                        ('手動管理(他仲)', list(unique_worker_ids_to_protect))
+                    )
+                elif protection_level == "手動調整":
+                    # 升級，但保護 "手動管理" 不被降級
+                    cursor.execute(
+                        'UPDATE "Workers" SET data_source = %s WHERE unique_id = ANY(%s) AND data_source != %s',
+                        ('手動調整', list(unique_worker_ids_to_protect), '手動管理(他仲)')
+                    )
+                elif protection_level == "系統自動更新":
+                    # 降級，但同樣保護 "手動管理" 不被降級
+                     cursor.execute(
+                        'UPDATE "Workers" SET data_source = %s WHERE unique_id = ANY(%s) AND data_source != %s',
+                        ('系統自動更新', list(unique_worker_ids_to_protect), '手動管理(他仲)')
+                    )
+                
+                protection_msg = f"並已為 {len(unique_worker_ids_to_protect)} 位員工設定保護層級為「{protection_level}」。"
+            # --- 修改結束 ---
                 
             conn.commit()
-            return True, f"成功更新 {update_count} 筆歷史紀錄，並已為 {len(unique_worker_ids_to_protect)} 位員工設定資料保護（手動調整）。"
+            return True, f"成功更新 {update_count} 筆歷史紀錄，{protection_msg}"
 
     except Exception as e:
         if conn: conn.rollback()
@@ -1063,5 +1087,59 @@ def get_worker_ids_by_history_count(min_count: int = 1):
             cursor.execute(query, (min_count,))
             records = cursor.fetchall()
             return [row['worker_unique_id'] for row in records]
+    finally:
+        if conn: conn.close()
+
+def get_all_worker_ids_by_filters(filters: dict):
+    """
+    【v2.16 新增】根據篩選條件 (宿舍、雇主)，查詢 *所有* (包含在住與已離住)
+    符合條件的工人 unique_id 集合。
+    此函式用於取代 get_workers_for_fee_management，
+    當我們需要過濾 "已離住" 員工時使用。
+    """
+    dorm_ids = filters.get("dorm_ids")
+    employer_names = filters.get("employer_names")
+
+    if not dorm_ids and not employer_names:
+        return set() # 必須至少有一個篩選條件
+
+    conn = database.get_db_connection()
+    if not conn: return set()
+    
+    try:
+        base_query = """
+            SELECT DISTINCT w.unique_id
+            FROM "Workers" w
+            LEFT JOIN (
+                SELECT DISTINCT ON (worker_unique_id) *
+                FROM "AccommodationHistory"
+                ORDER BY worker_unique_id, start_date DESC, id DESC
+            ) ah ON w.unique_id = ah.worker_unique_id
+            LEFT JOIN "Rooms" r ON ah.room_id = r.id
+            LEFT JOIN "Dormitories" d ON r.dorm_id = d.id
+        """
+        
+        where_clauses = []
+        params = []
+        
+        if dorm_ids:
+            where_clauses.append(f"d.id = ANY(%s)")
+            params.append(list(dorm_ids))
+            
+        if employer_names:
+            where_clauses.append(f"w.employer_name = ANY(%s)")
+            params.append(list(employer_names))
+
+        # 篩選器之間使用 AND 邏輯
+        base_query += " WHERE " + " AND ".join(where_clauses) 
+        
+        with conn.cursor() as cursor:
+            cursor.execute(base_query, tuple(params))
+            records = cursor.fetchall()
+            return {row['unique_id'] for row in records}
+    
+    except Exception as e:
+        print(f"ERROR in get_all_worker_ids_by_filters: {e}")
+        return set()
     finally:
         if conn: conn.close()
