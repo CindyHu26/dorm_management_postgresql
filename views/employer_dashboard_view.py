@@ -220,5 +220,23 @@ def render():
             st.dataframe(dorm_summary_df, width='stretch', hide_index=True)
             
             with st.expander("點此查看員工住宿詳情"):
-                    st.dataframe(report_df_month, width='stretch', hide_index=True,
-                                 column_config={"員工月費": st.column_config.NumberColumn(format="NT$ %d")}) # 加入格式化
+                # 1. 定義要顯示的欄位 (移除 "主要管理人", 加入 "入住日", "離住日")
+                columns_to_show = [
+                    "宿舍地址", "房號", "姓名", "性別", "國籍", 
+                    "入住日", "離住日", "員工月費", "特殊狀況", "雇主"
+                ]
+
+                # 2. 確保只選取 DataFrame 中實際存在的欄位
+                existing_columns = [col for col in columns_to_show if col in report_df_month.columns]
+
+                # 3. 顯示指定的 DataFrame，並設定日期格式
+                st.dataframe(
+                    report_df_month[existing_columns],  # <-- 只顯示指定欄位
+                    width='stretch', 
+                    hide_index=True,
+                    column_config={
+                        "員工月費": st.column_config.NumberColumn(format="NT$ %d"),
+                        "入住日": st.column_config.DateColumn(format="YYYY-MM-DD"),
+                        "離住日": st.column_config.DateColumn(format="YYYY-MM-DD")
+                    }
+                )

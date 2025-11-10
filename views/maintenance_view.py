@@ -202,7 +202,10 @@ def render():
     st.subheader("編輯 / 刪除單筆維修紀錄")
     if not log_df.empty:
         options_dict = {
-            row['id']: f"{row['通報日期']}、{row['細項說明']} ({row.get('內部提報人', 'N/A')}-{row['宿舍地址']})" 
+            row['id']: (
+                f"{row['通報日期']} {row.get('項目類型', 'N/A')} {row['細項說明']} "
+                f"({row.get('內部提報人', 'N/A')}-{row['宿舍地址']})"
+            )
             for _, row in log_df.iterrows()
         }
         selected_log_id = st.selectbox("選擇要操作的紀錄", options=[None] + list(options_dict.keys()), format_func=lambda x: "請選擇..." if x is None else options_dict.get(x), key="selectbox_log_selection")

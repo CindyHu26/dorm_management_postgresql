@@ -75,7 +75,8 @@ def get_employer_resident_details(employer_names: list, year_month: str = None):
             ),
             ActiveWorkers AS (
                  SELECT DISTINCT ON (ah.worker_unique_id)
-                    ah.worker_unique_id, ah.room_id
+                    ah.worker_unique_id, ah.room_id,
+                    ah.start_date, ah.end_date
                 FROM "AccommodationHistory" ah
                 JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
                 CROSS JOIN DateParams dp
@@ -100,7 +101,8 @@ def get_employer_resident_details(employer_names: list, year_month: str = None):
                 w.worker_name AS "姓名",
                 w.gender AS "性別",
                 w.nationality AS "國籍",
-                -- 【核心修改】加總所有費用類型
+                aw.start_date AS "入住日",
+                aw.end_date AS "離住日",
                 (
                     COALESCE(rent.amount, 0) +
                     COALESCE(util.amount, 0) +
