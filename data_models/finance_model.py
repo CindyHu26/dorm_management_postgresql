@@ -2,6 +2,7 @@ import pandas as pd
 from datetime import datetime, date
 import database
 import json
+import numpy as np
 from . import worker_model
 
 def _execute_query_to_dataframe(conn, query, params=None):
@@ -641,5 +642,265 @@ def get_expense_details_by_compliance_id(compliance_id: int):
             cursor.execute('SELECT * FROM "AnnualExpenses" WHERE compliance_record_id = %s', (compliance_id,))
             record = cursor.fetchone()
             return dict(record) if record else None
+    finally:
+        if conn: conn.close()
+
+def get_bills_for_editor(meter_id: int):
+    """
+    【v2.7 新增】為 data_editor 查詢指定錶號的所有獨立帳單紀錄。
+    查詢原始欄位名稱以便編輯。
+    """
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        # 查詢原始欄位名稱
+        query = """
+            SELECT 
+                id, bill_type, amount,
+                usage_amount,
+                bill_start_date, bill_end_date,
+                payer, 
+                is_pass_through,
+                is_invoiced, 
+                notes
+            FROM "UtilityBills"
+            WHERE meter_id = %s
+            ORDER BY bill_end_date DESC
+        """
+        return _execute_query_to_dataframe(conn, query, (meter_id,))
+    finally:
+        if conn: conn.close()
+
+
+def batch_sync_bills(meter_id: int, dorm_id: int, edited_df: pd.DataFrame):
+    """
+    【v2.7 新增】在單一交易中，批次同步 (新增、更新、刪除) 指定錶號的帳單。
+    """
+    conn = database.get_db_connection()
+    if not conn: 
+        return False, "資料庫連線失敗。"
+
+    try:
+        # 1. 取得資料庫目前的狀態
+        original_df = get_bills_for_editor(meter_id)
+        original_ids = set(original_df['id'].dropna())
+        
+        # 2. 取得 data_editor 編輯後的狀態
+        edited_df = edited_df.replace({pd.NaT: None, np.nan: None})
+        edited_ids = set(edited_df['id'].dropna())
+
+        # 3. 計算差異
+        ids_to_delete = original_ids - edited_ids
+        new_rows_df = edited_df[edited_df['id'].isnull()]
+        updated_rows_df = edited_df[edited_df['id'].isin(original_ids)]
+        
+        # 準備 bill_type 選項，用於驗證
+        bill_type_options = ["電費", "水費", "天然氣", "網路費", "子母車", "清潔", "瓦斯費"]
+
+        with conn.cursor() as cursor:
+            
+            # --- 動作 A：處理刪除 ---
+            if ids_to_delete:
+                cursor.execute(
+                    'DELETE FROM "UtilityBills" WHERE id = ANY(%s)', 
+                    (list(ids_to_delete),)
+                )
+
+            # --- 動作 B：處理新增 ---
+            if not new_rows_df.empty:
+                for _, row in new_rows_df.iterrows():
+                    # 驗證必填欄位
+                    if not row['bill_type'] or pd.isna(row['bill_start_date']) or pd.isna(row['bill_end_date']) or pd.isna(row['amount']):
+                        raise Exception("新增失敗：『費用類型』、『帳單金額』、『起始日』、『結束日』不可為空。")
+                    if row['bill_start_date'] > row['bill_end_date']:
+                        raise Exception(f"新增失敗 (類型 {row['bill_type']})：『起始日』不可晚於『結束日』。")
+                    
+                    # 處理 "其他"
+                    final_bill_type = row['bill_type']
+                    if final_bill_type not in bill_type_options:
+                        # 如果不是標準選項，就視為自訂
+                        pass # 允許自訂
+                    
+                    insert_sql = """
+                        INSERT INTO "UtilityBills" (
+                            dorm_id, meter_id, bill_type, amount, usage_amount, 
+                            bill_start_date, bill_end_date, payer, 
+                            is_pass_through, is_invoiced, notes
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """
+                    cursor.execute(insert_sql, (
+                        dorm_id, meter_id, final_bill_type,
+                        row['amount'], row.get('usage_amount'),
+                        row['bill_start_date'], row['bill_end_date'],
+                        row.get('payer', '我司'),
+                        bool(row.get('is_pass_through')),
+                        bool(row.get('is_invoiced')),
+                        row.get('notes')
+                    ))
+
+            # --- 動作 C：處理更新 ---
+            if not updated_rows_df.empty:
+                original_indexed = original_df.set_index('id')
+                for _, row in updated_rows_df.iterrows():
+                    bill_id_to_update = row['id']
+                    original_row = original_indexed.loc[bill_id_to_update]
+                    
+                    # 比較是否有變更
+                    if not row.equals(original_row):
+                        if not row['bill_type'] or pd.isna(row['bill_start_date']) or pd.isna(row['bill_end_date']) or pd.isna(row['amount']):
+                            raise Exception(f"更新失敗 (ID: {bill_id_to_update})：『費用類型』、『帳單金額』、『起始日』、『結束日』不可為空。")
+                        if row['bill_start_date'] > row['bill_end_date']:
+                             raise Exception(f"更新失敗 (ID: {bill_id_to_update})：『起始日』不可晚於『結束日』。")
+
+                        update_sql = """
+                            UPDATE "UtilityBills" SET 
+                                bill_type = %s, amount = %s, usage_amount = %s,
+                                bill_start_date = %s, bill_end_date = %s, payer = %s,
+                                is_pass_through = %s, is_invoiced = %s, notes = %s
+                            WHERE id = %s
+                        """
+                        cursor.execute(update_sql, (
+                            row['bill_type'], row['amount'], row.get('usage_amount'),
+                            row['bill_start_date'], row['bill_end_date'],
+                            row.get('payer', '我司'),
+                            bool(row.get('is_pass_through')),
+                            bool(row.get('is_invoiced')),
+                            row.get('notes'),
+                            bill_id_to_update
+                        ))
+        
+        conn.commit()
+        return True, "帳單資料已成功同步。"
+
+    except Exception as e:
+        if conn: conn.rollback() 
+        return False, f"儲存時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
+
+
+def get_bills_for_dorm_editor(dorm_id: int):
+    """
+    【v2.8 新增】為 data_editor 查詢指定 *宿舍* 的所有獨立帳單紀錄。
+    查詢原始欄位名稱以便編輯。
+    """
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        query = """
+            SELECT 
+                id, meter_id, bill_type, amount, usage_amount,
+                bill_start_date, bill_end_date, payer, 
+                is_pass_through, is_invoiced, notes
+            FROM "UtilityBills"
+            WHERE dorm_id = %s
+            ORDER BY bill_end_date DESC
+        """
+        return _execute_query_to_dataframe(conn, query, (dorm_id,))
+    finally:
+        if conn: conn.close()
+
+
+def batch_sync_dorm_bills(dorm_id: int, edited_df: pd.DataFrame):
+    """
+    【v2.8 新增】在單一交易中，批次同步 (新增、更新、刪除) 指定 *宿舍* 的帳單。
+    """
+    conn = database.get_db_connection()
+    if not conn: 
+        return False, "資料庫連線失敗。"
+
+    try:
+        # 1. 取得資料庫目前的狀態
+        original_df = get_bills_for_dorm_editor(dorm_id)
+        original_ids = set(original_df['id'].dropna())
+        
+        # 2. 取得 data_editor 編輯後的狀態
+        edited_df = edited_df.replace({pd.NaT: None, np.nan: None})
+        
+        # 清理 meter_id：確保來自新空行 (NaN) 的值被存為 None
+        if 'meter_id' in edited_df.columns:
+             edited_df['meter_id'] = edited_df['meter_id'].apply(lambda x: int(x) if pd.notna(x) and x != 0 else None)
+
+        edited_ids = set(edited_df['id'].dropna())
+
+        # 3. 計算差異
+        ids_to_delete = original_ids - edited_ids
+        new_rows_df = edited_df[edited_df['id'].isnull()]
+        updated_rows_df = edited_df[edited_df['id'].isin(original_ids)]
+        
+        bill_type_options = ["電費", "水費", "天然氣", "網路費", "子母車", "清潔", "瓦斯費"]
+
+        with conn.cursor() as cursor:
+            
+            # --- 動作 A：處理刪除 ---
+            if ids_to_delete:
+                cursor.execute(
+                    'DELETE FROM "UtilityBills" WHERE id = ANY(%s)', 
+                    (list(ids_to_delete),)
+                )
+
+            # --- 動作 B：處理新增 ---
+            if not new_rows_df.empty:
+                for _, row in new_rows_df.iterrows():
+                    # 驗證必填欄位
+                    if not row['bill_type'] or pd.isna(row['bill_start_date']) or pd.isna(row['bill_end_date']) or pd.isna(row['amount']):
+                        raise Exception("新增失敗：『費用類型』、『帳單金額』、『起始日』、『結束日』不可為空。")
+                    if row['bill_start_date'] > row['bill_end_date']:
+                        raise Exception(f"新增失敗 (類型 {row['bill_type']})：『起始日』不可晚於『結束日』。")
+                    
+                    insert_sql = """
+                        INSERT INTO "UtilityBills" (
+                            dorm_id, meter_id, bill_type, amount, usage_amount, 
+                            bill_start_date, bill_end_date, payer, 
+                            is_pass_through, is_invoiced, notes
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """
+                    cursor.execute(insert_sql, (
+                        dorm_id, row.get('meter_id'), row['bill_type'],
+                        row['amount'], row.get('usage_amount'),
+                        row['bill_start_date'], row['bill_end_date'],
+                        row.get('payer', '我司'),
+                        bool(row.get('is_pass_through')),
+                        bool(row.get('is_invoiced')),
+                        row.get('notes')
+                    ))
+
+            # --- 動作 C：處理更新 ---
+            if not updated_rows_df.empty:
+                original_indexed = original_df.set_index('id')
+                for _, row in updated_rows_df.iterrows():
+                    bill_id_to_update = int(row['id'])
+                    original_row = original_indexed.loc[bill_id_to_update]
+                    
+                    if not row.equals(original_row):
+                        if not row['bill_type'] or pd.isna(row['bill_start_date']) or pd.isna(row['bill_end_date']) or pd.isna(row['amount']):
+                            raise Exception(f"更新失敗 (ID: {bill_id_to_update})：『費用類型』、『帳單金額』、『起始日』、『結束日』不可為空。")
+                        if row['bill_start_date'] > row['bill_end_date']:
+                             raise Exception(f"更新失敗 (ID: {bill_id_to_update})：『起始日』不可晚於『結束日』。")
+
+                        update_sql = """
+                            UPDATE "UtilityBills" SET 
+                                meter_id = %s, bill_type = %s, amount = %s, usage_amount = %s,
+                                bill_start_date = %s, bill_end_date = %s, payer = %s,
+                                is_pass_through = %s, is_invoiced = %s, notes = %s
+                            WHERE id = %s
+                        """
+                        cursor.execute(update_sql, (
+                            row.get('meter_id'),
+                            row['bill_type'], row['amount'], row.get('usage_amount'),
+                            row['bill_start_date'], row['bill_end_date'],
+                            row.get('payer', '我司'),
+                            bool(row.get('is_pass_through')),
+                            bool(row.get('is_invoiced')),
+                            row.get('notes'),
+                            bill_id_to_update
+                        ))
+        
+        conn.commit()
+        return True, "宿舍帳單資料已成功同步。"
+
+    except Exception as e:
+        if conn: conn.rollback() 
+        return False, f"儲存時發生錯誤: {e}"
     finally:
         if conn: conn.close()
