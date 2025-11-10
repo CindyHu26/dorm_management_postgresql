@@ -105,21 +105,81 @@ def render():
     # --- 移工總覽區塊 ---
     st.subheader("移工總覽 (所有宿舍)")
 
+    # --- 【核心修改 1】初始化新的 session_state ---
     if 'worker_view_filters' not in st.session_state:
-        st.session_state.worker_view_filters = {'name_search': '', 'dorm_id': None, 'status': '全部'}
+        st.session_state.worker_view_filters = {
+            'name_search': '', 'dorm_id': None, 'status': '全部',
+            'room_id': None, 'nationality': '全部', 'gender': '全部'
+        }
 
     @st.cache_data
     def get_dorms_list():
         return dormitory_model.get_dorms_for_selection()
+    
+    # --- 【核心修改 2】取得新篩選器的選項 ---
+    @st.cache_data
+    def get_nationality_list():
+        # 呼叫我們新增的函式
+        return ["全部"] + worker_model.get_distinct_nationalities()
 
     dorms = get_dorms_list() or []
     dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms}
+    nationality_options = get_nationality_list()
+    gender_options = ["全部", "男", "女"]
     
-    f_c1_view, f_c2_view, f_c3_view = st.columns(3)
-    st.session_state.worker_view_filters['name_search'] = f_c1_view.text_input("搜尋姓名、雇主或地址", value=st.session_state.worker_view_filters['name_search'])
-    st.session_state.worker_view_filters['dorm_id'] = f_c2_view.selectbox("篩選宿舍 ", options=[None] + list(dorm_options.keys()), format_func=lambda x: "全部宿舍" if x is None else dorm_options.get(x), index=[None, *dorm_options.keys()].index(st.session_state.worker_view_filters['dorm_id']))
-    st.session_state.worker_view_filters['status'] = f_c3_view.selectbox("篩選在住狀態 ", ["全部", "在住", "已離住"], index=["全部", "在住", "已離住"].index(st.session_state.worker_view_filters['status']))
+    # --- 【核心修改 3】重新排版篩選器 (2x3) ---
+    f_row1_c1, f_row1_c2, f_row1_c3 = st.columns(3)
+    f_row2_c1, f_row2_c2, f_row2_c3 = st.columns(3)
+
+    # Row 1
+    st.session_state.worker_view_filters['name_search'] = f_row1_c1.text_input(
+        "搜尋姓名、雇主或地址", 
+        value=st.session_state.worker_view_filters['name_search']
+    )
+    st.session_state.worker_view_filters['status'] = f_row1_c2.selectbox(
+        "篩選在住狀態", 
+        ["全部", "在住", "已離住"], 
+        index=["全部", "在住", "已離住"].index(st.session_state.worker_view_filters['status'])
+    )
+    st.session_state.worker_view_filters['gender'] = f_row1_c3.selectbox(
+        "篩選性別", 
+        gender_options, 
+        index=gender_options.index(st.session_state.worker_view_filters['gender'])
+    )
     
+    # Row 2
+    # 宿舍篩選 (Dorm)
+    selected_dorm_id = f_row2_c1.selectbox(
+        "篩選宿舍", 
+        options=[None] + list(dorm_options.keys()), 
+        format_func=lambda x: "全部宿舍" if x is None else dorm_options.get(x), 
+        index=[None, *dorm_options.keys()].index(st.session_state.worker_view_filters['dorm_id'])
+    )
+    # --- 【核心修改 4】如果宿舍變更，清空房號篩選 ---
+    if selected_dorm_id != st.session_state.worker_view_filters['dorm_id']:
+        st.session_state.worker_view_filters['room_id'] = None # Reset room filter
+    st.session_state.worker_view_filters['dorm_id'] = selected_dorm_id
+
+    # 房號篩選 (Room) - 依賴宿舍篩選
+    rooms_for_filter = dormitory_model.get_rooms_for_selection(st.session_state.worker_view_filters['dorm_id']) or []
+    room_filter_options = {r['id']: r['room_number'] for r in rooms_for_filter}
+    
+    st.session_state.worker_view_filters['room_id'] = f_row2_c2.selectbox(
+        "篩選房號", 
+        options=[None] + list(room_filter_options.keys()), 
+        format_func=lambda x: "全部房號" if x is None else room_filter_options.get(x, "N/A"), 
+        index=[None, *room_filter_options.keys()].index(st.session_state.worker_view_filters['room_id']),
+        disabled=not st.session_state.worker_view_filters['dorm_id'] # 沒選宿舍就禁用
+    )
+    
+    # 國籍篩選 (Nationality)
+    st.session_state.worker_view_filters['nationality'] = f_row2_c3.selectbox(
+        "篩選國籍", 
+        nationality_options, 
+        index=nationality_options.index(st.session_state.worker_view_filters['nationality']) if st.session_state.worker_view_filters['nationality'] in nationality_options else 0
+    )
+    # --- 篩選器排版結束 ---
+
     workers_df = worker_model.get_workers_for_view(st.session_state.worker_view_filters)
     
     st.dataframe(workers_df, width="stretch", hide_index=True, column_config={"unique_id": None}) 
@@ -413,7 +473,6 @@ def render():
                                     else: st.error(message)
 
                 elif selected_tab == "💰 費用歷史":
-                    # ... (此頁籤內容維持不變) ...
                     st.markdown("##### 手動新增費用歷史")
                     with st.expander("點此展開以新增一筆費用歷史紀錄"):
                         with st.form("new_fee_history_form", clear_on_submit=True):

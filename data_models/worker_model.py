@@ -17,7 +17,8 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_workers_for_view(filters: dict):
     """
-    【v2.11.1 語法修正版】根據篩選條件，查詢移工的詳細住宿資訊。
+    【v2.12 篩選器強化版】根據篩選條件，查詢移工的詳細住宿資訊。
+    新增支援房號、國籍、性別篩選。
     「入住日期」欄位現在顯示 "最後一筆" 住宿歷史的起始日，無論是否在住。
     費用欄位 (房租、水電等) 改為從 FeeHistory 查詢最新一筆紀錄。
     """
@@ -61,7 +62,7 @@ def get_workers_for_view(filters: dict):
                 CASE
                     WHEN w.accommodation_end_date IS NOT NULL AND w.accommodation_end_date <= {current_date_func}
                     THEN '已離住' ELSE '在住'
-                END as "在住狀態", 
+                END as "在住狀態",
                 
                 COALESCE(rent.amount, 0) AS "月費(房租)",
                 COALESCE(util.amount, 0) AS "水電費",
@@ -99,6 +100,20 @@ def get_workers_for_view(filters: dict):
         if filters.get('dorm_id'):
             where_clauses.append("d_actual.id = %s")
             params.append(filters['dorm_id'])
+
+        # --- 【核心修改：加入新的篩選條件】 ---
+        if filters.get('room_id'):
+            where_clauses.append("r_actual.id = %s")
+            params.append(filters['room_id'])
+            
+        if filters.get('nationality') and filters.get('nationality') != '全部':
+            where_clauses.append("w.nationality = %s")
+            params.append(filters['nationality'])
+
+        if filters.get('gender') and filters.get('gender') != '全部':
+            where_clauses.append("w.gender = %s")
+            params.append(filters['gender'])
+        # --- 修改結束 ---
 
         status_filter = filters.get('status')
         if status_filter == '在住':
@@ -449,14 +464,52 @@ def update_worker_status(status_id: int, details: dict):
         if conn: conn.close()
 
 def delete_worker_status(status_id: int):
-    """刪除一筆狀態歷史紀錄。"""
+    """
+    【v2.13 邏輯修正版】刪除一筆狀態歷史紀錄。
+    刪除後，會自動查詢 "最新" 的一筆歷史狀態，並更新回 Workers 主表。
+    """
     conn = database.get_db_connection()
     if not conn: return False, "資料庫連線失敗"
+    
     try:
         with conn.cursor() as cursor:
+            # 步驟 1: 取得要刪除的紀錄的 worker_unique_id
+            cursor.execute('SELECT worker_unique_id FROM "WorkerStatusHistory" WHERE id = %s', (status_id,))
+            record_to_delete = cursor.fetchone()
+            
+            if not record_to_delete:
+                return False, "找不到要刪除的狀態紀錄。"
+            
+            worker_id = record_to_delete['worker_unique_id']
+
+            # 步驟 2: 刪除該筆紀錄
             cursor.execute('DELETE FROM "WorkerStatusHistory" WHERE id = %s', (status_id,))
+            
+            # 步驟 3: 找出 *刪除後* 的最新一筆狀態紀錄
+            cursor.execute(
+                """
+                SELECT status FROM "WorkerStatusHistory" 
+                WHERE worker_unique_id = %s 
+                ORDER BY start_date DESC, id DESC 
+                LIMIT 1
+                """,
+                (worker_id,)
+            )
+            new_latest_status_record = cursor.fetchone()
+            
+            new_status = '在住' # 預設值
+            if new_latest_status_record:
+                new_status = new_latest_status_record['status']
+            
+            # 步驟 4: 更新 Workers 主表
+            cursor.execute(
+                'UPDATE "Workers" SET special_status = %s WHERE unique_id = %s',
+                (new_status, worker_id)
+            )
+            
         conn.commit()
-        return True, "狀態紀錄已成功刪除。"
+        return True, f"狀態紀錄已成功刪除，員工狀態已更新為「{new_status}」。"
+        
     except Exception as e:
         if conn: conn.rollback()
         return False, f"刪除狀態時發生錯誤: {e}"
@@ -1085,5 +1138,21 @@ def get_all_worker_ids_by_filters(filters: dict):
     except Exception as e:
         print(f"ERROR in get_all_worker_ids_by_filters: {e}")
         return set()
+    finally:
+        if conn: conn.close()
+
+def get_distinct_nationalities():
+    """獲取所有不重複的國籍列表，用於篩選器。"""
+    conn = database.get_db_connection()
+    if not conn: return []
+    try:
+        query = 'SELECT DISTINCT nationality FROM "Workers" WHERE nationality IS NOT NULL AND nationality != \'\' ORDER BY nationality'
+        with conn.cursor() as cursor:
+            cursor.execute(query)
+            records = cursor.fetchall()
+            return [row['nationality'] for row in records]
+    except Exception as e:
+        print(f"Error getting distinct nationalities: {e}")
+        return []
     finally:
         if conn: conn.close()
