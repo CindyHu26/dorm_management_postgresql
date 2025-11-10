@@ -55,7 +55,7 @@ def get_employer_resident_details(employer_names: list, year_month: str = None):
             acc_end_date = target_date_str
     else:
         target_date_str = datetime.now().date().strftime('%Y-%m-%d')
-        acc_start_date = '1900-01-01'
+        acc_start_date = target_date_str  # <-- 原本是 '1900-01-01'
         acc_end_date = target_date_str
 
 

@@ -203,7 +203,7 @@ def render():
     if not log_df.empty:
         options_dict = {
             row['id']: (
-                f"{row['通報日期']} {row.get('項目類型', 'N/A')} {row['細項說明']} "
+                f"{row['通報日期']} {row.get('項目類型', 'N/A')}-{row['細項說明']} "
                 f"({row.get('內部提報人', 'N/A')}-{row['宿舍地址']})"
             )
             for _, row in log_df.iterrows()
