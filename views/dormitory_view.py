@@ -37,7 +37,7 @@ def render():
         st.session_state.last_selected_dorm = None
     if st.session_state.selected_dorm_id != st.session_state.last_selected_dorm:
         st.session_state.selected_room_id = None
-        st.session_state.dorm_active_tab = "基本資料與編輯"
+        # st.session_state.dorm_active_tab = "基本資料與編輯"
         st.session_state.last_selected_dorm = st.session_state.selected_dorm_id
 
     # --- 預載廠商資料 ---
