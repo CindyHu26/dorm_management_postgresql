@@ -204,7 +204,7 @@ def render():
                             if success:
                                 st.success(message)
                                 get_dorms_df.clear()
-                                get_person_options.clear() # --- 修改 9：清除快取 ---
+                                get_person_options.clear()
                                 st.rerun()
                             else:
                                 st.error(message)
@@ -221,72 +221,79 @@ def render():
 
             elif active_tab == "房間管理":
                 with st.container():
-                    st.markdown("##### 房間列表")
-                    rooms_df = dormitory_model.get_rooms_for_dorm_as_df(dorm_id)
-                    st.dataframe(rooms_df, width='stretch', hide_index=True)
-                    st.markdown("---")
-                    st.subheader("新增、編輯或刪除房間")
-                    room_options = {row['id']: f"{row['房號']} (容量: {row.get('容量', 'N/A')})" for _, row in rooms_df.iterrows()}
-                    st.selectbox( "選擇要編輯或刪除的房間：", options=[None] + list(room_options.keys()), format_func=lambda x: "請選擇..." if x is None else room_options.get(x), key='selected_room_id' )
-                    if st.session_state.selected_room_id:
-                        room_details = dormitory_model.get_single_room_details(st.session_state.selected_room_id)
-                        if room_details:
-                            with st.form(f"edit_room_form_{st.session_state.selected_room_id}"):
-                                # --- 【核心修改 1】加入房號輸入框 ---
-                                e_room_number = st.text_input("房號", value=room_details.get('room_number', ''))
-                                # --- 修改結束 ---
+                    st.markdown("##### 房間列表 (可直接編輯)")
+                    st.info(
+                        """
+                        - **編輯**：直接在表格中修改資料。
+                        - **新增**：點擊表格底部的 `+` 按鈕新增一列。
+                        - **刪除**：點擊該列最左側的 `▢` 並於右上角選擇 "🗑"。
+                        - **[未分配房間]**：此為系統保留房號，請勿刪除或修改。
+                        """
+                    )
 
-                                st.markdown(f"###### 正在編輯房號: {room_details.get('room_number')}") # 可以保留或移除此行
-                                ec1, ec2, ec3 = st.columns(3)
-                                e_capacity = ec1.number_input("房間容量", min_value=0, step=1, value=int(room_details.get('capacity') or 0))
-                                gender_options = ["可混住", "僅限男性", "僅限女性"]
-                                e_gender_policy = ec2.selectbox("性別限制", gender_options, index=gender_options.index(room_details.get('gender_policy')) if room_details.get('gender_policy') in gender_options else 0)
-                                nationality_options = ["不限", "單一國籍"]
-                                e_nationality_policy = ec3.selectbox("國籍限制", nationality_options, index=nationality_options.index(room_details.get('nationality_policy')) if room_details.get('nationality_policy') in nationality_options else 0)
-                                e_room_notes = st.text_area("房間備註", value=room_details.get('room_notes', ''))
-                                edit_submitted = st.form_submit_button("儲存房間變更")
-                                if edit_submitted:
-                                    if not e_room_number.strip(): # 檢查新房號是否為空
-                                        st.error("房號不可為空！")
-                                    else:
-                                        # --- 【核心修改 2】將新房號加入 updated_details ---
-                                        updated_details = {
-                                            "room_number": e_room_number.strip(), # 加入新房號
-                                            "capacity": e_capacity,
-                                            "gender_policy": e_gender_policy,
-                                            "nationality_policy": e_nationality_policy,
-                                            "room_notes": e_room_notes
-                                        }
-                                        # --- 修改結束 ---
-                                        success, message = dormitory_model.update_room_details(st.session_state.selected_room_id, updated_details)
-                                        if success:
-                                            st.success(message); st.session_state.room_action_completed = True; st.rerun()
-                                        else:
-                                            st.error(message)
-                            confirm_delete_room = st.checkbox("我了解並確認要刪除此房間", key=f"delete_room_{st.session_state.selected_room_id}")
-                            if st.button("🗑️ 刪除此房間", type="primary", disabled=not confirm_delete_room):
-                                success, message = dormitory_model.delete_room_by_id(st.session_state.selected_room_id)
-                                if success:
-                                    st.success(message); st.session_state.room_action_completed = True; st.rerun()
-                                else:
-                                    st.error(message)
-                    with st.form("new_room_form", clear_on_submit=True):
-                        st.markdown("###### 或新增一個房間至此宿舍")
-                        nc1, nc2, nc3 = st.columns(3)
-                        room_number = nc1.text_input("新房號 (例如: A01)")
-                        capacity = nc2.number_input("房間容量", min_value=1, step=1, value=4)
-                        gender_policy = nc3.selectbox("性別限制 ", ["可混住", "僅限男性", "僅限女性"])
-                        nc_c1, nc_c2 = st.columns(2)
-                        nationality_policy = nc_c1.selectbox("國籍限制 ", ["不限", "單一國籍"])
-                        room_notes = nc_c2.text_area("房間備註 ")
-                        room_submitted = st.form_submit_button("新增房間")
-                        if room_submitted:
-                            if not room_number:
-                                st.error("房號為必填欄位！")
+                    # 1. 載入原始資料
+                    @st.cache_data
+                    def get_rooms_data_for_editor(dorm_id):
+                        # 呼叫我們新增的函式
+                        return dormitory_model.get_rooms_for_editor(dorm_id)
+
+                    rooms_df = get_rooms_data_for_editor(dorm_id)
+                    
+                    # 2. 建立選項
+                    gender_options = ["可混住", "僅限男性", "僅限女性"]
+                    nationality_options = ["不限", "單一國籍"]
+                    
+                    # 3. 建立表單
+                    with st.form("room_sync_form"):
+                        
+                        edited_df = st.data_editor(
+                            rooms_df,
+                            key=f"room_editor_{dorm_id}",
+                            width='stretch',
+                            hide_index=True,
+                            num_rows="dynamic", # 允許新增和刪除
+                            column_config={
+                                "id": st.column_config.NumberColumn(
+                                    "ID", 
+                                    disabled=True, 
+                                    help="由系統自動產生"
+                                ),
+                                "room_number": st.column_config.TextColumn(
+                                    "房號", 
+                                    required=True,
+                                    help="房號在同一宿舍內不可重複"
+                                ),
+                                "capacity": st.column_config.NumberColumn(
+                                    "容量", 
+                                    min_value=0, 
+                                    step=1,
+                                    format="%d"
+                                ),
+                                "gender_policy": st.column_config.SelectboxColumn(
+                                    "性別限制",
+                                    options=gender_options,
+                                    required=True
+                                ),
+                                "nationality_policy": st.column_config.SelectboxColumn(
+                                    "國籍限制",
+                                    options=nationality_options,
+                                    required=True
+                                ),
+                                "room_notes": st.column_config.TextColumn(
+                                    "房間備註"
+                                )
+                            }
+                        )
+                        
+                        submitted = st.form_submit_button("🚀 儲存所有房間變更")
+                        if submitted:
+                            with st.spinner("正在同步房間資料..."):
+                                # 4. 呼叫新的後端函式
+                                success, message = dormitory_model.batch_sync_rooms(dorm_id, edited_df)
+                            
+                            if success:
+                                st.success(message)
+                                get_rooms_data_for_editor.clear() # 清除快取
+                                st.rerun()
                             else:
-                                room_details = { 'dorm_id': dorm_id, 'room_number': room_number, 'capacity': capacity, 'gender_policy': gender_policy, 'nationality_policy': nationality_policy, 'room_notes': room_notes }
-                                success, msg, _ = dormitory_model.add_new_room_to_dorm(room_details)
-                                if success:
-                                    st.success(msg); st.rerun()
-                                else:
-                                    st.error(msg)
+                                st.error(message)

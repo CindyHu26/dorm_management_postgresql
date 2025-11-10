@@ -1,6 +1,7 @@
 import pandas as pd
 import psycopg2
 import database
+import numpy as np
 from data_processor import normalize_taiwan_address
 from . import cleaning_model
 
@@ -428,5 +429,133 @@ def get_distinct_person_in_charge():
     except Exception as e:
         print(f"查詢負責人列表時發生錯誤: {e}")
         return [] # 發生錯誤時回傳空列表
+    finally:
+        if conn: conn.close()
+
+def get_rooms_for_editor(dorm_id: int):
+    """
+    【v2.6 新增】為 data_editor 查詢指定宿舍下的所有房間 (原始欄位名稱)。
+    """
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        # 查詢原始欄位名稱，不過濾 [未分配房間]
+        query = """
+            SELECT 
+                id, room_number, capacity, 
+                gender_policy, nationality_policy, 
+                room_notes
+            FROM "Rooms" 
+            WHERE dorm_id = %s
+            ORDER BY room_number
+        """
+        return _execute_query_to_dataframe(conn, query, (dorm_id,))
+    finally:
+        if conn: conn.close()
+
+def batch_sync_rooms(dorm_id: int, edited_df: pd.DataFrame):
+    """
+    【v2.6 新增】在單一交易中，批次同步 (新增、更新、刪除) 宿舍的房間。
+    """
+    conn = database.get_db_connection()
+    if not conn: 
+        return False, "資料庫連線失敗。"
+
+    try:
+        # 1. 取得資料庫目前的狀態
+        original_df = get_rooms_for_editor(dorm_id)
+        original_ids = set(original_df['id'].dropna())
+        
+        # 2. 取得 data_editor 編輯後的狀態
+        # 處理 NaN/NaT (例如新行)
+        edited_df = edited_df.replace({pd.NaT: None, np.nan: None})
+        edited_ids = set(edited_df['id'].dropna())
+
+        # 3. 計算差異
+        ids_to_delete = original_ids - edited_ids
+        new_rows_df = edited_df[edited_df['id'].isnull()]
+        updated_rows_df = edited_df[edited_df['id'].isin(original_ids)]
+
+        with conn.cursor() as cursor:
+            
+            # --- 動作 A：處理刪除 ---
+            if ids_to_delete:
+                for room_id_to_delete in ids_to_delete:
+                    # 取得房號用於錯誤訊息
+                    room_number_to_delete = original_df[original_df['id'] == room_id_to_delete]['room_number'].iloc[0]
+                    
+                    # 安全檢查：裡面是否還有在住人員？
+                    check_sql = """
+                        SELECT COUNT(id) as count 
+                        FROM "AccommodationHistory" 
+                        WHERE room_id = %s AND (end_date IS NULL OR end_date > CURRENT_DATE)
+                    """
+                    cursor.execute(check_sql, (room_id_to_delete,))
+                    result = cursor.fetchone()
+                    
+                    if result and result['count'] > 0:
+                        # 如果有人住，拋出錯誤並中斷整個交易
+                        raise Exception(f"無法刪除房號 {room_number_to_delete} (ID: {room_id_to_delete})，因為裡面還有 {result['count']} 位在住人員。")
+                    
+                    # 執行刪除
+                    cursor.execute('DELETE FROM "Rooms" WHERE id = %s', (room_id_to_delete,))
+
+            # --- 動作 B：處理新增 ---
+            if not new_rows_df.empty:
+                for _, row in new_rows_df.iterrows():
+                    if not row['room_number'] or pd.isna(row['room_number']):
+                        raise Exception("新增失敗：『房號』為必填欄位，不可為空。")
+                    
+                    insert_sql = """
+                        INSERT INTO "Rooms" (dorm_id, room_number, capacity, gender_policy, nationality_policy, room_notes)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    """
+                    cursor.execute(insert_sql, (
+                        dorm_id,
+                        row['room_number'],
+                        row.get('capacity'),
+                        row.get('gender_policy', '可混住'),
+                        row.get('nationality_policy', '不限'),
+                        row.get('room_notes')
+                    ))
+
+            # --- 動作 C：處理更新 ---
+            if not updated_rows_df.empty:
+                # 為了比對，我們需要原始資料
+                original_indexed = original_df.set_index('id')
+                for _, row in updated_rows_df.iterrows():
+                    room_id_to_update = row['id']
+                    original_row = original_indexed.loc[room_id_to_update]
+                    
+                    # 比較是否有變更
+                    if not row.equals(original_row):
+                        if not row['room_number'] or pd.isna(row['room_number']):
+                             raise Exception(f"更新失敗 (ID: {room_id_to_update})：『房號』不可改為空值。")
+
+                        update_sql = """
+                            UPDATE "Rooms" SET 
+                                room_number = %s, capacity = %s, gender_policy = %s, 
+                                nationality_policy = %s, room_notes = %s
+                            WHERE id = %s
+                        """
+                        cursor.execute(update_sql, (
+                            row['room_number'],
+                            row.get('capacity'),
+                            row.get('gender_policy', '可混住'),
+                            row.get('nationality_policy', '不限'),
+                            row.get('room_notes'),
+                            room_id_to_update
+                        ))
+        
+        # 如果所有操作都沒出錯，提交交易
+        conn.commit()
+        return True, "房間資料已成功同步。"
+
+    except Exception as e:
+        if conn: conn.rollback() # 發生任何錯誤，復原所有操作
+        # 處理違反唯一約束的錯誤
+        if isinstance(e, database.psycopg2.IntegrityError) and "unique constraint" in str(e).lower():
+            return False, f"儲存失敗：房號重複。請確保您新增或修改的房號在這間宿舍中是唯一的。"
+        return False, f"儲存時發生錯誤: {e}"
     finally:
         if conn: conn.close()
