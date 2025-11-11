@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 from data_models import income_model, dormitory_model
 
 def render():
@@ -36,9 +36,9 @@ def render():
             custom_income_item = c1.text_input("自訂收入項目", help="若上方選擇「其他」，請在此處填寫")
 
             amount = c2.number_input("收入金額", min_value=0)
-            transaction_date = c3.date_input("收入日期", value=datetime.now())
+            transaction_date = c3.date_input("收入日期", value=date.today())
             
-            # --- 【核心修改 2】無論如何都讓使用者可以選擇，只是選項可能為空 ---
+            # --- 無論如何都讓使用者可以選擇，只是選項可能為空 ---
             selected_room_id = c4.selectbox("關聯房號 (選填)", [None] + list(room_options.keys()), 
                                             format_func=lambda x: "無 (不指定)" if x is None else room_options.get(x))
 
@@ -84,6 +84,8 @@ def render():
     else:
         display_cols = ["收入日期", "收入項目", "房號", "金額", "備註", "id"]
         existing_cols = [col for col in display_cols if col in income_df.columns]
+        if "收入日期" in income_df.columns:
+            income_df["收入日期"] = pd.to_datetime(income_df["收入日期"]).dt.date
         st.dataframe(income_df[existing_cols], width="stretch", hide_index=True, column_config={"id": None})
 
         st.markdown("---")
