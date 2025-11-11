@@ -131,29 +131,56 @@ def render():
         # 依照 (宿舍, 房號) 進行分組
         for (dorm_address, room_number), occupants in room_view_df.groupby(['original_address', 'room_number']):
             
-            # .iloc[0] 取得第一筆資料 (因為同房號的 capacity 都一樣)
             room_capacity = occupants['capacity'].iloc[0]
             
-            # 計算實際人數 (只計算 worker_name 不是空值)
-            num_occupants = occupants['worker_name'].apply(lambda x: 1 if x else 0).sum()
+            # --- 【核心修改 v2.6】---
+            # 1. 找出 "實際佔床" 的人 (worker_name 有值，且 status 不含 "掛宿外住")
+            #    fillna('') 確保 .str.contains 不會因 None 報錯
+            is_physically_present = (
+                (occupants['worker_name'] != '') & 
+                (~occupants['special_status'].fillna('').str.contains("掛宿外住"))
+            )
+            num_occupants = is_physically_present.sum()
             vacancies = room_capacity - num_occupants
-            
+
             room_title = f"{dorm_address} - {room_number} (容量: {room_capacity}, 空床: {vacancies})"
             
-            # 根據空床數決定顏色
             if vacancies == 0:
                 room_title = f"🔴 {room_title} (已滿)"
             elif vacancies > 0:
                 room_title = f"🟢 {room_title}"
+            # --- 修改結束 ---
 
             with st.expander(room_title):
-                if num_occupants == 0:
+                
+                # --- 【核心修改 v2.6】---
+                # 2. 找出 "有資料" 的人 (worker_name 有值)
+                has_data = occupants['worker_name'] != ''
+                if not has_data.any():
+                # --- 修改結束 ---
                     st.text("此房間目前無人居住。")
                 else:
-                    # 篩選掉 'worker_name' 為空的列 (這些是 left join 產生的空房)
-                    occupant_details = occupants[occupants['worker_name'] != ''][['worker_name', 'employer_name', 'bed_number']]
-                    occupant_details.rename(columns={'worker_name': '姓名', 'employer_name': '雇主', 'bed_number': '床位編號'}, inplace=True)
-                    st.dataframe(occupant_details, hide_index=True, width="stretch")
+                    # --- 【核心修改 v2.6】---
+                    # 3. 顯示 *所有* 在冊人員 (包含掛宿外住)
+                    occupant_details = occupants[has_data][['worker_name', 'employer_name', 'bed_number', 'special_status']]
+                    occupant_details.rename(columns={
+                        'worker_name': '姓名', 
+                        'employer_name': '雇主', 
+                        'bed_number': '床位編號',
+                        'special_status': '特殊狀況' # <-- 顯示此欄位
+                    }, inplace=True)
+                    
+                    # 4. 對 "特殊狀況" 欄位進行高亮
+                    def style_status(val):
+                        if val and "掛宿外住" in val:
+                            return 'color: #FFBF00; font-weight: bold;' # 醒目的黃色
+                        return ''
+                    
+                    st.dataframe(
+                        occupant_details.style.apply(lambda x: x.map(style_status) if x.name == '特殊狀況' else [''] * len(x)), 
+                        hide_index=True, 
+                        width="stretch"
+                    )
     # --- 房況總覽區塊結束 ---
 
     st.markdown("---")

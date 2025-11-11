@@ -753,14 +753,15 @@ def get_amortized_expense_details(dorm_ids: list, year_month: str):
 
 def get_room_occupancy_view(dorm_ids: list, year_month: str):
     """
-    【v2.5 新增】為宿舍深度分析儀表板，查詢房間內的詳細住宿狀況。
+    【v2.6 掛宿外住 修正版】為宿舍深度分析儀表板，查詢房間內的詳細住宿狀況。
+    新增 'special_status' 欄位。
     """
     conn = database.get_db_connection()
     if not conn or not dorm_ids: return pd.DataFrame()
 
     params = {"dorm_ids": dorm_ids, "year_month": year_month}
     try:
-        # 1. 取得所有房間 (包含容量)
+        # 1. 取得所有房間 (維持不變)
         rooms_query = """
             SELECT 
                 r.id as room_id, 
@@ -774,9 +775,9 @@ def get_room_occupancy_view(dorm_ids: list, year_month: str):
         """
         rooms_df = _execute_query_to_dataframe(conn, rooms_query, params)
         if rooms_df.empty:
-            return pd.DataFrame() # 沒有房間可顯示
+            return pd.DataFrame() 
 
-        # 2. 取得所有在住人員 (使用 'get_resident_details_as_df' 的邏輯)
+        # 2. 取得所有在住人員 (維持不變)
         residents_query = f"""
             WITH DateParams AS (
                 SELECT
@@ -800,20 +801,20 @@ def get_room_occupancy_view(dorm_ids: list, year_month: str):
                 awm.room_id,
                 w.worker_name,
                 w.employer_name,
-                awm.bed_number
+                awm.bed_number,
+                w.special_status -- 【<-- 核心修改：新增此行】
             FROM ActiveWorkersInMonth awm
             JOIN "Workers" w ON awm.worker_unique_id = w.unique_id
-            -- 不過濾 '掛宿外住'，因為房況總覽應該要看到 *所有* 佔床的人
         """
         residents_df = _execute_query_to_dataframe(conn, residents_query, params)
         
-        # 3. 在 Pandas 中合併
+        # 3. 在 Pandas 中合併 (維持不變)
         merged_df = rooms_df.merge(residents_df, on='room_id', how='left')
         
-        # 確保 'worker_name' 為空 (空房) 時，其他欄位也是空的
         merged_df['worker_name'] = merged_df['worker_name'].fillna('')
         merged_df['employer_name'] = merged_df['employer_name'].fillna('')
         merged_df['bed_number'] = merged_df['bed_number'].fillna('')
+        merged_df['special_status'] = merged_df['special_status'].fillna('') # 【<-- 核心修改：新增此行】
         
         return merged_df
 
