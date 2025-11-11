@@ -243,7 +243,7 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                     # --- 新增工人 (v2.29 邏輯) ---
                     new_worker_details = fresh_worker.to_dict()
                     new_worker_details['data_source'] = '系統自動更新'
-                    new_worker_details['special_status'] = '在住'
+                    new_worker_details['special_status'] = None
                     
                     final_details = {k: v for k, v in new_worker_details.items() if k in worker_columns}
                     final_details['room_id'] = new_room_id
