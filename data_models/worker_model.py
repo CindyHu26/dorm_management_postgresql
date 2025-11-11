@@ -497,7 +497,7 @@ def delete_worker_status(status_id: int):
             )
             new_latest_status_record = cursor.fetchone()
             
-            new_status = '在住' # 預設值
+            new_status = None # 預設值
             if new_latest_status_record:
                 new_status = new_latest_status_record['status']
             
