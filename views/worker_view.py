@@ -504,7 +504,7 @@ def render():
                             history_details = worker_model.get_single_fee_history_details(selected_history_id)
                             if history_details:
                                 with st.form(f"edit_fee_history_form_{selected_history_id}"):
-                                    st.markdown(f"###### กำลังแก้ไข ID: {history_details['id']} 的紀錄")
+                                    st.markdown(f"###### 編輯 ID: {history_details['id']} 的紀錄")
                                     fee_type_options = ['房租', '水電費', '清潔費', '宿舍復歸費', '充電清潔費']
                                     try: default_index = fee_type_options.index(history_details.get('fee_type'))
                                     except ValueError: default_index = 0

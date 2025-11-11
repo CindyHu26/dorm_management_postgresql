@@ -649,15 +649,54 @@ def update_accommodation_history(history_id: int, details: dict):
 
 def delete_accommodation_history(history_id: int):
     """
-    【v2.2 新增】刪除一筆住宿歷史紀錄。
+    【v2.17 邏輯修正版】刪除一筆住宿歷史紀錄。
+    刪除後，會自動查詢 "最新" 的一筆住宿歷史，並將其 end_date 同步回 Workers 主表。
     """
     conn = database.get_db_connection()
     if not conn: return False, "資料庫連線失敗"
+    
     try:
         with conn.cursor() as cursor:
+            # 步驟 1: 取得要刪除的紀錄的 worker_unique_id
+            cursor.execute('SELECT worker_unique_id FROM "AccommodationHistory" WHERE id = %s', (history_id,))
+            record_to_delete = cursor.fetchone()
+            
+            if not record_to_delete:
+                return False, "找不到要刪除的住宿紀錄。"
+            
+            worker_id = record_to_delete['worker_unique_id']
+
+            # 步驟 2: 刪除該筆紀錄
             cursor.execute('DELETE FROM "AccommodationHistory" WHERE id = %s', (history_id,))
+            
+            # 步驟 3: 找出 *刪除後* 的最新一筆住宿紀錄
+            cursor.execute(
+                """
+                SELECT end_date FROM "AccommodationHistory" 
+                WHERE worker_unique_id = %s 
+                ORDER BY start_date DESC, id DESC 
+                LIMIT 1
+                """,
+                (worker_id,)
+            )
+            new_latest_history_record = cursor.fetchone()
+            
+            new_end_date = None # 預設值 (如果沒有任何歷史紀錄了)
+            if new_latest_history_record:
+                # new_end_date 可能為 None (在住) 或一個具體的日期
+                new_end_date = new_latest_history_record['end_date']
+            
+            # 步驟 4: 更新 Workers 主表
+            cursor.execute(
+                'UPDATE "Workers" SET accommodation_end_date = %s WHERE unique_id = %s',
+                (new_end_date, worker_id)
+            )
+            
         conn.commit()
-        return True, "住宿歷史紀錄已成功刪除。"
+        
+        status_msg = f"（{new_end_date}）" if new_end_date else "（在住）"
+        return True, f"住宿歷史紀錄已成功刪除，員工的最終離住日已同步更新為: {status_msg}。"
+        
     except Exception as e:
         if conn: conn.rollback()
         return False, f"刪除住宿歷史時發生錯誤: {e}"
