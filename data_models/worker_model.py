@@ -354,53 +354,6 @@ def get_accommodation_history_for_worker(worker_id: str):
     finally:
         if conn: conn.close()
 
-def change_worker_accommodation(worker_id: str, new_room_id: int, change_date: date, bed_number: str = None):
-    """
-    【v2.3 修改版】處理工人換宿的核心業務邏輯，新增床位編號。
-    """
-    conn = database.get_db_connection()
-    if not conn: return False, "資料庫連線失敗"
-    try:
-        with conn.cursor() as cursor:
-            # 步驟 1: 找出目前正在住的紀錄
-            cursor.execute(
-                'SELECT id, room_id FROM "AccommodationHistory" WHERE worker_unique_id = %s AND end_date IS NULL ORDER BY start_date DESC LIMIT 1',
-                (worker_id,)
-            )
-            current_accommodation = cursor.fetchone()
-
-            # 如果新房間和舊房間一樣，則不進行任何操作
-            if current_accommodation and current_accommodation['room_id'] == new_room_id:
-                return True, "工人已在該房間，無需變更。"
-
-            # 步驟 2: 將目前正在住的紀錄加上結束日期
-            if current_accommodation:
-                cursor.execute(
-                    'UPDATE "AccommodationHistory" SET end_date = %s WHERE id = %s',
-                    (change_date, current_accommodation['id'])
-                )
-            
-            # 步驟 3: 新增一筆新的住宿紀錄
-            if new_room_id is not None:
-                cursor.execute(
-                    'INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, bed_number) VALUES (%s, %s, %s, %s)',
-                    (worker_id, new_room_id, change_date, bed_number)
-                )
-
-            # 步驟 4: 更新 Workers 表中的 data_source 標記
-            cursor.execute(
-                'UPDATE "Workers" SET data_source = %s WHERE unique_id = %s',
-                ('手動調整', worker_id)
-            )
-
-        conn.commit()
-        return True, "工人住宿資料更新成功！"
-    except Exception as e:
-        if conn: conn.rollback()
-        return False, f"變更住宿時發生錯誤: {e}"
-    finally:
-        if conn: conn.close()
-
 def get_worker_status_history(unique_id: str):
     """查詢單一移工的所有歷史狀態紀錄。"""
     conn = database.get_db_connection()
@@ -610,39 +563,66 @@ def get_single_accommodation_details(history_id: int):
 
 def update_accommodation_history(history_id: int, details: dict):
     """
-    【v2.5 房間修改版】更新一筆已存在的住宿歷史紀錄，允許修改 room_id。
+    【v2.18 邏輯修正版】更新一筆已存在的住宿歷史紀錄。
+    更新後，會自動查詢 "最新" 的一筆住宿歷史，並將其 end_date 同步回 Workers 主表。
     """
     conn = database.get_db_connection()
     if not conn: return False, "資料庫連線失敗"
+    
+    worker_id_to_sync = None # 用於儲存 worker_id
+
     try:
         with conn.cursor() as cursor:
-            # --- 移除 details.pop('room_id', None) ---
-            # details.pop('room_id', None) # <--- 將此行註解或刪除
+            
+            # 步驟 1: 取得要更新的紀錄的 worker_unique_id (在更新前取得)
+            cursor.execute('SELECT worker_unique_id FROM "AccommodationHistory" WHERE id = %s', (history_id,))
+            record_to_update = cursor.fetchone()
+            
+            if not record_to_update:
+                return False, f"更新失敗：找不到 ID 為 {history_id} 的住宿歷史紀錄。"
+            
+            worker_id_to_sync = record_to_update['worker_unique_id']
 
-            # 檢查 details 是否為空，如果只傳入 room_id 也要能更新
-            if not details:
-                 # Technically possible if only room_id was intended, but usually unlikely.
-                 # Let's assume other details might be intended even if empty now.
-                 # If you ONLY want to update room_id, the check might need adjustment.
-                 # For now, let's proceed assuming other fields might be updated too.
-                 pass # Allow update even if other fields are empty/None if room_id is present
-
-
+            # 步驟 2: 執行更新
             fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
             values = list(details.values()) + [history_id]
             sql = f'UPDATE "AccommodationHistory" SET {fields} WHERE id = %s'
             cursor.execute(sql, tuple(values))
 
-            # --- 檢查更新影響的行數 ---
             if cursor.rowcount == 0:
-                 conn.rollback() # 如果沒有任何行被更新，可能 ID 不存在，回滾
+                 # 雖然上面檢查過了，但 double check
+                 conn.rollback() 
                  return False, f"更新失敗：找不到 ID 為 {history_id} 的住宿歷史紀錄。"
 
+            # 步驟 3: 找出 *更新後* 的最新一筆住宿紀錄
+            cursor.execute(
+                """
+                SELECT end_date FROM "AccommodationHistory" 
+                WHERE worker_unique_id = %s 
+                ORDER BY start_date DESC, id DESC 
+                LIMIT 1
+                """,
+                (worker_id_to_sync,)
+            )
+            new_latest_history_record = cursor.fetchone()
+            
+            new_end_date = None # 預設值 (如果沒有任何歷史紀錄了)
+            if new_latest_history_record:
+                new_end_date = new_latest_history_record['end_date']
+            
+            # 步驟 4: 更新 Workers 主表
+            cursor.execute(
+                'UPDATE "Workers" SET accommodation_end_date = %s WHERE unique_id = %s',
+                (new_end_date, worker_id_to_sync)
+            )
+
         conn.commit()
-        return True, "住宿歷史紀錄更新成功！"
+        
+        status_msg = f"（{new_end_date}）" if new_end_date else "（在住）"
+        return True, f"住宿歷史紀錄更新成功！員工的最終離住日已同步更新為: {status_msg}。"
+
     except Exception as e:
         if conn: conn.rollback()
-        # --- 提供更詳細的錯誤 ---
         return False, f"更新住宿歷史時發生錯誤: {e}"
     finally:
         if conn: conn.close()
