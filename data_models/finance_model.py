@@ -674,7 +674,7 @@ def get_bills_for_editor(meter_id: int):
 
 def batch_sync_bills(meter_id: int, dorm_id: int, edited_df: pd.DataFrame):
     """
-    【v2.7 新增】在單一交易中，批次同步 (新增、更新、刪除) 指定錶號的帳單。
+    【v2.7 新增】【v2.8 日期修復】在單一交易中，批次同步 (新增、更新、刪除) 指定錶號的帳單。
     """
     conn = database.get_db_connection()
     if not conn: 
@@ -709,16 +709,22 @@ def batch_sync_bills(meter_id: int, dorm_id: int, edited_df: pd.DataFrame):
             # --- 動作 B：處理新增 ---
             if not new_rows_df.empty:
                 for _, row in new_rows_df.iterrows():
+                    raw_start_date = row['bill_start_date']
+                    raw_end_date = row['bill_end_date']
+
                     # 驗證必填欄位
-                    if not row['bill_type'] or pd.isna(row['bill_start_date']) or pd.isna(row['bill_end_date']) or pd.isna(row['amount']):
+                    if not row['bill_type'] or pd.isna(raw_start_date) or pd.isna(raw_end_date) or pd.isna(row['amount']):
                         raise Exception("新增失敗：『費用類型』、『帳單金額』、『起始日』、『結束日』不可為空。")
-                    if row['bill_start_date'] > row['bill_end_date']:
-                        raise Exception(f"新增失敗 (類型 {row['bill_type']})：『起始日』不可晚於『結束日』。")
                     
-                    # 處理 "其他"
+                    # --- 【核心修改 (V4)】 ---
+                    start_date_obj = pd.to_datetime(raw_start_date).date()
+                    end_date_obj = pd.to_datetime(raw_end_date).date()
+                    if start_date_obj > end_date_obj:
+                        raise Exception(f"新增失敗 (類型 {row['bill_type']})：『起始日』不可晚於『結束日』。")
+                    # --- 【修改結束】 ---
+                    
                     final_bill_type = row['bill_type']
                     if final_bill_type not in bill_type_options:
-                        # 如果不是標準選項，就視為自訂
                         pass # 允許自訂
                     
                     insert_sql = """
@@ -731,7 +737,8 @@ def batch_sync_bills(meter_id: int, dorm_id: int, edited_df: pd.DataFrame):
                     cursor.execute(insert_sql, (
                         dorm_id, meter_id, final_bill_type,
                         row['amount'], row.get('usage_amount'),
-                        row['bill_start_date'], row['bill_end_date'],
+                        start_date_obj, # 使用轉換後的物件
+                        end_date_obj,   # 使用轉換後的物件
                         row.get('payer', '我司'),
                         bool(row.get('is_pass_through')),
                         bool(row.get('is_invoiced')),
@@ -747,9 +754,15 @@ def batch_sync_bills(meter_id: int, dorm_id: int, edited_df: pd.DataFrame):
                     
                     # 比較是否有變更
                     if not row.equals(original_row):
-                        if not row['bill_type'] or pd.isna(row['bill_start_date']) or pd.isna(row['bill_end_date']) or pd.isna(row['amount']):
+                        raw_start_date_upd = row['bill_start_date']
+                        raw_end_date_upd = row['bill_end_date']
+                        
+                        if not row['bill_type'] or pd.isna(raw_start_date_upd) or pd.isna(raw_end_date_upd) or pd.isna(row['amount']):
                             raise Exception(f"更新失敗 (ID: {bill_id_to_update})：『費用類型』、『帳單金額』、『起始日』、『結束日』不可為空。")
-                        if row['bill_start_date'] > row['bill_end_date']:
+                        
+                        start_date_obj_upd = pd.to_datetime(raw_start_date_upd).date()
+                        end_date_obj_upd = pd.to_datetime(raw_end_date_upd).date()
+                        if start_date_obj_upd > end_date_obj_upd:
                              raise Exception(f"更新失敗 (ID: {bill_id_to_update})：『起始日』不可晚於『結束日』。")
 
                         update_sql = """
@@ -761,7 +774,8 @@ def batch_sync_bills(meter_id: int, dorm_id: int, edited_df: pd.DataFrame):
                         """
                         cursor.execute(update_sql, (
                             row['bill_type'], row['amount'], row.get('usage_amount'),
-                            row['bill_start_date'], row['bill_end_date'],
+                            start_date_obj_upd, # 使用轉換後的物件
+                            end_date_obj_upd,   # 使用轉換後的物件
                             row.get('payer', '我司'),
                             bool(row.get('is_pass_through')),
                             bool(row.get('is_invoiced')),
@@ -803,7 +817,7 @@ def get_bills_for_dorm_editor(dorm_id: int):
 
 def batch_sync_dorm_bills(dorm_id: int, edited_df: pd.DataFrame):
     """
-    【v2.8 新增】在單一交易中，批次同步 (新增、更新、刪除) 指定 *宿舍* 的帳單。
+    【v2.8 新增】【v2.8 日期修復】在單一交易中，批次同步 (新增、更新、刪除) 指定 *宿舍* 的帳單。
     """
     conn = database.get_db_connection()
     if not conn: 
@@ -842,11 +856,19 @@ def batch_sync_dorm_bills(dorm_id: int, edited_df: pd.DataFrame):
             # --- 動作 B：處理新增 ---
             if not new_rows_df.empty:
                 for _, row in new_rows_df.iterrows():
+                    raw_start_date = row['bill_start_date']
+                    raw_end_date = row['bill_end_date']
+
                     # 驗證必填欄位
-                    if not row['bill_type'] or pd.isna(row['bill_start_date']) or pd.isna(row['bill_end_date']) or pd.isna(row['amount']):
+                    if not row['bill_type'] or pd.isna(raw_start_date) or pd.isna(raw_end_date) or pd.isna(row['amount']):
                         raise Exception("新增失敗：『費用類型』、『帳單金額』、『起始日』、『結束日』不可為空。")
-                    if row['bill_start_date'] > row['bill_end_date']:
+                    
+                    # --- 【核心修改 (V4)】 ---
+                    start_date_obj = pd.to_datetime(raw_start_date).date()
+                    end_date_obj = pd.to_datetime(raw_end_date).date()
+                    if start_date_obj > end_date_obj:
                         raise Exception(f"新增失敗 (類型 {row['bill_type']})：『起始日』不可晚於『結束日』。")
+                    # --- 【修改結束】 ---
                     
                     insert_sql = """
                         INSERT INTO "UtilityBills" (
@@ -858,7 +880,8 @@ def batch_sync_dorm_bills(dorm_id: int, edited_df: pd.DataFrame):
                     cursor.execute(insert_sql, (
                         dorm_id, row.get('meter_id'), row['bill_type'],
                         row['amount'], row.get('usage_amount'),
-                        row['bill_start_date'], row['bill_end_date'],
+                        start_date_obj, # 使用轉換後的物件
+                        end_date_obj,   # 使用轉換後的物件
                         row.get('payer', '我司'),
                         bool(row.get('is_pass_through')),
                         bool(row.get('is_invoiced')),
@@ -873,9 +896,15 @@ def batch_sync_dorm_bills(dorm_id: int, edited_df: pd.DataFrame):
                     original_row = original_indexed.loc[bill_id_to_update]
                     
                     if not row.equals(original_row):
-                        if not row['bill_type'] or pd.isna(row['bill_start_date']) or pd.isna(row['bill_end_date']) or pd.isna(row['amount']):
+                        raw_start_date_upd = row['bill_start_date']
+                        raw_end_date_upd = row['bill_end_date']
+
+                        if not row['bill_type'] or pd.isna(raw_start_date_upd) or pd.isna(raw_end_date_upd) or pd.isna(row['amount']):
                             raise Exception(f"更新失敗 (ID: {bill_id_to_update})：『費用類型』、『帳單金額』、『起始日』、『結束日』不可為空。")
-                        if row['bill_start_date'] > row['bill_end_date']:
+                        
+                        start_date_obj_upd = pd.to_datetime(raw_start_date_upd).date()
+                        end_date_obj_upd = pd.to_datetime(raw_end_date_upd).date()
+                        if start_date_obj_upd > end_date_obj_upd:
                              raise Exception(f"更新失敗 (ID: {bill_id_to_update})：『起始日』不可晚於『結束日』。")
 
                         update_sql = """
@@ -888,7 +917,8 @@ def batch_sync_dorm_bills(dorm_id: int, edited_df: pd.DataFrame):
                         cursor.execute(update_sql, (
                             row.get('meter_id'),
                             row['bill_type'], row['amount'], row.get('usage_amount'),
-                            row['bill_start_date'], row['bill_end_date'],
+                            start_date_obj_upd, # 使用轉換後的物件
+                            end_date_obj_upd,   # 使用轉換後的物件
                             row.get('payer', '我司'),
                             bool(row.get('is_pass_through')),
                             bool(row.get('is_invoiced')),
@@ -901,6 +931,9 @@ def batch_sync_dorm_bills(dorm_id: int, edited_df: pd.DataFrame):
 
     except Exception as e:
         if conn: conn.rollback() 
+        # 處理違反唯一約束的錯誤
+        if isinstance(e, database.psycopg2.IntegrityError) and "unique constraint" in str(e).lower():
+            return False, f"儲存失敗：您新增或修改的帳單與現有紀錄重複 (例如：同一宿舍、類型、起始日的帳單已存在)。"
         return False, f"儲存時發生錯誤: {e}"
     finally:
         if conn: conn.close()

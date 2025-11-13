@@ -1,5 +1,4 @@
 # views/worker_view.py (v2.10 - NaN 修正版)
-
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
@@ -244,7 +243,6 @@ def render():
                         # 試著從總覽的 dataframe (已查詢 FeeHistory) 中獲取最新費用
                         worker_row_from_df = workers_df[workers_df['unique_id'] == selected_worker_id].iloc[0]
 
-                        # --- 【核心修改】---
                         # 建立一個輔助函式來安全地轉換 NaN
                         def get_fee_value(fee_name):
                             val = worker_row_from_df.get(fee_name)
@@ -259,7 +257,6 @@ def render():
                         fc4, fc5 = st.columns(2)
                         restoration_fee = fc4.number_input("宿舍復歸費", value=get_fee_value('宿舍復歸費'), disabled=True)
                         charging_cleaning_fee = fc5.number_input("充電清潔費", value=get_fee_value('充電清潔費'), disabled=True)
-                        # --- 修正結束 ---
                         
                         st.markdown("##### 狀態 (可手動修改)")
                         fcc1, fcc2 = st.columns(2)
@@ -286,26 +283,47 @@ def render():
                             if success: st.success(message); st.cache_data.clear(); st.rerun()
                             else: st.error(message)
 
-                    # --- 危險操作區 (維持不變) ---
+                    # --- 【更新危險操作區】 ---
                     st.markdown("---")
                     st.markdown("##### 危險操作區")
                     current_data_source = worker_details.get('data_source')
 
+                    # 顯示當前狀態和解鎖按鈕
                     if current_data_source in ['手動調整', '手動管理(他仲)']:
-                        if current_data_source == '手動調整': st.warning("此工人的「住宿位置」為手動鎖定，不受自動同步影響，但「離住日」仍會更新。")
-                        else: st.error("此工人已被「完全鎖定」，系統不會更新其住宿位置和離住日。")
+                        if current_data_source == '手動調整': 
+                            st.warning("此工人的「住宿位置」為手動鎖定，不受自動同步影響，但「離住日」仍會更新。")
+                        else: 
+                            st.error("此工人已被「完全鎖定」，系統不會更新其住宿位置和離住日。")
+                        
                         if st.button("🔓 解除鎖定，恢復系統自動同步"):
                             success, message = worker_model.reset_worker_data_source(selected_worker_id)
                             if success: st.success(message); st.cache_data.clear(); st.rerun()
                             else: st.error(message)
+                    
+                    st.markdown("---")
+                    lock_col1, lock_col2 = st.columns(2)
 
-                    if current_data_source != '手動管理(他仲)':
-                        st.markdown("---")
-                        st.write("若希望暫時保護此人員的**離住日**不被系統自動更新，請使用下方按鈕。")
-                        if st.button("🔒 完全鎖定此人員 (保護住宿與離住日)", type="primary"):
-                            success, message = worker_model.set_worker_as_fully_manual(selected_worker_id)
-                            if success: st.success(message); st.cache_data.clear(); st.rerun()
-                            else: st.error(message)
+                    with lock_col1:
+                        # "手動調整" (部分鎖定) 按鈕
+                        if current_data_source == '系統自動更新':
+                            st.write("保護此人員的「住宿位置」，但仍允許系統更新「離住日」等資訊。")
+                            if st.button("🔒 設為手動調整 (保護住宿)"):
+                                success, message = worker_model.set_worker_as_manual_adjustment(selected_worker_id)
+                                if success: st.success(message); st.cache_data.clear(); st.rerun()
+                                else: st.error(message)
+                        elif current_data_source == '手動調整':
+                            st.info("ℹ️ 已處於「手動調整」狀態。")
+
+                    with lock_col2:
+                        # "手動管理(他仲)" (完全鎖定) 按鈕
+                        if current_data_source != '手動管理(他仲)':
+                            st.write("保護此人員的「所有資料」（包含住宿與離住日），系統將完全跳過此人。")
+                            if st.button("🔒 設為完全鎖定 (保護所有資料)", type="primary"):
+                                success, message = worker_model.set_worker_as_fully_manual(selected_worker_id)
+                                if success: st.success(message); st.cache_data.clear(); st.rerun()
+                                else: st.error(message)
+                        elif current_data_source == '手動管理(他仲)':
+                            st.info("ℹ️ 已處於「完全鎖定」狀態。")
 
                     st.markdown("---")
                     confirm_delete = st.checkbox("我了解並確認要刪除此移工的資料")
@@ -315,7 +333,6 @@ def render():
                         else: st.error(message)
 
                 elif selected_tab == "🏠 住宿歷史管理":
-                    # ... (此頁籤內容維持不變) ...
                     st.markdown("##### 新增一筆住宿紀錄 (換宿)")
                     st.info("當工人更換房間或宿舍時，請在此處新增一筆紀錄。系統將自動結束前一筆紀錄。")
 
@@ -365,17 +382,36 @@ def render():
                                     except ValueError:
                                         dorm_index = 0
 
+                                    def clear_room_state_on_dorm_change():
+                                        """當宿舍選單變更時，清除房間選單的狀態。"""
+                                        room_key = f"edit_hist_room_{selected_history_id}"
+                                        if room_key in st.session_state:
+                                            # 使用 del 來完全移除狀態
+                                            del st.session_state[room_key]
+
                                     edit_dorm_id = st.selectbox("宿舍地址", options=dorm_keys_edit, format_func=lambda x: all_dorm_options_edit.get(x), index=dorm_index, key=f"edit_hist_dorm_{selected_history_id}")
 
                                     rooms_edit = dormitory_model.get_rooms_for_selection(edit_dorm_id) or []
                                     room_options_edit = {r['id']: r['room_number'] for r in rooms_edit}
                                     room_keys_edit = list(room_options_edit.keys())
-                                    try:
-                                        room_index = room_keys_edit.index(current_room_id) if current_room_id in room_keys_edit else 0
-                                    except ValueError:
-                                        room_index = 0
+                                    # 只有當 宿舍ID 等於 原始宿舍ID 時，才嘗試尋找原始房間
+                                    room_index = 0 # 預設為 0
+                                    if edit_dorm_id == current_dorm_id:
+                                        try:
+                                            room_index = room_keys_edit.index(current_room_id) if current_room_id in room_keys_edit else 0
+                                        except ValueError:
+                                            room_index = 0
+                                    # 如果宿舍ID已經改變，room_index 會維持 0，
+                                    # 並且因為 clear_room_state_on_dorm_change 函式清除了 key，
+                                    # selectbox 會正確顯示 index 0 的選項。
 
-                                    edit_room_id = st.selectbox("房間號碼", options=room_keys_edit, format_func=lambda x: room_options_edit.get(x), index=room_index, key=f"edit_hist_room_{selected_history_id}")
+                                    edit_room_id = st.selectbox(
+                                        "房間號碼", 
+                                        options=room_keys_edit, 
+                                        format_func=lambda x: room_options_edit.get(x), 
+                                        index=room_index, # <-- 使用新的 room_index 邏輯
+                                        key=f"edit_hist_room_{selected_history_id}"
+                                    )
 
                                     ehc1, ehc2, ehc3 = st.columns(3)
                                     edit_start_date = ehc1.date_input("起始日", value=history_details.get('start_date'))
@@ -413,7 +449,6 @@ def render():
                                     else: st.error(message)
                 
                 elif selected_tab == "🕒 狀態歷史管理":
-                    # ... (此頁籤內容維持不變) ...
                     st.markdown("##### 新增一筆狀態紀錄")
                     with st.form("new_status_form", clear_on_submit=True):
                         s_c1, s_c2 = st.columns(2)
@@ -471,7 +506,7 @@ def render():
                                     success, message = worker_model.delete_worker_status(selected_status_id)
                                     if success: st.success(message); st.cache_data.clear(); st.rerun()
                                     else: st.error(message)
-
+                
                 elif selected_tab == "💰 費用歷史":
                     st.markdown("##### 手動新增費用歷史")
                     with st.expander("點此展開以新增一筆費用歷史紀錄"):

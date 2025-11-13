@@ -101,7 +101,7 @@ def get_workers_for_view(filters: dict):
             where_clauses.append("d_actual.id = %s")
             params.append(filters['dorm_id'])
 
-        # --- 【核心修改：加入新的篩選條件】 ---
+        # --- 【加入新的篩選條件】 ---
         if filters.get('room_id'):
             where_clauses.append("r_actual.id = %s")
             params.append(filters['room_id'])
@@ -113,7 +113,6 @@ def get_workers_for_view(filters: dict):
         if filters.get('gender') and filters.get('gender') != '全部':
             where_clauses.append("w.gender = %s")
             params.append(filters['gender'])
-        # --- 修改結束 ---
 
         status_filter = filters.get('status')
         if status_filter == '在住':
@@ -183,7 +182,7 @@ def update_worker_details(unique_id: str, details: dict, effective_date: date = 
             old_details = cursor.fetchone()
             if not old_details: return False, "找不到指定的員工。"
             
-            # 【核心修改】: 決定最終的生效日期
+            # 決定最終的生效日期
             final_effective_date = effective_date if effective_date else date.today()
             
             _log_fee_change(cursor, unique_id, details, old_details, final_effective_date)
@@ -213,7 +212,7 @@ def add_manual_worker(details: dict, initial_status: dict, bed_number: str = Non
     details['data_source'] = '手動管理(他仲)'
     details['special_status'] = initial_status.get('status')
     
-    # --- 【核心修改 1】從 details 中同時獲取 dorm_id 和 room_id ---
+    # --- 從 details 中同時獲取 dorm_id 和 room_id ---
     # 注意：前端傳遞過來時，需要確保 dorm_id 也被包含在 details 或可從 room_id 反查
     # 我們假設前端傳遞的是選擇的 dorm_id 和 room_id (room_id 可能為 None)
     selected_dorm_id = details.pop('dorm_id', None) # 從 details 取出 dorm_id，並從字典移除以防插入 Workers 表
@@ -236,7 +235,7 @@ def add_manual_worker(details: dict, initial_status: dict, bed_number: str = Non
             sql = f'INSERT INTO "Workers" ({columns}) VALUES ({placeholders})'
             cursor.execute(sql, tuple(details.values()))
             
-            # --- 【核心修改 2】修改新增 AccommodationHistory 的邏輯 ---
+            # --- 新增 AccommodationHistory 的邏輯 ---
             room_id_to_insert = None
             if selected_dorm_id: # 只要有選宿舍地址就要處理
                 if selected_room_id: # 如果有選具體房號
@@ -259,7 +258,6 @@ def add_manual_worker(details: dict, initial_status: dict, bed_number: str = Non
                 accom_sql = 'INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, bed_number) VALUES (%s, %s, %s, %s)'
                 start_date = details.get('accommodation_start_date', date.today()) # 起始日還是從 details 取
                 cursor.execute(accom_sql, (details['unique_id'], room_id_to_insert, start_date, bed_number))
-            # --- 修改結束 ---
 
             # 新增 WorkerStatusHistory (邏輯不變)
             if initial_status and initial_status.get('status'):
@@ -500,7 +498,7 @@ def change_worker_accommodation(worker_id: str, new_room_id: int, change_date: d
                 return True, "工人已在該房間，無需變更。"
 
             if current_accommodation:
-                # 【核心修改】將舊紀錄的結束日設為新紀錄開始日的前一天
+                # 將舊紀錄的結束日設為新紀錄開始日的前一天
                 end_date_for_old_record = change_date - timedelta(days=1)
                 cursor.execute(
                     'UPDATE "AccommodationHistory" SET end_date = %s WHERE id = %s',
@@ -544,6 +542,48 @@ def reset_worker_data_source(worker_id: str):
     except Exception as e:
         if conn: conn.rollback()
         return False, f"解除鎖定時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
+
+def set_worker_as_manual_adjustment(worker_id: str):
+    """
+    【v2.11 新增】將工人的 data_source 設為'手動調整'。
+    使其住宿位置受保護，但離住日等資訊仍可由系統同步。
+    """
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗"
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                'UPDATE "Workers" SET data_source = %s WHERE unique_id = %s',
+                ('手動調整', worker_id)
+            )
+        conn.commit()
+        return True, "成功將此人員設為「手動調整」！系統將保護其住宿位置，但仍會自動同步離住日。"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"設定為手動調整時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
+
+def set_worker_as_fully_manual(worker_id: str):
+    """
+    將工人的 data_source 設為'手動管理(他仲)'，
+    使其完全不受每日自動同步影響 (包含離住日)。
+    """
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗"
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                'UPDATE "Workers" SET data_source = %s WHERE unique_id = %s',
+                ('手動管理(他仲)', worker_id)
+            )
+        conn.commit()
+        return True, "成功將此人員完全鎖定！系統將不再自動更新其任何資料。"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"完全鎖定時發生錯誤: {e}"
     finally:
         if conn: conn.close()
 
@@ -680,27 +720,6 @@ def delete_accommodation_history(history_id: int):
     except Exception as e:
         if conn: conn.rollback()
         return False, f"刪除住宿歷史時發生錯誤: {e}"
-    finally:
-        if conn: conn.close()
-
-def set_worker_as_fully_manual(worker_id: str):
-    """
-    將工人的 data_source 設為'手動管理(他仲)'，
-    使其完全不受每日自動同步影響 (包含離住日)。
-    """
-    conn = database.get_db_connection()
-    if not conn: return False, "資料庫連線失敗"
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                'UPDATE "Workers" SET data_source = %s WHERE unique_id = %s',
-                ('手動管理(他仲)', worker_id)
-            )
-        conn.commit()
-        return True, "成功將此人員完全鎖定！系統將不再自動更新其任何資料。"
-    except Exception as e:
-        if conn: conn.rollback()
-        return False, f"完全鎖定時發生錯誤: {e}"
     finally:
         if conn: conn.close()
 
@@ -869,7 +888,7 @@ def batch_update_workers_complex(worker_ids: list, updates: dict, protection_lev
                                 (worker_id, fee_type_name, int(fee_amount), fee_effective_date)
                             )
                 
-                # --- 4. 【核心修改】統一設定保護層級 ---
+                # --- 4. 統一設定保護層級 ---
                 # 無論執行了 1, 2, 還是 3，最後都根據使用者的選擇來設定 data_source
                 if protection_level:
                     cursor.execute(
@@ -1051,7 +1070,7 @@ def batch_edit_history(original_df: pd.DataFrame, edited_df: pd.DataFrame, table
                     cursor.execute(sql, tuple(set_values))
                     update_count += 1
             
-            # --- 【v2.16 核心修改】自動設定資料保護 ---
+            # --- 自動設定資料保護 ---
             protection_msg = "（未設定保護層級）。"
             if unique_worker_ids_to_protect.size > 0 and protection_level:
                 
@@ -1075,7 +1094,6 @@ def batch_edit_history(original_df: pd.DataFrame, edited_df: pd.DataFrame, table
                     )
                 
                 protection_msg = f"並已為 {len(unique_worker_ids_to_protect)} 位員工設定保護層級為「{protection_level}」。"
-            # --- 修改結束 ---
                 
             conn.commit()
             return True, f"成功更新 {update_count} 筆歷史紀錄，{protection_msg}"
