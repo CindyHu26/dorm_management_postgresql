@@ -25,44 +25,6 @@ def render():
     else:
         st.warning(f"目前有 {len(unfinished_logs_df)} 筆維修案件正在進行中或等待處理。")
         st.dataframe(unfinished_logs_df, width='stretch', hide_index=True)
-    
-    st.markdown("---")
-    st.subheader("批次轉入年度費用")
-    st.info("此區塊會列出所有已完成或待付款，且尚未歸檔的「我司」支付項目，方便您一次性轉入年度攤銷。")
-
-    @st.cache_data
-    def get_archivable_data():
-        return maintenance_model.get_archivable_logs()
-
-    archivable_df = get_archivable_data()
-
-    if archivable_df.empty:
-        st.success("目前沒有符合條件可批次轉入的維修費用。")
-    else:
-        archivable_df_with_selection = archivable_df.copy()
-        archivable_df_with_selection.insert(0, "選取", False)
-        
-        edited_df = st.data_editor(
-            archivable_df_with_selection,
-            hide_index=True,
-            column_config={"選取": st.column_config.CheckboxColumn(required=True)},
-            disabled=archivable_df.columns
-        )
-        
-        selected_rows = edited_df[edited_df.選取]
-        
-        if st.button("🚀 批次轉入選取的項目", type="primary", disabled=selected_rows.empty):
-            ids_to_archive = selected_rows['id'].tolist()
-            with st.spinner(f"正在批次處理 {len(ids_to_archive)} 筆資料..."):
-                success_count, failure_count = maintenance_model.batch_archive_logs(ids_to_archive)
-            
-            if success_count > 0:
-                st.success(f"成功將 {success_count} 筆費用轉入年度攤銷！")
-            if failure_count > 0:
-                st.error(f"有 {failure_count} 筆費用處理失敗，請檢查後台日誌。")
-            
-            st.cache_data.clear()
-            st.rerun()
 
     st.markdown("---")
 
@@ -173,6 +135,44 @@ def render():
                         st.rerun()
                     else:
                         st.error(message)
+
+    st.markdown("---")
+    st.subheader("批次轉入年度費用")
+    st.info("此區塊會列出所有已完成或待付款，且尚未歸檔的「我司」支付項目，方便您一次性轉入年度攤銷。")
+
+    @st.cache_data
+    def get_archivable_data():
+        return maintenance_model.get_archivable_logs()
+
+    archivable_df = get_archivable_data()
+
+    if archivable_df.empty:
+        st.success("目前沒有符合條件可批次轉入的維修費用。")
+    else:
+        archivable_df_with_selection = archivable_df.copy()
+        archivable_df_with_selection.insert(0, "選取", False)
+        
+        edited_df = st.data_editor(
+            archivable_df_with_selection,
+            hide_index=True,
+            column_config={"選取": st.column_config.CheckboxColumn(required=True)},
+            disabled=archivable_df.columns
+        )
+        
+        selected_rows = edited_df[edited_df.選取]
+        
+        if st.button("🚀 批次轉入選取的項目", type="primary", disabled=selected_rows.empty):
+            ids_to_archive = selected_rows['id'].tolist()
+            with st.spinner(f"正在批次處理 {len(ids_to_archive)} 筆資料..."):
+                success_count, failure_count = maintenance_model.batch_archive_logs(ids_to_archive)
+            
+            if success_count > 0:
+                st.success(f"成功將 {success_count} 筆費用轉入年度攤銷！")
+            if failure_count > 0:
+                st.error(f"有 {failure_count} 筆費用處理失敗，請檢查後台日誌。")
+            
+            st.cache_data.clear()
+            st.rerun()
 
     # --- 總覽與篩選 ---
     st.markdown("---")
