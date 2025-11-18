@@ -371,71 +371,69 @@ def render():
                     else:
                         history_options = {row['id']: f"{row['起始日']} ~ {row.get('結束日', '至今')} | {row['宿舍地址']} {row['房號']} (床位: {row.get('床位編號') or '未指定'})" for _, row in accommodation_history_df.iterrows()}
                         selected_history_id = st.selectbox("請從上方列表選擇一筆紀錄進行操作：", [None] + list(history_options.keys()), format_func=lambda x: "請選擇..." if x is None else history_options.get(x), key=f"history_selector_{selected_worker_id}")
-                        
                         if selected_history_id:
                             history_details = worker_model.get_single_accommodation_details(selected_history_id)
-                            
                             if history_details:
-                                current_room_id = history_details.get('room_id')
-                                current_dorm_id = dormitory_model.get_dorm_id_from_room_id(current_room_id)
-                                
-                                # --- 核心修復點 1: 外部狀態初始化 (僅執行一次) ---
-                                dorm_key_ext = f"dorm_id_edit_ext_{selected_history_id}"
-                                room_key_ext = f"room_id_edit_ext_{selected_history_id}"
-                                
-                                init_state_once(dorm_key_ext, current_dorm_id)
-                                init_state_once(room_key_ext, current_room_id)
-                                
-                                # --- 核心修復點 2: 渲染外部連動 Selectboxes (使用 on_change 處理依賴) ---
-                                
-                                all_dorms_edit = dormitory_model.get_dorms_for_selection() or []
-                                all_dorm_options_edit = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in all_dorms_edit}
-                                dorm_keys_edit = list(all_dorm_options_edit.keys())
-                                
-                                try:
-                                    dorm_index = dorm_keys_edit.index(st.session_state[dorm_key_ext])
-                                except ValueError:
-                                    dorm_index = 0
-
-                                def on_dorm_external_change():
-                                    # 當宿舍變更時，重設房間選擇為 None，讓 Streamlit 自動選取第一個有效選項
-                                    # 由於 selectbox 的 key 已經綁定 session_state，這裡不需要再設定 st.session_state[key] = None
-                                    # 但我們需要強制讓它選第一個有效的選項 (因為舊的選值可能不在新的列表)
-                                    st.session_state[room_key_ext] = None
-                                    
-                                # *** A. 宿舍選擇器 (外部，會觸發重新運行) ***
-                                edit_dorm_id = st.selectbox("宿舍地址*", options=dorm_keys_edit, format_func=lambda x: all_dorm_options_edit.get(x), 
-                                    index=dorm_index, 
-                                    key=dorm_key_ext, 
-                                    on_change=on_dorm_external_change)
-                                
-                                # *** B. 房間選擇器 (外部，動態選項) ***
-                                # 必須使用 edit_dorm_id (即 st.session_state[dorm_key_ext]) 來獲取最新的房間列表
-                                rooms_edit = dormitory_model.get_rooms_for_selection(edit_dorm_id) or []
-                                room_options_edit = {r['id']: r['room_number'] for r in rooms_edit}
-                                room_keys_edit = list(room_options_edit.keys())
-                                
-                                # 確定房間的初始索引
-                                room_index = 0
-                                current_room_in_state = st.session_state[room_key_ext]
-                                
-                                # 只有在 Session State 的選值存在於新列表中時，才嘗試使用它的索引
-                                if current_room_in_state in room_keys_edit:
-                                    room_index = room_keys_edit.index(current_room_in_state)
-                                
-                                edit_room_id = st.selectbox(
-                                    "房間號碼*", 
-                                    options=room_keys_edit, 
-                                    format_func=lambda x: room_options_edit.get(x), 
-                                    index=room_index, # 如果 current_room_in_state 是 None，room_index 仍然是 0
-                                    key=room_key_ext 
-                                )
-                                
-                                st.markdown("---")
-                                
-                                # --- 核心修復點 3: 渲染 Form (表單內欄位不帶 on_change) ---
                                 with st.form(f"edit_history_form_{selected_history_id}"):
-                                    st.markdown(f"###### 正在編輯 ID: {history_details['id']} 的紀錄 (目前選擇: {all_dorm_options_edit.get(edit_dorm_id)} / {room_options_edit.get(edit_room_id)})")
+                                    st.markdown(f"###### 正在編輯 ID: {history_details['id']} 的紀錄")
+
+                                    # --- [修正開始] 使用 Session State 初始化模式，避免與 index 衝突 ---
+                                    current_room_id = history_details.get('room_id')
+                                    current_dorm_id = dormitory_model.get_dorm_id_from_room_id(current_room_id)
+
+                                    # 1. 準備宿舍選項
+                                    all_dorms_edit = dormitory_model.get_dorms_for_selection() or []
+                                    all_dorm_options_edit = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in all_dorms_edit}
+                                    dorm_keys_edit = list(all_dorm_options_edit.keys())
+                                    
+                                    # 定義 Key
+                                    dorm_select_key = f"edit_hist_dorm_{selected_history_id}"
+                                    
+                                    # 2. 初始化宿舍 Session State (如果沒有值，才設為資料庫中的原始值)
+                                    if dorm_select_key not in st.session_state:
+                                        if current_dorm_id in dorm_keys_edit:
+                                            st.session_state[dorm_select_key] = current_dorm_id
+                                        elif dorm_keys_edit:
+                                            st.session_state[dorm_select_key] = dorm_keys_edit[0]
+                                    
+                                    # 3. 產生宿舍選單 (不使用 index 參數)
+                                    edit_dorm_id = st.selectbox(
+                                        "宿舍地址", 
+                                        options=dorm_keys_edit, 
+                                        format_func=lambda x: all_dorm_options_edit.get(x), 
+                                        key=dorm_select_key
+                                    )
+
+                                    # 4. 準備房間選項 (根據目前選中的宿舍)
+                                    rooms_edit = dormitory_model.get_rooms_for_selection(edit_dorm_id) or []
+                                    room_options_edit = {r['id']: r['room_number'] for r in rooms_edit}
+                                    room_keys_edit = list(room_options_edit.keys())
+                                    
+                                    # 定義 Key
+                                    room_select_key = f"edit_hist_room_{selected_history_id}"
+
+                                    # 5. 初始化或重設房間 Session State
+                                    if room_select_key not in st.session_state:
+                                        # 第一次載入，嘗試使用資料庫中的原始房間
+                                        if current_room_id in room_keys_edit:
+                                            st.session_state[room_select_key] = current_room_id
+                                        else:
+                                            st.session_state[room_select_key] = room_keys_edit[0] if room_keys_edit else None
+                                    else:
+                                        # 檢查：如果使用者切換了宿舍，原本選中的房間ID可能不屬於新宿舍
+                                        # 此時必須強制重設為新宿舍的第一個房間
+                                        current_selected_room = st.session_state[room_select_key]
+                                        if current_selected_room not in room_keys_edit:
+                                            st.session_state[room_select_key] = room_keys_edit[0] if room_keys_edit else None
+
+                                    # 6. 產生房間選單 (不使用 index 參數)
+                                    edit_room_id = st.selectbox(
+                                        "房間號碼", 
+                                        options=room_keys_edit, 
+                                        format_func=lambda x: room_options_edit.get(x), 
+                                        key=room_select_key
+                                    )
+                                    # --- [修正結束] ---
 
                                     ehc1, ehc2, ehc3 = st.columns(3)
                                     edit_start_date = ehc1.date_input("起始日", value=history_details.get('start_date'))
@@ -448,16 +446,13 @@ def render():
                                     edit_notes = st.text_area("備註", value=history_details.get('notes', ''))
 
                                     if st.form_submit_button("儲存歷史紀錄變更"):
-                                        # 從外部 Session State 讀取最新的 Room ID
-                                        final_room_id_submit = st.session_state[room_key_ext]
-
-                                        if not final_room_id_submit:
+                                        if not edit_room_id:
                                              st.error("必須選擇一個房間！")
                                         else:
                                              final_end_date = None if clear_end_date_history else (str(edit_end_date) if edit_end_date else None)
                                             
                                              update_data = {
-                                                 "room_id": final_room_id_submit, # <-- 從外部狀態讀取
+                                                 "room_id": edit_room_id,
                                                  "start_date": str(edit_start_date) if edit_start_date else None,
                                                  "end_date": final_end_date, 
                                                  "bed_number": edit_bed_number,
