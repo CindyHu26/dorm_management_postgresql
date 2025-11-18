@@ -147,3 +147,114 @@ def batch_update_assignments(updates: list, protection_level: str):
         return 0, len(updates), f"執行批次更新時發生嚴重錯誤: {e}"
     finally:
         if conn: conn.close()
+
+def get_active_residents_for_correction(dorm_id: int):
+    """
+    查詢指定宿舍中，目前「在住」(end_date IS NULL) 的所有員工。
+    用於「修正模式」，讓使用者可以直接修改房號。
+    """
+    if not dorm_id:
+        return pd.DataFrame()
+        
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        # 我們需要 ah.id 來鎖定要修改哪一筆紀錄
+        query = """
+            SELECT 
+                ah.id AS ah_id,
+                w.unique_id AS worker_unique_id,
+                w.employer_name AS "雇主",
+                w.worker_name AS "姓名",
+                ah.start_date AS "入住日",
+                r.room_number AS "目前房號",
+                ah.bed_number AS "目前床位"
+            FROM "AccommodationHistory" ah
+            JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+            JOIN "Rooms" r ON ah.room_id = r.id
+            WHERE 
+                ah.end_date IS NULL -- 只抓目前在住的
+                AND r.dorm_id = %s
+            ORDER BY r.room_number, w.worker_name;
+        """
+        return _execute_query_to_dataframe(conn, query, (dorm_id,))
+    finally:
+        if conn: conn.close()
+
+def batch_correct_assignments(updates: list, protection_level: str):
+    """
+    批次「修正」住宿歷史紀錄 (直接 UPDATE)。
+    不產生新紀錄，只修改現有紀錄的 room_id 和 bed_number。
+    """
+    if not updates:
+        return 0, 0, "沒有需要修正的資料。"
+
+    conn = database.get_db_connection()
+    if not conn:
+        return 0, len(updates), "資料庫連線失敗。"
+
+    success_count = 0
+    failed_count = 0
+    error_messages = []
+    worker_ids_to_protect = set()
+
+    try:
+        with conn.cursor() as cursor:
+            for update in updates:
+                try:
+                    ah_id = update['ah_id']
+                    worker_id = update['worker_id']
+                    new_room_id = update['new_room_id']
+                    new_bed_number = update.get('new_bed_number') # 可能為 None
+
+                    # 直接更新該筆歷史紀錄
+                    # 注意：這裡是修正 (Correction)，所以不動 start_date，也不動 end_date
+                    sql = """
+                        UPDATE "AccommodationHistory" 
+                        SET room_id = %s, bed_number = %s 
+                        WHERE id = %s
+                    """
+                    cursor.execute(sql, (new_room_id, new_bed_number, ah_id))
+                    
+                    if cursor.rowcount == 0:
+                        raise Exception("找不到對應的住宿歷史紀錄，可能已被刪除。")
+                        
+                    worker_ids_to_protect.add(worker_id)
+                    success_count += 1
+                
+                except Exception as e:
+                    failed_count += 1
+                    error_messages.append(f"工人ID {worker_id}: {e}")
+
+            # --- 更新保護層級 (邏輯同上) ---
+            protection_msg = "（未設定保護層級）。"
+            if worker_ids_to_protect and protection_level:
+                if protection_level == "手動管理(他仲)":
+                    cursor.execute(
+                        'UPDATE "Workers" SET data_source = %s WHERE unique_id = ANY(%s)',
+                        ('手動管理(他仲)', list(worker_ids_to_protect))
+                    )
+                elif protection_level == "手動調整":
+                    cursor.execute(
+                        'UPDATE "Workers" SET data_source = %s WHERE unique_id = ANY(%s) AND data_source != %s',
+                        ('手動調整', list(worker_ids_to_protect), '手動管理(他仲)')
+                    )
+                elif protection_level == "系統自動更新":
+                     cursor.execute(
+                        'UPDATE "Workers" SET data_source = %s WHERE unique_id = ANY(%s) AND data_source != %s',
+                        ('系統自動更新', list(worker_ids_to_protect), '手動管理(他仲)')
+                    )
+                protection_msg = f"並已將其資料來源設為「{protection_level}」。"
+            
+            if failed_count > 0:
+                conn.rollback() 
+                return 0, failed_count, f"修正失敗，所有變更已復原。錯誤: {'; '.join(error_messages)}"
+            else:
+                conn.commit()
+                return success_count, 0, f"成功修正 {success_count} 筆紀錄，{protection_msg}"
+
+    except Exception as e:
+        if conn: conn.rollback()
+        return 0, len(updates), f"執行批次修正時發生嚴重錯誤: {e}"
+    finally:
+        if conn: conn.close()
