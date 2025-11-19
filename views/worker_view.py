@@ -475,15 +475,27 @@ def render():
                     with st.form("new_status_form", clear_on_submit=True):
                         s_c1, s_c2 = st.columns(2)
                         status_options = ["", "掛宿外住(不收費)", "掛宿外住(收費)", "費用不同", "其他"]
-                        new_status = s_c1.selectbox("選擇新狀態 (若要改回正常在住，請留空)", status_options, key="new_status_selector")
-                        start_date = s_c2.date_input("此狀態起始日", value=date.today())
+                        # 修改提示文字
+                        new_status = s_c1.selectbox("選擇新狀態 (若要結束特殊狀態回歸正常，請留空)", status_options, key="new_status_selector")
+                        start_date = s_c2.date_input("此狀態起始日 (或回歸正常日)", value=date.today())
                         status_notes = st.text_area("狀態備註 (選填)")
-                        if st.form_submit_button("新增狀態"):
-                            status_to_db = new_status if new_status else '在住'
-                            status_details = { "worker_unique_id": selected_worker_id, "status": status_to_db, "start_date": str(start_date), "notes": status_notes }
+                        
+                        if st.form_submit_button("執行變更"):
+                            # 【核心修改】直接使用選單的值，不強制轉為 '在住'
+                            # 如果 new_status 是空字串，後端就會知道是 "回歸正常"
+                            status_details = { 
+                                "worker_unique_id": selected_worker_id, 
+                                "status": new_status, 
+                                "start_date": str(start_date), 
+                                "notes": status_notes 
+                            }
                             success, message = worker_model.add_new_worker_status(status_details)
-                            if success: st.success(message); st.cache_data.clear(); st.rerun()
-                            else: st.error(message)
+                            if success: 
+                                st.success(message)
+                                st.cache_data.clear()
+                                st.rerun()
+                            else: 
+                                st.error(message)
 
                     st.markdown("##### 狀態歷史紀錄")
                     history_df = worker_model.get_worker_status_history(selected_worker_id)

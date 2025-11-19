@@ -363,24 +363,48 @@ def get_worker_status_history(unique_id: str):
         if conn: conn.close()
 
 def add_new_worker_status(details: dict):
-    """為移工新增一筆新的狀態紀錄，並同步更新 Workers 表的當前狀態。"""
+    """
+    【v2.3 修改版】為移工新增狀態紀錄。
+    1. 永遠會先結束上一筆未結束的狀態 (設定 end_date)。
+    2. 如果 details['status'] 有值：新增一筆新歷史，並更新 Workers 狀態。
+    3. 如果 details['status'] 為空：只做第1步 (代表回歸正常)，並將 Workers 狀態清空。
+    """
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed."
     try:
         with conn.cursor() as cursor:
+            # 1. 結束上一筆狀態 (如果有)
+            # 將舊紀錄的 end_date 設為新狀態的 start_date (無縫接軌)
             update_old_sql = 'UPDATE "WorkerStatusHistory" SET end_date = %s WHERE worker_unique_id = %s AND end_date IS NULL'
             cursor.execute(update_old_sql, (details['start_date'], details['worker_unique_id']))
-            columns = ', '.join(f'"{k}"' for k in details.keys())
-            placeholders = ', '.join(['%s'] * len(details))
-            sql = f'INSERT INTO "WorkerStatusHistory" ({columns}) VALUES ({placeholders})'
-            cursor.execute(sql, tuple(details.values()))
-            update_worker_sql = 'UPDATE "Workers" SET special_status = %s WHERE unique_id = %s'
-            cursor.execute(update_worker_sql, (details['status'], details['worker_unique_id']))
+            
+            new_status = details.get('status')
+            
+            # 2. 只有當新狀態 "有值" 時，才新增歷史紀錄
+            if new_status and str(new_status).strip():
+                columns = ', '.join(f'"{k}"' for k in details.keys())
+                placeholders = ', '.join(['%s'] * len(details))
+                sql = f'INSERT INTO "WorkerStatusHistory" ({columns}) VALUES ({placeholders})'
+                cursor.execute(sql, tuple(details.values()))
+                
+                # 同步更新 Workers 表為新狀態
+                update_worker_sql = 'UPDATE "Workers" SET special_status = %s WHERE unique_id = %s'
+                cursor.execute(update_worker_sql, (new_status, details['worker_unique_id']))
+            else:
+                # 3. 如果新狀態是空的 (代表改回正常)，則將 Workers 表的狀態清空
+                update_worker_sql = 'UPDATE "Workers" SET special_status = NULL WHERE unique_id = %s'
+                cursor.execute(update_worker_sql, (details['worker_unique_id'],))
+
         conn.commit()
-        return True, "成功新增狀態紀錄。"
+        
+        if new_status:
+            return True, f"成功新增狀態「{new_status}」。"
+        else:
+            return True, "已結束目前的特殊狀態，人員回歸正常在住。"
+            
     except Exception as e:
         if conn: conn.rollback()
-        return False, f"新增狀態時發生錯誤: {e}"
+        return False, f"更新狀態時發生錯誤: {e}"
     finally:
         if conn: conn.close()
 
@@ -397,17 +421,59 @@ def get_single_status_details(status_id: int):
         if conn: conn.close()
 
 def update_worker_status(status_id: int, details: dict):
-    """更新一筆已存在的狀態歷史紀錄。"""
+    """
+    【v2.4 同步修正版】更新狀態歷史紀錄，並自動同步更新 Workers 主表的當前狀態。
+    解決「清空結束日」後，總覽未即時更新的問題。
+    """
     conn = database.get_db_connection()
     if not conn: return False, "資料庫連線失敗"
+    
     try:
         with conn.cursor() as cursor:
+            # 1. 先取得 worker_unique_id (因為 details 不一定包含它，且我們需要它來做後續查詢)
+            cursor.execute('SELECT worker_unique_id FROM "WorkerStatusHistory" WHERE id = %s', (status_id,))
+            result = cursor.fetchone()
+            if not result:
+                 return False, "找不到指定的狀態紀錄。"
+            worker_id = result['worker_unique_id']
+
+            # 2. 執行歷史紀錄的更新
             fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
             values = list(details.values()) + [status_id]
             sql = f'UPDATE "WorkerStatusHistory" SET {fields} WHERE id = %s'
             cursor.execute(sql, tuple(values))
+
+            # 3. 同步邏輯：找出該員工「最新」的一筆狀態紀錄
+            # 邏輯：依起始日倒序，取第一筆。
+            cursor.execute("""
+                SELECT status, end_date 
+                FROM "WorkerStatusHistory" 
+                WHERE worker_unique_id = %s 
+                ORDER BY start_date DESC, id DESC 
+                LIMIT 1
+            """, (worker_id,))
+            latest_record = cursor.fetchone()
+            
+            new_current_status = None
+            if latest_record:
+                # 如果最新這筆紀錄沒有結束日，或者結束日還沒到，它就是當前狀態
+                end_date = latest_record['end_date']
+                if end_date is None or end_date > date.today():
+                    new_current_status = latest_record['status']
+                # 否則 (已結束)，當前狀態為 None (代表回歸正常在住)
+            
+            # 4. 更新 Workers 主表
+            cursor.execute(
+                'UPDATE "Workers" SET special_status = %s WHERE unique_id = %s',
+                (new_current_status, worker_id)
+            )
+
         conn.commit()
-        return True, "狀態紀錄更新成功！"
+        
+        # 回傳訊息中提示同步結果
+        msg_extra = f"，人員目前狀態已同步為「{new_current_status}」" if new_current_status else "，人員目前狀態已同步為「正常在住」"
+        return True, f"狀態紀錄更新成功{msg_extra}。"
+        
     except Exception as e:
         if conn: conn.rollback()
         return False, f"更新狀態時發生錯誤: {e}"
