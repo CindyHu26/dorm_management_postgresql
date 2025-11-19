@@ -753,8 +753,8 @@ def get_amortized_expense_details(dorm_ids: list, year_month: str):
 
 def get_room_occupancy_view(dorm_ids: list, year_month: str):
     """
-    【v2.6 掛宿外住 修正版】為宿舍深度分析儀表板，查詢房間內的詳細住宿狀況。
-    新增 'special_status' 欄位。
+    【v2.7 離住日修正版】為宿舍深度分析儀表板，查詢房間內的詳細住宿狀況。
+    新增 'special_status' 和 'accommodation_end' (離住日) 欄位，以便前端正確計算佔床。
     """
     conn = database.get_db_connection()
     if not conn or not dorm_ids: return pd.DataFrame()
@@ -777,7 +777,7 @@ def get_room_occupancy_view(dorm_ids: list, year_month: str):
         if rooms_df.empty:
             return pd.DataFrame() 
 
-        # 2. 取得所有在住人員 (維持不變)
+        # 2. 取得所有在住人員 (修正：加入 end_date)
         residents_query = f"""
             WITH DateParams AS (
                 SELECT
@@ -788,7 +788,8 @@ def get_room_occupancy_view(dorm_ids: list, year_month: str):
                  SELECT DISTINCT ON (ah.worker_unique_id)
                     ah.worker_unique_id, 
                     ah.room_id,
-                    ah.bed_number
+                    ah.bed_number,
+                    ah.end_date -- 【修正】必須選取此欄位
                 FROM "AccommodationHistory" ah
                 JOIN "Rooms" r ON ah.room_id = r.id
                 CROSS JOIN DateParams dp
@@ -802,19 +803,22 @@ def get_room_occupancy_view(dorm_ids: list, year_month: str):
                 w.worker_name,
                 w.employer_name,
                 awm.bed_number,
-                w.special_status -- 【<-- 核心修改：新增此行】
+                w.special_status,
+                awm.end_date AS accommodation_end -- 【修正】別名輸出為 accommodation_end
             FROM ActiveWorkersInMonth awm
             JOIN "Workers" w ON awm.worker_unique_id = w.unique_id
         """
         residents_df = _execute_query_to_dataframe(conn, residents_query, params)
         
-        # 3. 在 Pandas 中合併 (維持不變)
+        # 3. 在 Pandas 中合併
         merged_df = rooms_df.merge(residents_df, on='room_id', how='left')
         
         merged_df['worker_name'] = merged_df['worker_name'].fillna('')
         merged_df['employer_name'] = merged_df['employer_name'].fillna('')
         merged_df['bed_number'] = merged_df['bed_number'].fillna('')
-        merged_df['special_status'] = merged_df['special_status'].fillna('') # 【<-- 核心修改：新增此行】
+        merged_df['special_status'] = merged_df['special_status'].fillna('')
+        # 注意：accommodation_end 是日期物件，我們不使用 fillna('') 轉成空字串，
+        # 因為前端需要保留它是 NaT (Not a Time) 或 Timestamp 的型態來進行日期比較。
         
         return merged_df
 

@@ -114,7 +114,7 @@ def render():
     st.markdown("---")
     # --- 房況總覽區塊 ---
     st.subheader(f"{year_month_str} 宿舍房況總覽 (彙總)")
-
+    
     @st.cache_data
     def get_room_view_data(dorm_ids, year_month):
         return single_dorm_analyzer.get_room_occupancy_view(list(dorm_ids), year_month)
@@ -125,59 +125,105 @@ def render():
     if room_view_df.empty:
         st.info("所選宿舍中沒有建立房間 (或僅有 [未分配房間])。")
     else:
+        # --- 【修正 1】引入 calendar 計算月底日期 ---
+        import calendar
+        # 計算該月份的最後一天 (例如 2025-11-30)
+        last_day = calendar.monthrange(selected_year, selected_month)[1]
+        month_end_date = pd.Timestamp(datetime(selected_year, selected_month, last_day).date())
+
         # 依照宿舍地址和房號排序
         room_view_df.sort_values(by=['original_address', 'room_number'], inplace=True)
         
+        # 確保日期欄位格式正確 (轉為 datetime 以便比較)
+        if 'accommodation_end' in room_view_df.columns:
+            room_view_df['accommodation_end'] = pd.to_datetime(room_view_df['accommodation_end'], errors='coerce')
+
         # 依照 (宿舍, 房號) 進行分組
         for (dorm_address, room_number), occupants in room_view_df.groupby(['original_address', 'room_number']):
             
             room_capacity = occupants['capacity'].iloc[0]
             
-            # --- 【核心修改 v2.6】---
-            # 1. 找出 "實際佔床" 的人 (worker_name 有值，且 status 不含 "掛宿外住")
-            #    fillna('') 確保 .str.contains 不會因 None 報錯
-            is_physically_present = (
-                (occupants['worker_name'] != '') & 
-                (~occupants['special_status'].fillna('').str.contains("掛宿外住"))
-            )
-            num_occupants = is_physically_present.sum()
+            # --- 【修正 2】修正「實際佔床」邏輯：排除月底前已離住者 ---
+            # 條件 A: 有人名
+            # 條件 B: 狀態不含 "掛宿外住"
+            # 條件 C: (在住) OR (離住日 > 月底) --> 代表月底那天他還在
+
+            # --- 1. 計算「掛宿外住」人數 ---
+            # 使用 fillna('') 避免空值報錯，並計算包含 "掛宿外住" 的列數
+            num_external = occupants['special_status'].fillna('').str.contains('掛宿外住').sum()
+
+            # --- 2. 計算「實際佔床」人數 (排除掛宿外住 & 已搬離) ---
+            def check_occupancy(row):
+                if not row['worker_name']: return False # 空資料
+                if "掛宿外住" in str(row['special_status']): return False # 掛宿不佔床
+                
+                end_date = row.get('accommodation_end') # 使用 get 避免 KeyError
+                # 如果有離住日，且離住日 <= 月底，代表月底時已不在，不佔床
+                if pd.notna(end_date) and end_date <= month_end_date:
+                    return False
+                return True
+
+            # 計算佔床人數
+            num_occupants = occupants.apply(check_occupancy, axis=1).sum()
             vacancies = room_capacity - num_occupants
 
+            # --- 3. 組合標題字串 ---
             room_title = f"{dorm_address} - {room_number} (容量: {room_capacity}, 空床: {vacancies})"
             
             if vacancies == 0:
                 room_title = f"🔴 {room_title} (已滿)"
+            elif vacancies < 0:
+                room_title = f"⚠️ {room_title} (超住?)"
             elif vacancies > 0:
                 room_title = f"🟢 {room_title}"
-            # --- 修改結束 ---
+            
+            # 【核心修改】若有掛宿外住，標示在最後面
+            if num_external > 0:
+                room_title += f"，掛住: {num_external}人"
 
             with st.expander(room_title):
                 
-                # --- 【核心修改 v2.6】---
-                # 2. 找出 "有資料" 的人 (worker_name 有值)
                 has_data = occupants['worker_name'] != ''
                 if not has_data.any():
-                # --- 修改結束 ---
                     st.text("此房間目前無人居住。")
                 else:
-                    # --- 【核心修改 v2.6】---
-                    # 3. 顯示 *所有* 在冊人員 (包含掛宿外住)
-                    occupant_details = occupants[has_data][['worker_name', 'employer_name', 'bed_number', 'special_status']]
+                    # 取出要顯示的資料
+                    occupant_details = occupants[has_data][['worker_name', 'employer_name', 'bed_number', 'special_status', 'accommodation_end']].copy()
+                    
+                    # --- 【修正 3】在表格中標記已離住者 ---
+                    def format_status_display(row):
+                        status = str(row['special_status']) if pd.notna(row['special_status']) else ""
+                        end_date = row['accommodation_end']
+                        
+                        # 如果在這個月結束前離住
+                        if pd.notna(end_date) and end_date <= month_end_date:
+                            date_str = end_date.strftime('%m/%d')
+                            return f"❌ 已於 {date_str} 搬離"
+                        
+                        return status
+
+                    occupant_details['狀態/備註'] = occupant_details.apply(format_status_display, axis=1)
+
                     occupant_details.rename(columns={
                         'worker_name': '姓名', 
                         'employer_name': '雇主', 
-                        'bed_number': '床位編號',
-                        'special_status': '特殊狀況' # <-- 顯示此欄位
+                        'bed_number': '床位'
                     }, inplace=True)
                     
-                    # 4. 對 "特殊狀況" 欄位進行高亮
-                    def style_status(val):
-                        if val and "掛宿外住" in val:
-                            return 'color: #FFBF00; font-weight: bold;' # 醒目的黃色
-                        return ''
-                    
+                    # 顯示表格 (隱藏原始日期欄位，改顯示處理過的狀態)
+                    final_view = occupant_details[['姓名', '雇主', '床位', '狀態/備註']]
+
+                    # 樣式設定：將「已搬離」的列標示為灰色文字
+                    def highlight_leavers(row):
+                        val = str(row['狀態/備註'])
+                        if "已於" in val and "搬離" in val:
+                            return ['color: #999999; font-style: italic;'] * len(row)
+                        elif "掛宿外住" in val:
+                            return ['color: #FFBF00; font-weight: bold;'] * len(row)
+                        return [''] * len(row)
+
                     st.dataframe(
-                        occupant_details.style.apply(lambda x: x.map(style_status) if x.name == '特殊狀況' else [''] * len(x)), 
+                        final_view.style.apply(highlight_leavers, axis=1), 
                         hide_index=True, 
                         width="stretch"
                     )
