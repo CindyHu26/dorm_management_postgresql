@@ -1,5 +1,4 @@
-# /views/batch_history_editor_view.py
-# (v2.16 - 雙重修正版)
+# (v3.1 - 改用 Radio 取代 Tab 以解決跳頁問題)
 
 import streamlit as st
 import pandas as pd
@@ -7,68 +6,68 @@ from datetime import date, timedelta
 from data_models import finance_model, dormitory_model, worker_model, employer_dashboard_model
 import numpy as np
 
-# 確保 worker_model 模組中有 get_workers_by_history_count, get_accommodation_history_for_workers, get_fee_history_for_workers, batch_edit_history
-# 這些函式是在 worker_model.py v2.15 中新增/修改的
-
 def render():
-    """渲染「住宿/費用歷史批次編輯器」頁面"""
-    st.header("住宿/費用歷史批次編輯器")
-    st.info("此頁面用於批次「修改」已存在的歷史紀錄，例如修正錯誤的入住日或生效日。")
-    st.warning("⚠️ **警告**：在此處所做的所有修改都會**永久覆蓋**歷史資料，您可以在儲存時選擇要套用的資料保護層級。") # 修改警告文字
-
+    """渲染「住宿/費用/狀態 歷史批次編輯器」頁面"""
+    st.header("歷史紀錄批次編輯器")
+    st.info("此頁面用於批次「修改」已存在的歷史紀錄，或批次「新增」特殊狀態。")
+    
     # --- 步驟一：設定篩選條件 ---
     st.subheader("步驟一：篩選要編輯的員工")
     
     @st.cache_data
-    def get_my_dorms():
-        return dormitory_model.get_my_company_dorms_for_selection()
+    def get_options_data():
+        dorms = dormitory_model.get_my_company_dorms_for_selection()
+        employers = employer_dashboard_model.get_all_employers()
+        return dorms, employers
 
-    @st.cache_data
-    def get_all_employers():
-        return employer_dashboard_model.get_all_employers()
-
-    @st.cache_data
-    def get_workers_with_min_history(count):
-        return worker_model.get_worker_ids_by_history_count(count)
-
+    dorms_list, employers_list = get_options_data()
+    dorm_map = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms_list}
+    
     col1, col2, col3 = st.columns(3)
     
-    my_dorms = get_my_dorms()
-    if not my_dorms:
-        st.warning("目前資料庫中沒有主要管理人為「我司」的宿舍。")
-        return
-    dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in my_dorms}
+    # 1. 宿舍篩選
     selected_dorm_ids = col1.multiselect(
         "篩選宿舍地址 (可多選)",
-        options=list(dorm_options.keys()),
-        format_func=lambda x: dorm_options[x]
+        options=list(dorm_map.keys()),
+        format_func=lambda x: dorm_map[x],
+        key="hist_filter_dorm"
     )
 
-    my_employers = get_all_employers()
-    if not my_employers:
-        st.warning("目前資料庫中沒有任何雇主資料可供篩選。")
-        return
-    selected_employers = col2.multiselect(
+    # 2. 房號篩選 (連動)
+    room_options = {}
+    if selected_dorm_ids:
+        for d_id in selected_dorm_ids:
+            rooms = dormitory_model.get_rooms_for_selection(d_id)
+            for r in rooms:
+                room_options[r['id']] = r['room_number']
+    
+    selected_room_ids = col2.multiselect(
+        "篩選房號 (需先選宿舍)",
+        options=list(room_options.keys()),
+        format_func=lambda x: room_options[x],
+        key="hist_filter_room",
+        disabled=not selected_dorm_ids
+    )
+
+    # 3. 雇主篩選
+    selected_employers = col3.multiselect(
         "篩選雇主 (可多選)",
-        options=my_employers
+        options=employers_list,
+        key="hist_filter_emp"
     )
     
-    min_history_count = col3.number_input(
+    # 4. 歷史數量篩選 (僅用於住宿/費用歷史)
+    st.markdown("---")
+    st.markdown("##### 進階篩選 (僅適用於「住宿/費用」歷史)")
+    min_history_count = st.number_input(
         "篩選至少有 N 段住宿歷史的人", 
         min_value=1, 
         value=1, 
         help="設為 2 可快速找出所有曾換宿的員工。"
     )
 
-    st.markdown("---")
-    st.subheader("步驟二：篩選歷史紀錄的日期範圍 (選填)")
-    st.caption("您可以篩選出在特定時間範圍內發生變動（入住、離住、費用生效）的紀錄。")
-
-    date_filter_on = st.checkbox("啟用日期區間篩選")
-    filter_start_date = None
-    filter_end_date = None
+    date_filter_on = st.checkbox("啟用日期區間篩選 (僅適用於「住宿/費用」歷史)")
     date_range_tuple = None
-
     if date_filter_on:
         dr1, dr2 = st.columns(2)
         filter_start_date = dr1.date_input("起始日", value=date.today() - timedelta(days=30))
@@ -76,208 +75,234 @@ def render():
         if filter_start_date and filter_end_date:
             if filter_start_date > filter_end_date:
                 st.error("起始日不能晚於結束日。")
-                return
-            date_range_tuple = (filter_start_date, filter_end_date)
-        else:
-            st.warning("請選擇起始日和結束日。")
-            return
-            
-    # --- 步驟三：取得員工 ID ---
-    
-    # --- 【v2.16 核心修改 1】更新此函式 ---
-    @st.cache_data
-    def get_filtered_worker_ids(dorm_ids_tuple, employer_names_tuple, min_count):
-        
-        # 檢查是否至少有一個篩選器被啟用
-        has_dorm_filter = bool(dorm_ids_tuple)
-        has_employer_filter = bool(employer_names_tuple)
-        has_count_filter = min_count > 1
-        
-        # 如果所有篩選器都沒被啟用，返回 None
-        if not has_dorm_filter and not has_employer_filter and not has_count_filter:
-            return None
-
-        worker_ids_from_filters = set()
-        worker_ids_from_count = set()
-        
-        # 1. 根據宿舍和雇主篩選 (使用新函式，不過濾在住)
-        if has_dorm_filter or has_employer_filter:
-            worker_ids_from_filters = worker_model.get_all_worker_ids_by_filters({
-                "dorm_ids": list(dorm_ids_tuple) or None, 
-                "employer_names": list(employer_names_tuple) or None
-            })
-
-        # 2. 根據歷史紀錄數量篩選
-        if has_count_filter:
-            worker_ids_from_count = set(get_workers_with_min_history(min_count))
-
-        # 3. 組合篩選邏輯
-        if has_dorm_filter or has_employer_filter:
-            if has_count_filter:
-                # (有選宿舍/雇主) AND (歷史 > 1)
-                final_worker_ids = list(worker_ids_from_filters.intersection(worker_ids_from_count))
             else:
-                # (有選宿舍/雇主)
-                final_worker_ids = list(worker_ids_from_filters)
-        else:
-            # (僅篩選 歷史 > 1，因為 has_count_filter 必為 True)
-            final_worker_ids = list(worker_ids_from_count)
+                date_range_tuple = (filter_start_date, filter_end_date)
+
+    # --- 準備篩選參數 ---
+    @st.cache_data
+    def get_filtered_worker_ids(dorm_ids, employer_names, room_ids, min_count):
+        # 1. 基礎篩選 (宿舍/雇主/房號)
+        filters = {
+            "dorm_ids": dorm_ids, 
+            "employer_names": employer_names,
+            "room_ids": room_ids
+        }
+        df = worker_model.get_workers_for_batch_edit(filters)
+        if df.empty: return []
         
-        return final_worker_ids
-    # --- 修改結束 ---
+        base_ids = set(df['unique_id'].tolist())
 
+        # 2. 歷史數量篩選
+        if min_count > 1:
+            history_ids = set(worker_model.get_worker_ids_by_history_count(min_count))
+            final_ids = list(base_ids.intersection(history_ids))
+        else:
+            final_ids = list(base_ids)
+            
+        return final_ids
 
-    worker_ids_to_edit = get_filtered_worker_ids(
-        tuple(selected_dorm_ids), 
-        tuple(selected_employers), 
-        min_history_count
+    # --- 取得 Worker IDs ---
+    worker_ids_to_edit = []
+    if selected_dorm_ids or selected_employers or selected_room_ids:
+         worker_ids_to_edit = get_filtered_worker_ids(selected_dorm_ids, selected_employers, selected_room_ids, min_history_count)
+
+    # --- 步驟三：批次編輯 (改用 Radio) ---
+    st.markdown("---")
+    st.subheader("步驟三：批次編輯")
+    
+    # 【核心修改】使用 Radio 取代 Tabs
+    edit_mode = st.radio(
+        "請選擇編輯模式：",
+        options=["🏠 編輯住宿歷史", "💰 編輯費用歷史", "🛠️ 批次編輯特殊狀況"],
+        horizontal=True,
+        key="history_edit_mode_radio"
     )
 
-    if worker_ids_to_edit is None:
-        st.info("請至少選擇一個篩選條件（宿舍、雇主，或將住宿歷史設為 2 以上）。")
-        return
-    
-    if not worker_ids_to_edit:
-        st.info("在您選擇的篩選條件下，目前沒有找到任何符合的員工。")
-        return
-
-    st.caption(f"已篩選出 {len(worker_ids_to_edit)} 位符合條件的員工。正在載入他們的歷史紀錄...")
-    st.markdown("---")
-    st.subheader("步驟三：批次編輯歷史紀錄")
-    
-    # --- 【v2.16 核心修改 2】在這裡定義保護層級選項 ---
     protection_options = {
         "手動調整": "保護「住宿位置/日期」，但允許爬蟲未來更新「離住日」。 (建議選項)",
         "系統自動更新": "不保護。在下次執行時，用系統資料覆蓋此次修改。",
         "手動管理(他仲)": "完全鎖定。未來將跳過這些人，不更新任何資料（包括離住日）。"
     }
-    # --- 修改結束 ---
-    
-    tab_accom, tab_fee = st.tabs(["🏠 編輯住宿歷史", "💰 編輯費用歷史"])
 
-    # --- 頁籤1：編輯住宿歷史 ---
-    with tab_accom:
-        st.markdown("##### 篩選出人員的「住宿歷史」")
-        
-        @st.cache_data
-        def get_accom_history(worker_ids_tuple, date_range):
-            return worker_model.get_accommodation_history_for_workers(list(worker_ids_tuple), date_range)
-
-        original_accom_df = get_accom_history(tuple(worker_ids_to_edit), date_range_tuple)
-
-        if original_accom_df.empty:
-            st.warning("這些員工沒有任何符合條件的住宿歷史紀錄可供編輯。")
+    # ==========================================================================
+    # 模式 1: 編輯住宿歷史
+    # ==========================================================================
+    if edit_mode == "🏠 編輯住宿歷史":
+        if not worker_ids_to_edit:
+            st.info("請先在上方選擇篩選條件以載入資料。")
         else:
-            st.caption("您可以直接在下列表格中修改「床位編號」、「入住日」、「離住日」和「備註」。")
-            
-            edited_accom_df = st.data_editor(
-                original_accom_df,
-                key="accom_editor",
-                hide_index=True,
-                width='stretch',
-                column_config={
-                    "id": st.column_config.NumberColumn("紀錄ID", disabled=True),
-                    "worker_unique_id": None, # 隱藏
-                    "雇主": st.column_config.TextColumn(disabled=True),
-                    "員工姓名": st.column_config.TextColumn(disabled=True),
-                    "宿舍地址": st.column_config.TextColumn(disabled=True),
-                    "房號": st.column_config.TextColumn(disabled=True),
-                    "床位編號": st.column_config.TextColumn(max_chars=20),
-                    "入住日": st.column_config.DateColumn(format="YYYY-MM-DD"),
-                    "離住日": st.column_config.DateColumn(format="YYYY-MM-DD"),
-                    "備註": st.column_config.TextColumn(max_chars=255)
-                },
-                disabled=["id", "worker_unique_id", "雇主", "員工姓名", "宿舍地址", "房號"] # 修正：雇主也應被禁用
-            )
-            
-            st.markdown("---")
-            st.markdown("##### 步驟四：設定保護層級")
-            
-            # --- 【v2.16 核心修改 3】新增保護層級下拉選單 ---
-            accom_protection_level = st.selectbox(
-                "選擇更新後的保護層級*",
-                options=list(protection_options.keys()),
-                format_func=lambda x: protection_options[x],
-                index=0, # 預設選取 "手動調整"
-                key="accom_protection_select"
-            )
-            
-            if st.button("🚀 儲存住宿歷史變更", type="primary", key="save_accom_history"):
-                with st.spinner("正在比對與儲存住宿歷史變更..."):
-                    success, message = worker_model.batch_edit_history(
-                        original_accom_df, 
-                        edited_accom_df,
-                        table_name="AccommodationHistory",
-                        key_column="id",
-                        columns_to_update=["worker_unique_id", "床位編號", "入住日", "離住日", "備註"],
-                        protection_level=accom_protection_level # <-- 傳入選擇的值
-                    )
-                if success:
-                    st.success(message)
-                    get_accom_history.clear() # 清除快取
-                    get_filtered_worker_ids.clear() # 清除員工ID快取
-                    st.rerun()
-                else:
-                    st.error(message)
+            st.caption(f"共篩選出 {len(worker_ids_to_edit)} 位員工。")
+            @st.cache_data
+            def get_accom_history(worker_ids, date_range):
+                return worker_model.get_accommodation_history_for_workers(worker_ids, date_range)
 
-    # --- 頁籤2：編輯費用歷史 ---
-    with tab_fee:
-        st.markdown("##### 篩選出人員的「費用歷史」")
-        
-        @st.cache_data
-        def get_fee_history(worker_ids_tuple, date_range):
-            return worker_model.get_fee_history_for_workers(list(worker_ids_tuple), date_range)
+            original_accom_df = get_accom_history(worker_ids_to_edit, date_range_tuple)
 
-        original_fee_df = get_fee_history(tuple(worker_ids_to_edit), date_range_tuple)
-        
-        if original_fee_df.empty:
-            st.warning("這些員工沒有任何符合條件的費用歷史紀錄可供編輯。")
+            if original_accom_df.empty:
+                st.warning("這些員工沒有符合條件的住宿歷史紀錄。")
+            else:
+                edited_accom_df = st.data_editor(
+                    original_accom_df,
+                    key="accom_editor",
+                    hide_index=True,
+                    width='stretch',
+                    column_config={
+                        "id": st.column_config.NumberColumn("紀錄ID", disabled=True),
+                        "worker_unique_id": None,
+                        "雇主": st.column_config.TextColumn(disabled=True),
+                        "員工姓名": st.column_config.TextColumn(disabled=True),
+                        "宿舍地址": st.column_config.TextColumn(disabled=True),
+                        "房號": st.column_config.TextColumn(disabled=True),
+                        "床位編號": st.column_config.TextColumn(max_chars=20),
+                        "入住日": st.column_config.DateColumn(format="YYYY-MM-DD"),
+                        "離住日": st.column_config.DateColumn(format="YYYY-MM-DD"),
+                        "備註": st.column_config.TextColumn(max_chars=255)
+                    },
+                    disabled=["id", "worker_unique_id", "雇主", "員工姓名", "宿舍地址", "房號"]
+                )
+                
+                st.markdown("---")
+                accom_protection_level = st.selectbox("選擇更新後的保護層級*", list(protection_options.keys()), format_func=lambda x: protection_options[x], key="accom_prot")
+                
+                if st.button("🚀 儲存住宿歷史變更", type="primary"):
+                    with st.spinner("處理中..."):
+                        success, message = worker_model.batch_edit_history(
+                            original_accom_df, edited_accom_df, "AccommodationHistory", "id",
+                            ["worker_unique_id", "床位編號", "入住日", "離住日", "備註"], accom_protection_level
+                        )
+                    if success: st.success(message); st.cache_data.clear(); st.rerun()
+                    else: st.error(message)
+
+    # ==========================================================================
+    # 模式 2: 編輯費用歷史
+    # ==========================================================================
+    elif edit_mode == "💰 編輯費用歷史":
+        if not worker_ids_to_edit:
+            st.info("請先在上方選擇篩選條件以載入資料。")
         else:
-            st.caption("您可以直接在下列表格中修改「金額」和「生效日期」。")
+            @st.cache_data
+            def get_fee_history(worker_ids, date_range):
+                return worker_model.get_fee_history_for_workers(worker_ids, date_range)
 
-            edited_fee_df = st.data_editor(
-                original_fee_df,
-                key="fee_editor",
-                hide_index=True,
-                width='stretch',
-                column_config={
-                    "id": st.column_config.NumberColumn("紀錄ID", disabled=True),
-                    "worker_unique_id": None, # 隱藏
-                    "雇主": st.column_config.TextColumn(disabled=True), # 雇主也應被禁用
-                    "員工姓名": st.column_config.TextColumn(disabled=True),
-                    "費用類型": st.column_config.TextColumn(disabled=True),
-                    "金額": st.column_config.NumberColumn(format="%d"),
-                    "生效日期": st.column_config.DateColumn(format="YYYY-MM-DD")
-                },
-                disabled=["id", "worker_unique_id", "雇主", "員工姓名", "費用類型"] # 修正：雇主也應被禁用
-            )
+            original_fee_df = get_fee_history(worker_ids_to_edit, date_range_tuple)
             
-            st.markdown("---")
-            st.markdown("##### 步驟四：設定保護層級")
-            
-            # --- 【v2.16 核心修改 4】新增保護層級下拉選單 ---
-            fee_protection_level = st.selectbox(
-                "選擇更新後的保護層級*",
-                options=list(protection_options.keys()),
-                format_func=lambda x: protection_options[x],
-                index=0, # 預設選取 "手動調整"
-                key="fee_protection_select"
-            )
-            
-            if st.button("🚀 儲存費用歷史變更", type="primary", key="save_fee_history"):
-                with st.spinner("正在比對與儲存費用歷史變更..."):
-                    success, message = worker_model.batch_edit_history(
-                        original_fee_df,
-                        edited_fee_df,
-                        table_name="FeeHistory",
-                        key_column="id",
-                        columns_to_update=["worker_unique_id", "金額", "生效日期"],
-                        protection_level=fee_protection_level # <-- 傳入選擇的值
-                    )
-                if success:
-                    st.success(message)
-                    get_fee_history.clear() # 清除快取
-                    get_filtered_worker_ids.clear() # 清除員工ID快取
-                    st.rerun()
-                else:
-                    st.error(message)
+            if original_fee_df.empty:
+                st.warning("這些員工沒有符合條件的費用歷史紀錄。")
+            else:
+                edited_fee_df = st.data_editor(
+                    original_fee_df,
+                    key="fee_editor",
+                    hide_index=True,
+                    width='stretch',
+                    column_config={
+                        "id": st.column_config.NumberColumn("紀錄ID", disabled=True),
+                        "worker_unique_id": None,
+                        "雇主": st.column_config.TextColumn(disabled=True),
+                        "員工姓名": st.column_config.TextColumn(disabled=True),
+                        "費用類型": st.column_config.TextColumn(disabled=True),
+                        "金額": st.column_config.NumberColumn(format="%d"),
+                        "生效日期": st.column_config.DateColumn(format="YYYY-MM-DD")
+                    },
+                    disabled=["id", "worker_unique_id", "雇主", "員工姓名", "費用類型"]
+                )
+                
+                st.markdown("---")
+                fee_protection_level = st.selectbox("選擇更新後的保護層級*", list(protection_options.keys()), format_func=lambda x: protection_options[x], key="fee_prot")
+                
+                if st.button("🚀 儲存費用歷史變更", type="primary"):
+                    with st.spinner("處理中..."):
+                        success, message = worker_model.batch_edit_history(
+                            original_fee_df, edited_fee_df, "FeeHistory", "id",
+                            ["worker_unique_id", "金額", "生效日期"], fee_protection_level
+                        )
+                    if success: st.success(message); st.cache_data.clear(); st.rerun()
+                    else: st.error(message)
+
+    # ==========================================================================
+    # 模式 3: 批次編輯特殊狀況
+    # ==========================================================================
+    elif edit_mode == "🛠️ 批次編輯特殊狀況":
+        st.info("此功能可批次為員工新增一筆新的狀態紀錄。若「新狀態」留空，則代表將狀態改回正常（結束上一筆特殊狀態）。")
+        
+        status_filters = {
+            "dorm_ids": selected_dorm_ids,
+            "employer_names": selected_employers,
+            "room_ids": selected_room_ids
+        }
+        
+        if not selected_dorm_ids and not selected_employers and not selected_room_ids:
+             st.info("請先在上方選擇篩選條件。")
+        else:
+            @st.cache_data
+            def get_status_data(f):
+                return worker_model.get_worker_current_status_for_batch(f)
+
+            status_df = get_status_data(status_filters)
+
+            if status_df.empty:
+                st.warning("查無符合條件的在住人員。")
+            else:
+                # 準備 Data Editor
+                status_df["新狀態"] = None
+                status_df["新狀態起始日"] = pd.NaT
+                
+                status_options = ["", "掛宿外住(不收費)", "掛宿外住(收費)", "費用不同", "其他"]
+
+                edited_status_df = st.data_editor(
+                    status_df,
+                    key="status_editor",
+                    hide_index=True,
+                    width='stretch',
+                    column_config={
+                        "unique_id": None,
+                        "最新住宿起始日": None, # 隱藏，但後端會用到
+                        "雇主": st.column_config.TextColumn(disabled=True),
+                        "姓名": st.column_config.TextColumn(disabled=True),
+                        "宿舍地址": st.column_config.TextColumn(disabled=True),
+                        "房號": st.column_config.TextColumn(disabled=True),
+                        "目前狀態": st.column_config.TextColumn(disabled=True),
+                        "狀態起始日": st.column_config.DateColumn(format="YYYY-MM-DD", disabled=True),
+                        
+                        "新狀態": st.column_config.SelectboxColumn(
+                            "新狀態 (必填，留空=回歸正常)",
+                            options=status_options,
+                            required=False
+                        ),
+                        "新狀態起始日": st.column_config.DateColumn(
+                            "新狀態起始日 (若空則用住宿起始日)",
+                            format="YYYY-MM-DD",
+                            help="若留空，系統將自動填入該員工最新一筆住宿的起始日。"
+                        )
+                    }
+                )
+                
+                st.markdown("---")
+                if st.button("🚀 執行批次狀態變更", type="primary"):
+                    # 找出有變更的行
+                    updates = []
+                    for _, row in edited_status_df.iterrows():
+                        new_status = row['新狀態']
+                        # 判斷是否需要更新：
+                        # 1. 新狀態不是 None (使用者有選，可能是選了某個狀態，或選了空白)
+                        # 2. 且 新狀態 != 目前狀態
+                        if new_status is not None and new_status != row['目前狀態']:
+                            updates.append({
+                                'worker_id': row['unique_id'],
+                                'new_status': new_status,
+                                'start_date': row['新狀態起始日'], # 可能是 NaT
+                                'accom_start_date': row['最新住宿起始日']
+                            })
+
+                    if not updates:
+                        st.warning("沒有偵測到任何有效的狀態變更。")
+                    else:
+                        with st.spinner(f"正在更新 {len(updates)} 位員工的狀態..."):
+                            s_count, f_count, msg = worker_model.batch_update_worker_status(updates)
+                        
+                        if s_count > 0:
+                            st.success(msg)
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                        

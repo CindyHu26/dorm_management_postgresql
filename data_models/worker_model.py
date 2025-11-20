@@ -1359,3 +1359,160 @@ def batch_update_worker_data_sources(edited_df: pd.DataFrame):
         return 0, len(edited_df)
     finally:
         if conn: conn.close()
+
+def get_worker_current_status_for_batch(filters: dict):
+    """
+    【v2.18 新增】取得符合篩選條件的員工及其「目前特殊狀況」。
+    用於批次編輯狀態功能。
+    """
+    dorm_ids = filters.get("dorm_ids")
+    employer_names = filters.get("employer_names")
+    room_ids = filters.get("room_ids")
+
+    if not dorm_ids and not employer_names and not room_ids:
+        return pd.DataFrame()
+
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        # 查詢邏輯：
+        # 1. 找出員工最新的住宿位置 (為了篩選)
+        # 2. 找出員工最新的狀態 (WorkerStatusHistory 中 end_date 為空或未來的)
+        # 3. 找出員工最新住宿的起始日 (作為預設狀態起始日)
+        query = """
+            WITH CurrentAccommodation AS (
+                SELECT DISTINCT ON (worker_unique_id)
+                    worker_unique_id, room_id, start_date as accom_start_date
+                FROM "AccommodationHistory"
+                WHERE end_date IS NULL OR end_date > CURRENT_DATE
+                ORDER BY worker_unique_id, start_date DESC, id DESC
+            ),
+            CurrentStatus AS (
+                SELECT DISTINCT ON (worker_unique_id)
+                    worker_unique_id, status, start_date as status_start_date
+                FROM "WorkerStatusHistory"
+                WHERE end_date IS NULL OR end_date > CURRENT_DATE
+                ORDER BY worker_unique_id, start_date DESC, id DESC
+            )
+            SELECT
+                w.unique_id,
+                w.employer_name AS "雇主",
+                w.worker_name AS "姓名",
+                d.original_address AS "宿舍地址",
+                r.room_number AS "房號",
+                cs.status AS "目前狀態",
+                cs.status_start_date AS "狀態起始日",
+                ca.accom_start_date AS "最新住宿起始日"
+            FROM "Workers" w
+            LEFT JOIN CurrentAccommodation ca ON w.unique_id = ca.worker_unique_id
+            LEFT JOIN CurrentStatus cs ON w.unique_id = cs.worker_unique_id
+            LEFT JOIN "Rooms" r ON COALESCE(ca.room_id, w.room_id) = r.id
+            LEFT JOIN "Dormitories" d ON r.dorm_id = d.id
+            WHERE (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)
+        """
+        
+        params = []
+        if dorm_ids:
+            query += " AND d.id = ANY(%s)"
+            params.append(list(dorm_ids))
+        if employer_names:
+            query += " AND w.employer_name = ANY(%s)"
+            params.append(list(employer_names))
+        if room_ids:
+            query += " AND r.id = ANY(%s)"
+            params.append(list(room_ids))
+
+        query += " ORDER BY d.original_address, r.room_number, w.worker_name"
+
+        return _execute_query_to_dataframe(conn, query, tuple(params))
+    finally:
+        if conn: conn.close()
+
+def batch_update_worker_status(updates: list):
+    """
+    【v2.19 NaT 修正版】批次更新員工特殊狀態。
+    updates: [{'worker_id', 'new_status', 'start_date', 'accom_start_date'}]
+    修正：增加 pd.isna() 檢查，避免 Pandas 的 NaT 物件直接傳入 SQL 導致崩潰。
+    """
+    if not updates:
+        return 0, 0, "沒有需要更新的資料。"
+
+    conn = database.get_db_connection()
+    if not conn: return 0, 0, "資料庫連線失敗。"
+
+    success_count = 0
+    fail_count = 0
+    
+    try:
+        with conn.cursor() as cursor:
+            for update in updates:
+                try:
+                    worker_id = update['worker_id']
+                    new_status = update['new_status']
+                    
+                    # --- [核心修正] 日期清理邏輯 ---
+                    # 1. 取出前端傳來的日期
+                    raw_start = update.get('start_date')
+                    # 2. 如果是 NaT (Pandas 空值)，強制轉為 None
+                    if pd.isna(raw_start):
+                        raw_start = None
+                    
+                    # 3. 取出備用的住宿起始日，同樣做清理
+                    raw_accom_start = update.get('accom_start_date')
+                    if pd.isna(raw_accom_start):
+                        raw_accom_start = None
+
+                    # 4. 決定最終日期：使用者指定 > 最新住宿日 > 今天
+                    start_date = raw_start or raw_accom_start or date.today()
+                    # -----------------------------
+
+                    # 1. 結束上一筆狀態
+                    cursor.execute(
+                        'UPDATE "WorkerStatusHistory" SET end_date = %s WHERE worker_unique_id = %s AND end_date IS NULL',
+                        (start_date, worker_id)
+                    )
+
+                    # 2. 如果有新狀態，新增紀錄
+                    if new_status and str(new_status).strip():
+                        # 檢查是否重複 (同一天、同狀態) - 簡單防呆
+                        cursor.execute(
+                            'SELECT id FROM "WorkerStatusHistory" WHERE worker_unique_id = %s AND status = %s AND start_date = %s',
+                            (worker_id, new_status, start_date)
+                        )
+                        if not cursor.fetchone():
+                            cursor.execute(
+                                'INSERT INTO "WorkerStatusHistory" (worker_unique_id, status, start_date) VALUES (%s, %s, %s)',
+                                (worker_id, new_status, start_date)
+                            )
+                            # 同步主表
+                            cursor.execute(
+                                'UPDATE "Workers" SET special_status = %s WHERE unique_id = %s',
+                                (new_status, worker_id)
+                            )
+                    else:
+                        # 若清空狀態，同步主表為 NULL
+                        cursor.execute(
+                            'UPDATE "Workers" SET special_status = NULL WHERE unique_id = %s',
+                            (worker_id,)
+                        )
+                    
+                    success_count += 1
+                except Exception as e:
+                    print(f"Error updating status for {worker_id}: {e}")
+                    fail_count += 1
+                    # 注意：在 PostgreSQL Transaction 中，一旦有一筆失敗，
+                    # 後續的操作都會變成 "ignored until end of transaction block"。
+                    # 如果希望單筆失敗不影響其他筆，這裡需要使用 SAVEPOINT，
+                    # 但為了資料一致性，目前維持「一筆錯全退」或「拋出錯誤」可能較安全。
+                    # 這裡選擇拋出錯誤讓外層 rollback，避免資料只更新一半。
+                    raise e 
+        
+        conn.commit()
+        return success_count, fail_count, f"成功更新 {success_count} 筆狀態。"
+
+    except Exception as e:
+        if conn: conn.rollback()
+        # 將具體錯誤訊息回傳，方便除錯
+        return 0, len(updates), f"批次更新發生錯誤 (已復原): {e}"
+    finally:
+        if conn: conn.close()
