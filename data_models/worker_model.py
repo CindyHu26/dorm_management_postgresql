@@ -1259,3 +1259,103 @@ def get_distinct_nationalities():
         return []
     finally:
         if conn: conn.close()
+
+def get_workers_for_batch_edit(filters: dict):
+    """
+    【v2.17 新增】為「批次修改資料來源」功能提供人員清單。
+    支援多宿舍、多雇主、多房號篩選。
+    """
+    dorm_ids = filters.get("dorm_ids")
+    employer_names = filters.get("employer_names")
+    room_ids = filters.get("room_ids")
+
+    # 如果沒有任何篩選條件，回傳空以免撈取過多資料
+    if not dorm_ids and not employer_names and not room_ids:
+        return pd.DataFrame()
+
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        # 使用 CTE 找出每位員工「目前實際」的住宿位置 (最新且未結束的住宿紀錄)
+        query = """
+            WITH CurrentAccommodation AS (
+                SELECT DISTINCT ON (worker_unique_id)
+                    worker_unique_id,
+                    room_id
+                FROM "AccommodationHistory"
+                WHERE end_date IS NULL OR end_date > CURRENT_DATE
+                ORDER BY worker_unique_id, start_date DESC, id DESC
+            )
+            SELECT
+                w.unique_id,
+                w.employer_name AS "雇主",
+                w.worker_name AS "姓名",
+                d.original_address AS "宿舍地址",
+                r.room_number AS "房號",
+                w.data_source AS "資料來源"
+            FROM "Workers" w
+            -- 優先使用 AccommodationHistory 判斷位置，若無則 fallback 到 Workers.room_id (少見情況)
+            LEFT JOIN CurrentAccommodation ca ON w.unique_id = ca.worker_unique_id
+            LEFT JOIN "Rooms" r ON COALESCE(ca.room_id, w.room_id) = r.id
+            LEFT JOIN "Dormitories" d ON r.dorm_id = d.id
+            WHERE (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)
+        """
+        
+        params = []
+        
+        if dorm_ids:
+            query += " AND d.id = ANY(%s)"
+            params.append(list(dorm_ids))
+            
+        if employer_names:
+            query += " AND w.employer_name = ANY(%s)"
+            params.append(list(employer_names))
+            
+        if room_ids:
+            query += " AND r.id = ANY(%s)"
+            params.append(list(room_ids))
+
+        query += " ORDER BY d.original_address, r.room_number, w.worker_name"
+
+        return _execute_query_to_dataframe(conn, query, tuple(params))
+    finally:
+        if conn: conn.close()
+
+def batch_update_worker_data_sources(edited_df: pd.DataFrame):
+    """
+    【v2.17 新增】根據 data_editor 的結果批次更新 Workers 的 data_source。
+    """
+    if edited_df.empty:
+        return 0, 0
+
+    conn = database.get_db_connection()
+    if not conn: return 0, 0
+
+    success_count = 0
+    fail_count = 0
+
+    try:
+        with conn.cursor() as cursor:
+            # 為了效能，我們使用 executemany 或者迴圈
+            # 這裡使用迴圈以便於錯誤處理，且通常批次量不會大到需要極致最佳化
+            for _, row in edited_df.iterrows():
+                try:
+                    unique_id = row['unique_id']
+                    new_source = row['資料來源']
+                    
+                    cursor.execute(
+                        'UPDATE "Workers" SET data_source = %s WHERE unique_id = %s',
+                        (new_source, unique_id)
+                    )
+                    success_count += 1
+                except Exception:
+                    fail_count += 1
+        
+        conn.commit()
+        return success_count, fail_count
+    except Exception as e:
+        if conn: conn.rollback()
+        print(f"Batch update data source error: {e}")
+        return 0, len(edited_df)
+    finally:
+        if conn: conn.close()

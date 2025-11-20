@@ -12,6 +12,10 @@ def render():
     if 'selected_meter_id_for_edit' not in st.session_state:
         st.session_state.selected_meter_id_for_edit = None
 
+    # 初始化重置計數器
+    if 'meter_reset_counter' not in st.session_state:
+        st.session_state.meter_reset_counter = 0
+
     # --- 1. 宿舍選擇 ---
     @st.cache_data
     def get_my_dorms():
@@ -95,14 +99,20 @@ def render():
         }
 
         # 使用 session state 來儲存選擇的 ID
+        # 使用動態 key 來支援重置功能
+        dynamic_key = f"meter_select_{st.session_state.meter_reset_counter}"
+        
         selected_meter_id_edit = st.selectbox(
             "選擇要編輯或刪除的紀錄：",
             options=[None] + list(options_dict.keys()),
             format_func=lambda x: "請選擇..." if x is None else options_dict.get(x),
-            key='selected_meter_id_for_edit' # 綁定 session state
+            key=dynamic_key # 使用動態 key
         )
+        
+        # 為了保持向後相容或方便存取，我們可以手動同步到舊的 key (選填，視後續邏輯而定，這裡直接用 selected_meter_id_edit 變數即可)
+        st.session_state.selected_meter_id_for_edit = selected_meter_id_edit
 
-        if st.session_state.selected_meter_id_for_edit:
+        if selected_meter_id_edit:
             meter_details = meter_model.get_single_meter_details(st.session_state.selected_meter_id_for_edit)
             if meter_details:
                 with st.form(f"edit_meter_form_{st.session_state.selected_meter_id_for_edit}"):
@@ -129,7 +139,8 @@ def render():
                             if success:
                                 st.success(message)
                                 st.cache_data.clear()
-                                st.session_state.selected_meter_id_for_edit = None # 清除選擇
+                                # 增加計數器，強制下次渲染時重建 selectbox (即重置)
+                                st.session_state.meter_reset_counter += 1 
                                 st.rerun()
                             else:
                                 st.error(message)
@@ -141,10 +152,12 @@ def render():
                     if success:
                         st.success(message)
                         st.cache_data.clear()
-                        st.session_state.selected_meter_id_for_edit = None # 清除選擇
+                        # 增加計數器，強制下次渲染時重建 selectbox (即重置)
+                        st.session_state.meter_reset_counter += 1 
                         st.rerun()
                     else:
                         st.error(message)
             else:
                  st.error("找不到選定的紀錄資料。")
-                 st.session_state.selected_meter_id_for_edit = None # 清除無效的選擇
+                 st.session_state.meter_reset_counter += 1
+                 st.rerun()

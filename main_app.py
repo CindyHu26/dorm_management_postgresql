@@ -63,7 +63,7 @@ PAGES = {
         "空床位查詢": placement_view,
         "房間分配": room_assignment_view,
         "工人房租管理": rent_view,
-        "進階批次作業": batch_operations_view,
+        "進階批次 (換宿/換費用/離住/資料來源)": batch_operations_view,
         "住宿歷史批次編輯": batch_history_editor_view,
         "其他收入管理": income_view,
         "資產與庫存管理": inventory_view,
