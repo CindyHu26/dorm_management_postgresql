@@ -27,9 +27,14 @@ def get_dorm_basic_info(dorm_id: int):
     if not conn: return None
     try:
         with conn.cursor() as cursor:
+            # 將 l.payer 改為 COALESCE(l.payer, d.rent_payer) AS rent_payer
+            # 這樣既修正了欄位名稱不符的問題 (rent_payer vs payer)，
+            # 也確保了即使沒有租約，也能顯示宿舍預設的支付方。
             query = """
                 SELECT 
-                    d.primary_manager, l.payer, d.utilities_payer,
+                    d.primary_manager, 
+                    COALESCE(l.payer, d.rent_payer) AS rent_payer, 
+                    d.utilities_payer,
                     l.lease_start_date, l.lease_end_date, l.monthly_rent
                 FROM "Dormitories" d
                 LEFT JOIN "Leases" l ON d.id = l.dorm_id
