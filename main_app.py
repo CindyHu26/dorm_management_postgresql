@@ -10,6 +10,7 @@ from views import (
     dorm_analyzer_view, 
     employer_dashboard_view,
     analytics_view,
+    fee_dashboard_view,
     loss_analyzer_view,
     operations_analyzer_view,
     scraper_view, 
@@ -48,6 +49,7 @@ def load_config():
 PAGES = {
     "總覽與報表": {
         "儀表板": dashboard_view,
+        "費用標準與異常儀表板": fee_dashboard_view,
         "智慧提醒": reminder_view,
         "歷史在住查詢": residency_analyzer_view,
         "營運分析": operations_analyzer_view,
