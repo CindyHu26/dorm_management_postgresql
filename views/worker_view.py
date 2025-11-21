@@ -242,27 +242,51 @@ def render():
                         ec3.text_input("護照號碼", value=worker_details.get('passport_number'), disabled=True)
                         st.markdown("##### 住宿分配")
                         st.info("工人的住宿地點管理已移至「🏠 住宿歷史管理」分頁。")
+                                                
+                        # =========================================================
+                        # 【核心修改】動態費用明細 (唯讀)
+                        # =========================================================
+                        st.markdown("##### 費用明細 (唯讀)")
+                        st.info("此處顯示該員工目前生效的各項費用。如需修改或新增項目，請至「💰 費用歷史」頁籤。")
                         
-                        st.markdown("##### 費用 (唯讀)")
-                        st.info("ℹ️ 費用項目應至「💰 費用歷史」頁籤進行新增/修改，以保留完整的變更紀錄。此處僅顯示當前最新費用。")
+                        # 1. 獲取該員工所有的費用歷史
+                        fee_hist_df = worker_model.get_fee_history_for_worker(selected_worker_id)
                         
-                        # 試著從總覽的 dataframe (已查詢 FeeHistory) 中獲取最新費用
-                        worker_row_from_df = workers_df[workers_df['unique_id'] == selected_worker_id].iloc[0]
-
-                        # 建立一個輔助函式來安全地轉換 NaN
-                        def get_fee_value(fee_name):
-                            val = worker_row_from_df.get(fee_name)
-                            if pd.isna(val):
-                                return 0
-                            return int(val)
-                        
-                        fc1, fc2, fc3 = st.columns(3)
-                        monthly_fee = fc1.number_input("月費(房租)", value=get_fee_value('月費(房租)'), disabled=True)
-                        utilities_fee = fc2.number_input("水電費", value=get_fee_value('水電費'), disabled=True)
-                        cleaning_fee = fc3.number_input("清潔費", value=get_fee_value('清潔費'), disabled=True)
-                        fc4, fc5 = st.columns(2)
-                        restoration_fee = fc4.number_input("宿舍復歸費", value=get_fee_value('宿舍復歸費'), disabled=True)
-                        charging_cleaning_fee = fc5.number_input("充電清潔費", value=get_fee_value('充電清潔費'), disabled=True)
+                        current_total = 0
+                        if fee_hist_df.empty:
+                            st.caption("目前無任何費用紀錄。")
+                        else:
+                            # 2. 篩選出「目前生效」的最新費用 (日期 <= 今天)
+                            # 注意：Dataframe 欄位名稱是 ['id', '生效日期', '費用類型', '金額']
+                            fee_hist_df['eff_date'] = pd.to_datetime(fee_hist_df['生效日期']).dt.date
+                            valid_fees = fee_hist_df[fee_hist_df['eff_date'] <= date.today()]
+                            
+                            if valid_fees.empty:
+                                st.caption("目前無生效的費用項目 (所有設定皆為未來生效)。")
+                            else:
+                                # 3. 取每種費用類型的「最新一筆」
+                                # 排序：先生效日(近->遠)，再ID(大->小)
+                                latest_fees = valid_fees.sort_values(by=['eff_date', 'id'], ascending=[False, False]).drop_duplicates(subset=['費用類型'])
+                                
+                                # 4. 計算總額
+                                current_total = latest_fees['金額'].sum()
+                                st.metric("目前每月應收總額", f"NT$ {current_total:,}")
+                                
+                                # 5. 動態顯示欄位
+                                fee_items = latest_fees.to_dict('records')
+                                # 簡單排序：把「房租」排在最前面，其他隨意
+                                fee_items.sort(key=lambda x: 0 if x['費用類型'] == '房租' else 1)
+                                
+                                # 使用 3 欄佈局動態產生 number_input
+                                cols = st.columns(3)
+                                for i, item in enumerate(fee_items):
+                                    with cols[i % 3]:
+                                        st.number_input(
+                                            f"{item['費用類型']}",
+                                            value=int(item['金額']),
+                                            disabled=True,
+                                            key=f"ro_fee_{item['id']}" # 確保 key 唯一
+                                        )
                         
                         st.markdown("##### 狀態 (可手動修改)")
                         fcc1, fcc2 = st.columns(2)

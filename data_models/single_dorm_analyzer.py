@@ -149,7 +149,8 @@ def get_resident_summary(dorm_ids: list, year_month: str):
 
 def get_expense_summary(dorm_ids: list, year_month: str):
     """
-    【v1.3 複選版】計算指定月份、所選宿舍的總支出細項。
+    【v1.4 修正版】計算指定月份、所選宿舍的總支出細項。
+    修正：代收代付項目將顯示為「(代收代付)」，避免被計入「我司支付」的總支出中。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -169,7 +170,7 @@ def get_expense_summary(dorm_ids: list, year_month: str):
             FROM "Dormitories" d
             JOIN "Leases" l ON d.id = l.dorm_id
             CROSS JOIN DateParams dp
-            WHERE d.id = ANY(%(dorm_ids)s) -- 【核心修改】
+            WHERE d.id = ANY(%(dorm_ids)s)
               AND l.lease_start_date <= dp.last_day_of_month
               AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month)
             GROUP BY l.contract_item, l.payer
@@ -178,22 +179,26 @@ def get_expense_summary(dorm_ids: list, year_month: str):
             
             -- 2. 變動雜費
             SELECT 
-                b.bill_type || ' (' || 
-                    CASE
-                        WHEN b.bill_type IN ('水費', '電費') THEN d.utilities_payer
-                        ELSE b.payer
-                    END
-                || '支付)' AS "費用項目",
+                CASE 
+                    WHEN b.is_pass_through THEN b.bill_type || ' (代收代付)'
+                    ELSE 
+                        b.bill_type || ' (' || 
+                            CASE
+                                WHEN b.bill_type IN ('水費', '電費') THEN d.utilities_payer
+                                ELSE b.payer
+                            END
+                        || '支付)'
+                END AS "費用項目",
                 SUM(b.amount::decimal * (LEAST(b.bill_end_date, (SELECT last_day_of_month FROM DateParams))::date - GREATEST(b.bill_start_date, (SELECT first_day_of_month FROM DateParams))::date + 1)
                     / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)
                 ) as "金額"
             FROM "UtilityBills" b
             JOIN "Dormitories" d ON b.dorm_id = d.id
             CROSS JOIN DateParams dp
-            WHERE b.dorm_id = ANY(%(dorm_ids)s) -- 【核心修改】
+            WHERE b.dorm_id = ANY(%(dorm_ids)s)
               AND b.bill_start_date <= dp.last_day_of_month 
               AND b.bill_end_date >= dp.first_day_of_month
-            GROUP BY b.bill_type, d.utilities_payer, b.payer
+            GROUP BY b.bill_type, d.utilities_payer, b.payer, b.is_pass_through
 
             UNION ALL
 
@@ -203,7 +208,7 @@ def get_expense_summary(dorm_ids: list, year_month: str):
                 SUM(ROUND(total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0)))
             FROM "AnnualExpenses"
             CROSS JOIN DateParams dp
-            WHERE dorm_id = ANY(%(dorm_ids)s) -- 【核心修改】
+            WHERE dorm_id = ANY(%(dorm_ids)s)
               AND TO_DATE(amortization_start_month, 'YYYY-MM') <= dp.first_day_of_month
               AND TO_DATE(amortization_end_month, 'YYYY-MM') >= dp.first_day_of_month
             GROUP BY expense_item
@@ -212,7 +217,6 @@ def get_expense_summary(dorm_ids: list, year_month: str):
         summary_df = _execute_query_to_dataframe(conn, query, params)
         if not summary_df.empty:
             summary_df['金額'] = summary_df['金額'].fillna(0).astype(float).astype(int)
-            # 因為是彙總，所以我們需要再次 Group By
             return summary_df.groupby("費用項目")['金額'].sum().reset_index()
         return summary_df
 
@@ -221,86 +225,45 @@ def get_expense_summary(dorm_ids: list, year_month: str):
 
 def get_income_summary(dorm_ids: list, year_month: str):
     """
-    【v2.3 Decimal 修正版】計算指定月份、所選宿舍的總收入 (工人月費 + 其他收入)。
-    工人月費改為查詢 FeeHistory，並正確處理 Decimal 型別。
+    【v3.0 B04帳務版】計算總收入 (工人月費 + 其他收入)。
+    工人月費：直接 SUM(FeeHistory.amount)。
     """
     conn = database.get_db_connection()
     if not conn: return 0
 
-    # --- 修改：將 total_income_decimal 初始化為 Decimal(0) ---
     total_income_decimal = Decimal(0)
     params = {"dorm_ids": dorm_ids, "year_month": year_month}
 
     try:
         with conn.cursor() as cursor:
-            # 1. 計算工人月費收入 (查詢邏輯不變)
-            worker_income_query = f"""
+            # 1. 計算工人月費收入 (核心修改)
+            worker_income_query = """
                 WITH DateParams AS (
                     SELECT
                         TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
                         (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
-                ),
-                ActiveWorkersInMonth AS (
-                     SELECT DISTINCT ON (ah.worker_unique_id)
-                        ah.worker_unique_id,
-                        (LEAST(COALESCE(ah.end_date, dp.last_day_of_month), dp.last_day_of_month)::date - GREATEST(ah.start_date, dp.first_day_of_month)::date + 1) as days_in_month
-                    FROM "AccommodationHistory" ah
-                    JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
-                    JOIN "Rooms" r ON ah.room_id = r.id
-                    CROSS JOIN DateParams dp
-                    WHERE r.dorm_id = ANY(%(dorm_ids)s)
-                      AND ah.start_date <= dp.last_day_of_month
-                      AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
-                      AND (w.special_status IS NULL OR w.special_status NOT ILIKE '%%掛宿外住%%')
-                ),
-                LatestFeeHistory AS (
-                    SELECT
-                        worker_unique_id, fee_type, amount,
-                        ROW_NUMBER() OVER(PARTITION BY worker_unique_id, fee_type ORDER BY effective_date DESC) as rn
-                    FROM "FeeHistory"
-                    CROSS JOIN DateParams dp
-                    WHERE effective_date <= dp.last_day_of_month
-                ),
-                WorkerFees AS (
-                    SELECT
-                        awm.worker_unique_id, awm.days_in_month,
-                        COALESCE(rent.amount, 0) AS monthly_fee,
-                        COALESCE(util.amount, 0) AS utilities_fee,
-                        COALESCE(clean.amount, 0) AS cleaning_fee,
-                        COALESCE(resto.amount, 0) AS restoration_fee,
-                        COALESCE(charge.amount, 0) AS charging_cleaning_fee
-                    FROM ActiveWorkersInMonth awm
-                    LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '房租' AND rn = 1) rent ON awm.worker_unique_id = rent.worker_unique_id
-                    LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '水電費' AND rn = 1) util ON awm.worker_unique_id = util.worker_unique_id
-                    LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '清潔費' AND rn = 1) clean ON awm.worker_unique_id = clean.worker_unique_id
-                    LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '宿舍復歸費' AND rn = 1) resto ON awm.worker_unique_id = resto.worker_unique_id
-                    LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '充電清潔費' AND rn = 1) charge ON awm.worker_unique_id = charge.worker_unique_id
                 )
-                SELECT
-                    SUM(
-                        -- 將費用明確轉為 Decimal
-                        (monthly_fee::decimal + utilities_fee::decimal + cleaning_fee::decimal + restoration_fee::decimal + charging_cleaning_fee::decimal) *
-                        (days_in_month / EXTRACT(DAY FROM dp.last_day_of_month)::decimal)
-                    ) as total_worker_income -- 回傳值會是 Decimal
-                FROM WorkerFees
-                CROSS JOIN DateParams dp;
+                SELECT SUM(fh.amount) as total_worker_income
+                FROM "FeeHistory" fh
+                JOIN "AccommodationHistory" ah ON fh.worker_unique_id = ah.worker_unique_id
+                JOIN "Rooms" r ON ah.room_id = r.id
+                CROSS JOIN DateParams dp
+                WHERE 
+                    r.dorm_id = ANY(%(dorm_ids)s)
+                    AND fh.effective_date BETWEEN dp.first_day_of_month AND dp.last_day_of_month
+                    -- 確保費用歸屬到該宿舍
+                    AND ah.start_date <= fh.effective_date
+                    AND (ah.end_date IS NULL OR ah.end_date >= fh.effective_date)
             """
             cursor.execute(worker_income_query, params)
             worker_income_result = cursor.fetchone()
 
-            # --- 修改：累加時確保是 Decimal ---
             if worker_income_result and worker_income_result.get('total_worker_income') is not None:
-                try:
-                    # psycopg2 回傳的 numeric/decimal 預設就是 Decimal 物件
-                    total_income_decimal += worker_income_result['total_worker_income']
-                except (InvalidOperation, TypeError) as e:
-                    print(f"警告：工人費用累加時發生型別錯誤: {e}，值: {worker_income_result['total_worker_income']}")
-            # --- 修改結束 ---
+                 total_income_decimal += worker_income_result['total_worker_income']
 
-
-            # 2. 計算其他收入
+            # 2. 計算其他收入 (維持不變)
             other_income_query = """
-                SELECT SUM(amount)::decimal as total_other_income -- 將結果轉為 Decimal
+                SELECT SUM(amount)::decimal as total_other_income
                 FROM "OtherIncome"
                 WHERE dorm_id = ANY(%(dorm_ids)s)
                   AND TO_CHAR(transaction_date, 'YYYY-MM') = %(year_month)s
@@ -308,20 +271,14 @@ def get_income_summary(dorm_ids: list, year_month: str):
             cursor.execute(other_income_query, params)
             other_income_result = cursor.fetchone()
 
-            # --- 修改：累加時確保是 Decimal ---
             if other_income_result and other_income_result.get('total_other_income') is not None:
-                 try:
-                    total_income_decimal += other_income_result['total_other_income']
-                 except (InvalidOperation, TypeError) as e:
-                    print(f"警告：其他收入累加時發生型別錯誤: {e}，值: {other_income_result['total_other_income']}")
-            # --- 修改結束 ---
+                 total_income_decimal += other_income_result['total_other_income']
 
     except Exception as e:
-        print(f"計算收入時發生錯誤: {e}") # 這裡會捕獲 SQL 錯誤或其他 Python 錯誤
+        print(f"計算收入時發生錯誤: {e}")
     finally:
         if conn: conn.close()
 
-    # 回傳前將 Decimal 四捨五入轉為整數
     return int(total_income_decimal.to_integral_value(rounding='ROUND_HALF_UP'))
 
 def get_resident_details_as_df(dorm_ids: list, year_month: str):
@@ -462,95 +419,40 @@ def get_dorm_analysis_data(dorm_ids: list, year_month: str):
 
 def get_monthly_financial_trend(dorm_ids: list):
     """
-    【v2.3 歷史費用修正版】為指定的宿舍列表，計算過去24個月的彙總收入、支出與損益。
-    收入計算改為查詢 FeeHistory。
+    【v3.0 B04帳務版】計算過去24個月的財務趨勢。
+    收入部分改為直接加總 FeeHistory。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
 
     try:
         params = {"dorm_ids": dorm_ids}
-        query = f"""
+        query = """
             WITH MonthSeries AS (
-                SELECT generate_series(
-                    (NOW() - INTERVAL '23 months')::date,
-                    NOW()::date,
-                    '1 month'::interval
-                )::date as month_start
+                SELECT generate_series((NOW() - INTERVAL '23 months')::date, NOW()::date, '1 month'::interval)::date as month_start
             ),
             DateParams AS (
-                SELECT
-                    ms.month_start,
-                    (ms.month_start + interval '1 month - 1 day')::date as month_end,
-                    EXTRACT(DAY FROM (ms.month_start + interval '1 month - 1 day')::date)::decimal as days_in_cal_month -- 當月實際天數
-                FROM MonthSeries ms
+                SELECT ms.month_start, (ms.month_start + interval '1 month - 1 day')::date as month_end FROM MonthSeries ms
             ),
-             -- 找出每個日曆月份活躍的工人及當月居住天數
-            WorkerActiveDaysInMonth AS (
-                 SELECT DISTINCT ON (ah.worker_unique_id, dp.month_start)
-                    ah.worker_unique_id,
-                    r.dorm_id,
-                    dp.month_start,
-                    dp.month_end,
-                    dp.days_in_cal_month,
-                    (LEAST(COALESCE(ah.end_date, dp.month_end), dp.month_end)::date - GREATEST(ah.start_date, dp.month_start)::date + 1) as days_lived_in_month
-                FROM "AccommodationHistory" ah
-                JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
-                JOIN "Rooms" r ON ah.room_id = r.id
-                JOIN DateParams dp ON ah.start_date <= dp.month_end AND (ah.end_date IS NULL OR ah.end_date >= dp.month_start)
-                WHERE r.dorm_id = ANY(%(dorm_ids)s)
-                  AND (w.special_status IS NULL OR w.special_status NOT ILIKE '%%掛宿外住%%')
-            ),
-            LatestFeeHistory AS (
-                SELECT
-                    worker_unique_id, fee_type, amount, effective_date,
-                    ROW_NUMBER() OVER(PARTITION BY worker_unique_id, fee_type ORDER BY effective_date DESC) as rn
-                FROM "FeeHistory" fh
-                JOIN DateParams dp ON fh.effective_date <= dp.month_end -- 確保費用在該月底前生效
-            ),
-            WorkerMonthlyFees AS (
-                SELECT
-                    wadim.worker_unique_id, wadim.dorm_id, wadim.month_start,
-                    wadim.days_lived_in_month, wadim.days_in_cal_month,
-                    COALESCE(rent.amount, 0) AS monthly_fee,
-                    COALESCE(util.amount, 0) AS utilities_fee,
-                    COALESCE(clean.amount, 0) AS cleaning_fee,
-                    COALESCE(resto.amount, 0) AS restoration_fee,
-                    COALESCE(charge.amount, 0) AS charging_cleaning_fee
-                FROM WorkerActiveDaysInMonth wadim
-                LEFT JOIN (SELECT worker_unique_id, effective_date, amount FROM LatestFeeHistory WHERE fee_type = '房租' AND rn = 1) rent
-                    ON wadim.worker_unique_id = rent.worker_unique_id AND rent.effective_date <= wadim.month_end
-                LEFT JOIN (SELECT worker_unique_id, effective_date, amount FROM LatestFeeHistory WHERE fee_type = '水電費' AND rn = 1) util
-                    ON wadim.worker_unique_id = util.worker_unique_id AND util.effective_date <= wadim.month_end
-                LEFT JOIN (SELECT worker_unique_id, effective_date, amount FROM LatestFeeHistory WHERE fee_type = '清潔費' AND rn = 1) clean
-                    ON wadim.worker_unique_id = clean.worker_unique_id AND clean.effective_date <= wadim.month_end
-                LEFT JOIN (SELECT worker_unique_id, effective_date, amount FROM LatestFeeHistory WHERE fee_type = '宿舍復歸費' AND rn = 1) resto
-                    ON wadim.worker_unique_id = resto.worker_unique_id AND resto.effective_date <= wadim.month_end
-                LEFT JOIN (SELECT worker_unique_id, effective_date, amount FROM LatestFeeHistory WHERE fee_type = '充電清潔費' AND rn = 1) charge
-                    ON wadim.worker_unique_id = charge.worker_unique_id AND charge.effective_date <= wadim.month_end
-                 -- Re-filter LatestFeeHistory based on month_end for each worker-month join
-                 WHERE rent.effective_date = (SELECT MAX(effective_date) FROM LatestFeeHistory sub WHERE sub.worker_unique_id = wadim.worker_unique_id AND sub.fee_type = '房租' AND sub.effective_date <= wadim.month_end)
-                   AND util.effective_date = (SELECT MAX(effective_date) FROM LatestFeeHistory sub WHERE sub.worker_unique_id = wadim.worker_unique_id AND sub.fee_type = '水電費' AND sub.effective_date <= wadim.month_end)
-                   AND clean.effective_date = (SELECT MAX(effective_date) FROM LatestFeeHistory sub WHERE sub.worker_unique_id = wadim.worker_unique_id AND sub.fee_type = '清潔費' AND sub.effective_date <= wadim.month_end)
-                   AND resto.effective_date = (SELECT MAX(effective_date) FROM LatestFeeHistory sub WHERE sub.worker_unique_id = wadim.worker_unique_id AND sub.fee_type = '宿舍復歸費' AND sub.effective_date <= wadim.month_end)
-                   AND charge.effective_date = (SELECT MAX(effective_date) FROM LatestFeeHistory sub WHERE sub.worker_unique_id = wadim.worker_unique_id AND sub.fee_type = '充電清潔費' AND sub.effective_date <= wadim.month_end)
-
-            ),
+            -- 1. 收入：按月加總 FeeHistory
             MonthlyIncome AS (
-                 SELECT
-                    TO_CHAR(wmf.month_start, 'YYYY-MM') as year_month,
-                    SUM(
-                        (wmf.monthly_fee + wmf.utilities_fee + wmf.cleaning_fee + wmf.restoration_fee + wmf.charging_cleaning_fee) *
-                        (wmf.days_lived_in_month / wmf.days_in_cal_month)
-                    ) as total_worker_income
-                FROM WorkerMonthlyFees wmf
+                SELECT 
+                    TO_CHAR(dp.month_start, 'YYYY-MM') as year_month,
+                    SUM(fh.amount) as total_worker_income
+                FROM "FeeHistory" fh
+                JOIN "AccommodationHistory" ah ON fh.worker_unique_id = ah.worker_unique_id
+                JOIN "Rooms" r ON ah.room_id = r.id
+                JOIN DateParams dp ON fh.effective_date BETWEEN dp.month_start AND dp.month_end
+                WHERE r.dorm_id = ANY(%(dorm_ids)s)
+                  AND ah.start_date <= fh.effective_date
+                  AND (ah.end_date IS NULL OR ah.end_date >= fh.effective_date)
                 GROUP BY 1
             ),
+            -- (OtherIncome, Contracts, Utilities, PassThrough, Amortized CTEs 維持不變)
             OtherMonthlyIncome AS (
                 SELECT TO_CHAR(transaction_date, 'YYYY-MM') as year_month, SUM(amount) as total_other_income
                 FROM "OtherIncome" WHERE dorm_id = ANY(%(dorm_ids)s) GROUP BY 1
             ),
-             -- 月度合約、雜費、攤銷計算邏輯維持不變，但 JOIN DateParams
             MonthlyContract AS (
                 SELECT TO_CHAR(dp.month_start, 'YYYY-MM') as year_month, SUM(l.monthly_rent) as contract_expense
                 FROM "Leases" l JOIN "Dormitories" d ON l.dorm_id = d.id JOIN DateParams dp ON l.lease_start_date <= dp.month_end AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.month_start)
@@ -580,12 +482,10 @@ def get_monthly_financial_trend(dorm_ids: list):
                 TO_CHAR(dp.month_start, 'YYYY-MM') AS "月份",
                 COALESCE(mi.total_worker_income, 0) + COALESCE(omi.total_other_income, 0) AS "總收入",
                 COALESCE(mc.contract_expense, 0) AS "長期合約支出",
-                COALESCE(mu.utility_expense, 0) AS "變動雜費", -- 我司支付
-                COALESCE(mp.passthrough_expense, 0) AS "代收代付雜費", -- 新增
+                COALESCE(mu.utility_expense, 0) AS "變動雜費",
+                COALESCE(mp.passthrough_expense, 0) AS "代收代付雜費",
                 COALESCE(ma.amortized_expense, 0) AS "長期攤銷",
-                -- 總支出 = 合約 + 我司雜費 + 代收代付雜費 + 攤銷
                 (COALESCE(mc.contract_expense, 0) + COALESCE(mu.utility_expense, 0) + COALESCE(mp.passthrough_expense, 0) + COALESCE(ma.amortized_expense, 0)) AS "總支出",
-                -- 淨損益 = 總收入 - (合約 + 我司雜費 + 攤銷) -- 不計入代收代付
                 (COALESCE(mi.total_worker_income, 0) + COALESCE(omi.total_other_income, 0) - (COALESCE(mc.contract_expense, 0) + COALESCE(mu.utility_expense, 0) + COALESCE(ma.amortized_expense, 0))) AS "淨損益"
             FROM DateParams dp
             LEFT JOIN MonthlyIncome mi ON TO_CHAR(dp.month_start, 'YYYY-MM') = mi.year_month
@@ -598,11 +498,9 @@ def get_monthly_financial_trend(dorm_ids: list):
         """
         df = _execute_query_to_dataframe(conn, query, params)
         if not df.empty:
-            # 加入 "代收代付雜費" 到需要轉換格式的欄位列表
             num_cols = ["總收入", "長期合約支出", "變動雜費", "代收代付雜費", "長期攤銷", "總支出", "淨損益"]
             for col in num_cols:
                 if col in df.columns:
-                    # 使用 pd.to_numeric 進行轉換，並處理可能的錯誤
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).round().astype(int)
         return df
 

@@ -218,11 +218,27 @@ def render():
             if not existing_files:
                 st.info("此紀錄沒有已上傳的檔案。")
             else:
-                image_files = [f for f in existing_files if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-                pdf_files = [f for f in existing_files if f.lower().endswith('.pdf')]
+                # --- 【核心修改】增加 os.path.exists(f) 檢查，防止缺檔導致錯誤 ---
+                valid_images = []
+                missing_files = []
+
+                for f in existing_files:
+                    if os.path.exists(f):
+                        if f.lower().endswith(('.png', '.jpg', '.jpeg')):
+                            valid_images.append(f)
+                    else:
+                        missing_files.append(f)
+
+                # 顯示存在的圖片
+                if valid_images:
+                    st.image(valid_images, width=150, caption=[os.path.basename(f) for f in valid_images])
                 
-                if image_files:
-                    st.image(image_files, width=150, caption=[os.path.basename(f) for f in image_files])
+                # 顯示缺檔警告
+                if missing_files:
+                    st.warning(f"⚠️ 注意：有 {len(missing_files)} 個檔案在伺服器上找不到 (可能已被手動刪除或備份未完整)。")
+
+                # PDF 處理 (保持原邏輯，稍微優化)
+                pdf_files = [f for f in existing_files if f.lower().endswith('.pdf')]
                 
                 if pdf_files:
                     st.write("PDF 文件：")

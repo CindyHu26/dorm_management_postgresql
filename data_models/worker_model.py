@@ -17,10 +17,8 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_workers_for_view(filters: dict):
     """
-    【v2.12 篩選器強化版】根據篩選條件，查詢移工的詳細住宿資訊。
-    新增支援房號、國籍、性別篩選。
-    「入住日期」欄位現在顯示 "最後一筆" 住宿歷史的起始日，無論是否在住。
-    費用欄位 (房租、水電等) 改為從 FeeHistory 查詢最新一筆紀錄。
+    【v3.0 總收租版】人員管理列表。
+    費用欄位不再分列，而是將 LatestFeeHistory 中該員工的所有有效費用加總為 "總收租"。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -39,12 +37,23 @@ def get_workers_for_view(filters: dict):
                     ROW_NUMBER() OVER(PARTITION BY worker_unique_id ORDER BY start_date DESC, id DESC) as rn
                 FROM "AccommodationHistory"
             ),
+            -- 1. 找出每位員工、每個費用類型的最新一筆紀錄
             LatestFeeHistory AS (
                 SELECT
-                    worker_unique_id, fee_type, amount,
+                    worker_unique_id, 
+                    amount,
                     ROW_NUMBER() OVER(PARTITION BY worker_unique_id, fee_type ORDER BY effective_date DESC) as rn
                 FROM "FeeHistory"
                 WHERE effective_date <= {current_date_func}
+            ),
+            -- 2. 將該員工的所有最新費用加總
+            TotalWorkerFee AS (
+                SELECT 
+                    worker_unique_id, 
+                    SUM(amount) as total_amount
+                FROM LatestFeeHistory
+                WHERE rn = 1 -- 只取最新的
+                GROUP BY worker_unique_id
             )
             SELECT
                 w.unique_id,
@@ -64,29 +73,20 @@ def get_workers_for_view(filters: dict):
                     THEN '已離住' ELSE '在住'
                 END as "在住狀態",
                 
-                COALESCE(rent.amount, 0) AS "月費(房租)",
-                COALESCE(util.amount, 0) AS "水電費",
-                COALESCE(clean.amount, 0) AS "清潔費",
-                COALESCE(resto.amount, 0) AS "宿舍復歸費",
-                COALESCE(charge.amount, 0) AS "充電清潔費",
+                -- 【核心修改】只顯示加總後的總金額
+                COALESCE(twf.total_amount, 0) AS "總收租",
                 
                 w.worker_notes AS "個人備註",
-                w.passport_number AS "護照號碼", w.arc_number AS "居留證號碼",
+                w.passport_number AS "護照號碼", 
+                w.arc_number AS "居留證號碼",
                 d_actual.primary_manager AS "主要管理人",
-                d_system.original_address AS "系統地址",
                 w.data_source as "資料來源"
             FROM "Workers" w
             LEFT JOIN (SELECT * FROM LastAccommodation WHERE rn = 1) la ON w.unique_id = la.worker_unique_id
             LEFT JOIN "Rooms" r_actual ON la.room_id = r_actual.id
             LEFT JOIN "Dormitories" d_actual ON r_actual.dorm_id = d_actual.id
-            LEFT JOIN "Rooms" r_system ON w.room_id = r_system.id
-            LEFT JOIN "Dormitories" d_system ON r_system.dorm_id = d_system.id
-            
-            LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '房租' AND rn = 1) rent ON w.unique_id = rent.worker_unique_id
-            LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '水電費' AND rn = 1) util ON w.unique_id = util.worker_unique_id
-            LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '清潔費' AND rn = 1) clean ON w.unique_id = clean.worker_unique_id
-            LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '宿舍復歸費' AND rn = 1) resto ON w.unique_id = resto.worker_unique_id
-            LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '充電清潔費' AND rn = 1) charge ON w.unique_id = charge.worker_unique_id
+            -- JOIN 費用總額表
+            LEFT JOIN TotalWorkerFee twf ON w.unique_id = twf.worker_unique_id
         """
 
         where_clauses = []
@@ -94,14 +94,13 @@ def get_workers_for_view(filters: dict):
 
         if filters.get('name_search'):
             term = f"%{filters['name_search']}%"
-            where_clauses.append('(w.worker_name ILIKE %s OR w.employer_name ILIKE %s OR d_actual.original_address ILIKE %s OR d_system.original_address ILIKE %s)')
-            params.extend([term, term, term, term])
+            where_clauses.append('(w.worker_name ILIKE %s OR w.employer_name ILIKE %s OR d_actual.original_address ILIKE %s)')
+            params.extend([term, term, term])
 
         if filters.get('dorm_id'):
             where_clauses.append("d_actual.id = %s")
             params.append(filters['dorm_id'])
 
-        # --- 【加入新的篩選條件】 ---
         if filters.get('room_id'):
             where_clauses.append("r_actual.id = %s")
             params.append(filters['room_id'])

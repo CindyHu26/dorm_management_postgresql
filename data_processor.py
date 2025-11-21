@@ -350,3 +350,124 @@ def parse_and_process_reports(
     
     log_callback(f"INFO: 資料清理與正規化完成，最終處理完畢資料共 {len(final_df)} 筆。")
     return final_df
+
+def parse_b04_xml(file_path_or_buffer, fee_mapping: dict) -> pd.DataFrame:
+    """
+    解析 B04 應收帳款 XML 報表 (Excel 2003 XML 格式)。
+    
+    Args:
+        file_path_or_buffer: 檔案路徑或 BytesIO 物件
+        fee_mapping: 字典，定義 {'外部帳款名稱': '內部費用類型'}
+    
+    Returns:
+        pd.DataFrame: 包含 [employer_name, worker_name, passport_number, fee_type, amount, effective_date]
+    """
+    try:
+        # 讀取檔案內容
+        if hasattr(file_path_or_buffer, 'read'):
+            xml_content = file_path_or_buffer.read()
+        else:
+            with open(file_path_or_buffer, 'rb') as f:
+                xml_content = f.read()
+
+        parser = etree.XMLParser(recover=True, encoding='utf-8')
+        tree = etree.fromstring(xml_content, parser=parser)
+        
+        # Excel XML namespace
+        ns = {'ss': 'urn:schemas-microsoft-com:office:spreadsheet'}
+        
+        rows = tree.xpath('.//ss:Row', namespaces=ns)
+        
+        extracted_data = []
+        
+        # 定義 B04 報表的欄位索引 (基於您提供的 XML 範例)
+        # 假設標題列在 Row 3 (index 2)，數據從 Row 4 (index 3) 開始
+        # 欄位順序參考: 
+        # 0:序號, 1:雇主編號, 2:雇主姓名, 3:入境日, 4:外勞姓名, 5:護照, 
+        # 6:居留證, 7:期數, 8:帳款名稱, 9:帳款日, 10:應收金額, 11:收款日, 12:實收金額
+        
+        # 我們需要的欄位索引
+        IDX_EMPLOYER = 2
+        IDX_WORKER = 4
+        IDX_PASSPORT = 5
+        IDX_FEE_NAME = 8
+        IDX_BILL_DATE = 9
+        IDX_AMOUNT = 10 # 應收金額
+
+        for i, row in enumerate(rows):
+            cells = row.findall('ss:Cell', ns)
+            row_data = []
+            
+            # 讀取該列所有儲存格資料 (處理空儲存格)
+            # XML Excel 的 Cell 可能有 ss:Index 屬性跳過空值，這裡簡化處理，假設結構固定
+            # 更嚴謹的作法是建立 index map，但針對固定報表通常直接取值
+            
+            # 快速提取該列所有文字
+            cell_texts = {}
+            for cell in cells:
+                # 處理 ss:Index 跳號問題
+                idx_attr = cell.get(f"{{{ns['ss']}}}Index")
+                if idx_attr:
+                    current_col_idx = int(idx_attr) - 1 # XML index 從 1 開始
+                else:
+                    # 如果沒有 Index 屬性，則接續上一個
+                    current_col_idx = max(cell_texts.keys()) + 1 if cell_texts else 0
+                
+                data = cell.find('ss:Data', ns)
+                if data is not None and data.text:
+                    cell_texts[current_col_idx] = data.text.strip()
+
+            # 檢查是否為數據列 (判斷依據：有序號且為數字)
+            seq_no = cell_texts.get(0)
+            if not seq_no or not seq_no.isdigit():
+                continue
+
+            # 提取關鍵資料
+            emp_name = cell_texts.get(IDX_EMPLOYER)
+            worker_name = cell_texts.get(IDX_WORKER)
+            passport = cell_texts.get(IDX_PASSPORT)
+            fee_name = cell_texts.get(IDX_FEE_NAME)
+            roc_date_str = cell_texts.get(IDX_BILL_DATE)
+            amount_str = cell_texts.get(IDX_AMOUNT)
+
+            # 1. 篩選：只處理在 mapping 設定檔中有定義的費用
+            if fee_name not in fee_mapping:
+                continue
+            
+            internal_fee_type = fee_mapping[fee_name]
+
+            # 2. 日期轉換：民國年 (114/11/10) -> 西元年 (2025-11-10)
+            effective_date = None
+            if roc_date_str:
+                try:
+                    parts = roc_date_str.split('/')
+                    if len(parts) == 3:
+                        year = int(parts[0]) + 1911
+                        effective_date = f"{year}-{parts[1]}-{parts[2]}"
+                except:
+                    pass # 日期格式錯誤，略過或留空
+            
+            if not effective_date:
+                continue # 沒有日期無法歸檔
+
+            # 3. 金額轉換
+            try:
+                amount = int(float(amount_str)) if amount_str else 0
+            except:
+                amount = 0
+
+            extracted_data.append({
+                'employer_name': emp_name,
+                'worker_name': worker_name,
+                'passport_number': passport,
+                'fee_type': internal_fee_type, # 轉為內部類型
+                'source_fee_name': fee_name,   # 保留原始名稱備查
+                'amount': amount,
+                'effective_date': effective_date
+            })
+
+        return pd.DataFrame(extracted_data)
+
+    except Exception as e:
+        print(f"解析 XML 失敗: {e}")
+        return pd.DataFrame()

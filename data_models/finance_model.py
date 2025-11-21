@@ -937,3 +937,141 @@ def batch_sync_dorm_bills(dorm_id: int, edited_df: pd.DataFrame):
         return False, f"儲存時發生錯誤: {e}"
     finally:
         if conn: conn.close()
+
+def batch_import_external_fees(df: pd.DataFrame):
+    """
+    批次匯入外部 B04 報表的費用資料至 FeeHistory。
+    比對邏輯：雇主 + 姓名 + 護照 -> 取得 unique_id
+    去重邏輯：unique_id + 費用類型 + 生效日期 -> 若存在則更新，不存在則新增 (Upsert)
+    """
+    if df.empty:
+        return 0, 0, [] # 成功, 失敗, 錯誤訊息列表
+
+    conn = database.get_db_connection()
+    if not conn: return 0, 0, ["資料庫連線失敗"]
+
+    success_count = 0
+    skip_count = 0
+    errors = []
+
+    try:
+        with conn.cursor() as cursor:
+            # 1. 建立員工快取 (Map: (employer, name, passport) -> unique_id)
+            cursor.execute('SELECT unique_id, employer_name, worker_name, passport_number FROM "Workers"')
+            workers = cursor.fetchall()
+            
+            # 建立多重鍵值的對照表 (去除空白以增加比對率)
+            worker_map = {}
+            for w in workers:
+                key = (
+                    str(w['employer_name']).strip(),
+                    str(w['worker_name']).strip(),
+                    str(w['passport_number']).strip()
+                )
+                worker_map[key] = w['unique_id']
+
+            # 2. 遍歷資料進行匯入
+            for _, row in df.iterrows():
+                key = (
+                    str(row['employer_name']).strip(),
+                    str(row['worker_name']).strip(),
+                    str(row['passport_number']).strip()
+                )
+                
+                worker_id = worker_map.get(key)
+                
+                if not worker_id:
+                    # 嘗試模糊比對：如果沒有護照號碼，嘗試只用雇主+姓名 (風險較高，視需求啟用)
+                    # 這裡先嚴格比對，若失敗則記錄
+                    errors.append(f"找不到員工: {row['employer_name']} - {row['worker_name']} ({row['passport_number']})")
+                    skip_count += 1
+                    continue
+
+                # 3. 執行 Upsert (PostgreSQL 9.5+ 支援 ON CONFLICT)
+                # 假設我們的 FeeHistory 沒有設 (worker_id, fee_type, effective_date) 的 UNIQUE constraint
+                # 我們先查詢是否存在
+                
+                check_sql = """
+                    SELECT id FROM "FeeHistory" 
+                    WHERE worker_unique_id = %s AND fee_type = %s AND effective_date = %s
+                """
+                cursor.execute(check_sql, (worker_id, row['fee_type'], row['effective_date']))
+                existing = cursor.fetchone()
+
+                if existing:
+                    # 更新金額
+                    update_sql = 'UPDATE "FeeHistory" SET amount = %s WHERE id = %s'
+                    cursor.execute(update_sql, (row['amount'], existing['id']))
+                else:
+                    # 新增紀錄
+                    insert_sql = """
+                        INSERT INTO "FeeHistory" (worker_unique_id, fee_type, amount, effective_date)
+                        VALUES (%s, %s, %s, %s)
+                    """
+                    cursor.execute(insert_sql, (worker_id, row['fee_type'], row['amount'], row['effective_date']))
+                
+                success_count += 1
+
+        conn.commit()
+        return success_count, skip_count, errors
+
+    except Exception as e:
+        if conn: conn.rollback()
+        return 0, 0, [f"資料庫錯誤: {e}"]
+    finally:
+        if conn: conn.close()
+
+def get_dynamic_fee_data_for_dashboard(filters: dict):
+    """
+    【v3.0 動態欄位版】取得用於「費用標準與異常儀表板」的原始資料。
+    回傳：宿舍, 雇主, 姓名, 特殊狀況, 房號, 費用類型, 金額
+    """
+    dorm_ids = filters.get("dorm_ids")
+    employer_names = filters.get("employer_names")
+
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    
+    try:
+        query = """
+            WITH LatestFeeHistory AS (
+                SELECT
+                    worker_unique_id, fee_type, amount,
+                    ROW_NUMBER() OVER(PARTITION BY worker_unique_id, fee_type ORDER BY effective_date DESC) as rn
+                FROM "FeeHistory"
+                WHERE effective_date <= CURRENT_DATE
+            )
+            SELECT
+                d.original_address AS "宿舍地址",
+                w.employer_name AS "雇主",
+                w.worker_name AS "姓名",
+                r.room_number AS "房號",
+                w.special_status AS "特殊狀況",
+                -- 這裡我們不 JOIN 特定費用，而是直接拿 FeeHistory 的類型
+                lfh.fee_type AS "費用類型",
+                lfh.amount AS "金額"
+            FROM "Workers" w
+            JOIN "Rooms" r ON w.room_id = r.id
+            JOIN "Dormitories" d ON r.dorm_id = d.id
+            JOIN LatestFeeHistory lfh ON w.unique_id = lfh.worker_unique_id
+            WHERE lfh.rn = 1 -- 只取最新
+              AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)
+        """
+        
+        where_clauses = []
+        params = []
+        
+        if dorm_ids:
+            where_clauses.append(f"d.id = ANY(%s)")
+            params.append(list(dorm_ids))
+            
+        if employer_names:
+            where_clauses.append(f"w.employer_name = ANY(%s)")
+            params.append(list(employer_names))
+
+        if where_clauses:
+            query += " AND " + " AND ".join(where_clauses)
+
+        return _execute_query_to_dataframe(conn, query, tuple(params))
+    finally:
+        if conn: conn.close()

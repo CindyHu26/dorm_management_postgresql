@@ -34,7 +34,8 @@ from views import (
     batch_import_view, 
     report_view,
     inventory_view,
-    cleaning_schedule_view
+    cleaning_schedule_view,
+    accounting_scraper_view,
 )
 
 def load_config():
@@ -85,7 +86,8 @@ PAGES = {
 
     "資料與系統維護": {
         "批次匯入": batch_import_view,
-        "系統爬取": scraper_view
+        "移工系統爬取": scraper_view,
+        "財務爬取與設定": accounting_scraper_view
     }
 }
 
@@ -172,7 +174,7 @@ def main():
     page_to_render = PAGES[current_group][current_page]
     st.title(current_page)
     
-    if current_page == "系統爬取":
+    if current_page == "移工系統爬取" or current_page == "財務爬取與設定": 
         page_to_render.render(config)
     else:
         page_to_render.render()

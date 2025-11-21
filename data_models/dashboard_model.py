@@ -81,8 +81,8 @@ def get_dormitory_dashboard_data():
         
 def get_financial_dashboard_data(year_month: str):
     """
-    【v2.4 支付方精準修正版】執行一個複雜的聚合查詢，為指定的月份計算收支與損益。
-    確保所有支出項目都嚴格遵守宿舍設定的支付方，並區分水電費與其他雜費。
+    【v3.0 B04帳務版】計算指定月份的收支與損益。
+    收入計算改為：直接加總該月份 FeeHistory 中實際發生的費用金額，不再進行天數分攤。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -95,24 +95,27 @@ def get_financial_dashboard_data(year_month: str):
                     TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
                     (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
             ),
+            -- 1. 收入計算 (核心修改：改查 FeeHistory)
             WorkerIncome AS (
                 SELECT 
                     r.dorm_id, 
-                    SUM(
-                        (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0) + COALESCE(w.restoration_fee, 0) + COALESCE(w.charging_cleaning_fee, 0)) *
-                        ((LEAST(COALESCE(ah.end_date, (SELECT last_day_of_month FROM DateParams)), (SELECT last_day_of_month FROM DateParams))::date - GREATEST(ah.start_date, (SELECT first_day_of_month FROM DateParams))::date + 1)
-                         / EXTRACT(DAY FROM (SELECT last_day_of_month FROM DateParams))::decimal)
-                    ) as total_income
-                FROM "AccommodationHistory" ah
-                JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+                    SUM(fh.amount) as total_income
+                FROM "FeeHistory" fh
+                JOIN "AccommodationHistory" ah ON fh.worker_unique_id = ah.worker_unique_id
                 JOIN "Rooms" r ON ah.room_id = r.id
                 JOIN "Dormitories" d ON r.dorm_id = d.id
                 CROSS JOIN DateParams dp
-                WHERE d.primary_manager = '我司'
-                  AND ah.start_date <= dp.last_day_of_month
-                  AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
+                WHERE 
+                    -- 篩選：費用生效日落在該月份
+                    fh.effective_date BETWEEN dp.first_day_of_month AND dp.last_day_of_month
+                    -- 關聯：找出費用發生當下，該員工住在哪個宿舍
+                    AND ah.start_date <= fh.effective_date
+                    AND (ah.end_date IS NULL OR ah.end_date >= fh.effective_date)
+                    -- 篩選：只計算我司管理的宿舍
+                    AND d.primary_manager = '我司'
                 GROUP BY r.dorm_id
             ),
+            -- (以下 PassThrough, Contracts, Utilities, Amortized 維持不變，因為支出仍需按天或按帳單計算)
             PassThroughIncome AS (
                 SELECT b.dorm_id, SUM(b.amount) as total_pass_through_income
                 FROM "UtilityBills" b CROSS JOIN DateParams dp
@@ -125,7 +128,7 @@ def get_financial_dashboard_data(year_month: str):
                 SELECT l.dorm_id, SUM(l.monthly_rent) as contract_expense
                 FROM "Leases" l
                 CROSS JOIN DateParams dp
-                WHERE l.payer = '我司' -- 【核心修改】d.rent_payer -> l.payer
+                WHERE l.payer = '我司'
                   AND l.lease_start_date <= dp.last_day_of_month
                   AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month)
                 GROUP BY l.dorm_id
@@ -139,12 +142,9 @@ def get_financial_dashboard_data(year_month: str):
                 JOIN "Dormitories" d ON b.dorm_id = d.id
                 CROSS JOIN DateParams dp
                 WHERE 
-                  -- 【核心修正 2】複雜條件判斷
                   (
-                    -- 如果是水電費，則遵循宿舍的水電支付方設定
                     (b.bill_type IN ('水費', '電費') AND d.utilities_payer = '我司')
                     OR
-                    -- 如果是其他雜費，則遵循該筆帳單自己的支付方設定
                     (b.bill_type NOT IN ('水費', '電費') AND b.payer = '我司')
                   )
                   AND b.bill_start_date <= dp.last_day_of_month 
