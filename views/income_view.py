@@ -170,19 +170,21 @@ def render():
     # ==========================================================================
     with tab2:
         st.markdown("#### ⚙️ 固定收入設定")
-        st.info("設定每個月固定的收入項目。可指定來源雇主（該收入將專屬於該雇主）或留空（視為共用收入，按人數分攤）。")
+        st.info("設定每個月固定的收入項目。支援「固定金額」或「按人頭計費」。")
         
-        # 取得資料以供選單使用
+        # 取得資料
         all_employers = employer_dashboard_model.get_all_employers()
         all_dorm_opts = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dormitory_model.get_dorms_for_selection()}
 
-        # --- 1. 新增設定 ---
+        # ----------------------------------------------------------------------
+        # 1. 新增設定 (Add New)
+        # ----------------------------------------------------------------------
         with st.expander("➕ 新增固定收入規則", expanded=True):
             
             st.markdown("##### 1. 選擇宿舍與模式")
             c_dorm, c_mode = st.columns(2)
             
-            # 選擇宿舍 (觸發更新)
+            # 1. 選擇宿舍 (觸發更新)
             r_dorm_id = c_dorm.selectbox(
                 "宿舍地址", 
                 options=list(all_dorm_opts.keys()), 
@@ -190,7 +192,7 @@ def render():
                 key="recur_add_dorm"
             )
             
-            # 選擇模式 (觸發更新)
+            # 2. 選擇模式 (觸發更新)
             calc_method_label = c_mode.radio(
                 "計費模式", 
                 ["固定金額 (每月定額)", "按人頭計費 (人數 x 單價)"], 
@@ -200,10 +202,23 @@ def render():
             )
             calc_method = 'fixed' if calc_method_label == "固定金額 (每月定額)" else 'headcount'
             
-            # 動態取得該宿舍的雇主清單
+            # --- 動態取得該宿舍的雇主清單 (並加上標籤) ---
             dorm_employers = []
+            employer_options_display = [] # 用於顯示的列表
+            
             if r_dorm_id:
                 dorm_employers = employer_dashboard_model.get_employers_by_dorm(r_dorm_id)
+                
+                # 製作有標籤的選項
+                # 1. 在住雇主 (加上標籤)
+                resident_opts = [f"{e} (在住)" for e in dorm_employers]
+                # 2. 其他雇主
+                other_opts = [e for e in all_employers if e not in dorm_employers]
+                
+                employer_options_display = [None] + resident_opts + other_opts
+            else:
+                employer_options_display = [None] + all_employers
+            # -------------------------------------------------------
 
             with st.form("new_recurring_form", clear_on_submit=True):
                 st.markdown("##### 2. 填寫詳細資訊")
@@ -211,30 +226,31 @@ def render():
                 rc_item, rc_amt = st.columns([2, 1])
                 r_item = rc_item.text_input("收入項目名稱", placeholder="例如: 工廠房租補貼")
                 
-                r_target_employer = None
+                r_target_employer_display = None
                 amount_label = "每月金額"
                 
-                # --- 【核心修改】統一顯示雇主選擇器，無論模式為何 ---
+                # 根據模式顯示不同欄位
                 if calc_method == 'headcount':
                     amount_label = "每人單價 (元/人)"
                     st.markdown("---")
                     st.markdown(f"###### 設定人頭計費參數")
-                    emp_help = "「按人頭計費」必須指定目標雇主，以計算其在住人數。"
+                    emp_help = "「按人頭計費」必須指定目標雇主。"
                 else:
                     st.markdown("---")
                     st.markdown(f"###### 設定歸屬對象 (選填)")
-                    emp_help = "若指定雇主，此收入將100%歸屬於該雇主（不分攤）；若留空，則視為全棟共用收入（按人數分攤）。"
+                    emp_help = "若指定雇主，收入歸該雇主；若留空，則為共用收入。"
 
                 c_emp, c_ph = st.columns([2, 1])
                 
-                # 智慧選單：優先顯示該宿舍的雇主
-                if not dorm_employers:
-                    if calc_method == 'headcount':
-                        c_emp.warning("⚠️ 此宿舍目前沒有任何在住的雇主員工。")
-                    # 提供所有雇主供選擇
-                    r_target_employer = c_emp.selectbox("選擇目標雇主", options=[None] + all_employers, help=emp_help)
-                else:
-                    r_target_employer = c_emp.selectbox("選擇目標雇主 (優先列出在住者)", options=[None] + dorm_employers + [e for e in all_employers if e not in dorm_employers], help=emp_help)
+                if not dorm_employers and calc_method == 'headcount':
+                    c_emp.warning("⚠️ 此宿舍目前沒有在住雇主。")
+                
+                # 使用有標籤的選項列表
+                r_target_employer_display = c_emp.selectbox(
+                    "選擇目標雇主", 
+                    options=employer_options_display, 
+                    help=emp_help
+                )
                     
                 r_amount = c_ph.number_input(amount_label, min_value=0, step=100)
 
@@ -246,9 +262,16 @@ def render():
                 r_notes = st.text_area("備註")
                 
                 if st.form_submit_button("儲存設定"):
+                    # --- 清理雇主名稱 (移除標籤) ---
+                    final_employer = None
+                    if r_target_employer_display:
+                        # 移除 " (在住)" 後綴
+                        final_employer = r_target_employer_display.replace(" (在住)", "").strip()
+                    # --------------------------------
+                    
                     if not r_item: 
                         st.error("請填寫收入項目名稱")
-                    elif calc_method == 'headcount' and not r_target_employer:
+                    elif calc_method == 'headcount' and not final_employer:
                         st.error("選擇「按人頭計費」時，必須指定「目標雇主」！")
                     else:
                         s_date_str = str(r_start_date) if r_start_date else None
@@ -259,7 +282,7 @@ def render():
                             "income_item": r_item, 
                             "amount": r_amount, 
                             "calc_method": calc_method,
-                            "target_employer": r_target_employer, # 無論如何都存入
+                            "target_employer": final_employer, # 存入乾淨的名稱
                             "start_date": s_date_str, 
                             "end_date": e_date_str,
                             "notes": r_notes
@@ -270,9 +293,11 @@ def render():
                         else: 
                             st.error(msg)
 
-        # --- 2. 列表與編輯 ---
+        # ----------------------------------------------------------------------
+        # 2. 列表與編輯 (List & Edit & Delete)
+        # ----------------------------------------------------------------------
         st.markdown("---")
-        st.markdown("##### 現有設定列表")
+        st.subheader("📋 現有設定列表")
         
         configs_df = income_model.get_recurring_configs()
         
@@ -291,10 +316,8 @@ def render():
                     "顯示模式": st.column_config.SelectboxColumn(
                         "模式", options=["固定金額", "按人頭"], required=True
                     ),
-                    # 【核心修改】讓固定金額也能選雇主
                     "目標雇主": st.column_config.SelectboxColumn(
-                        "目標雇主", options=all_employers, required=False, width="medium",
-                        help="指定歸屬雇主。若留空則為共用收入。"
+                        "目標雇主", options=all_employers, required=False,
                     ),
                     "金額/單價": st.column_config.NumberColumn(format="$%d"),
                     "生效起始日": st.column_config.DateColumn(format="YYYY-MM-DD"),
@@ -304,20 +327,30 @@ def render():
                 key="recurring_editor"
             )
             
-            if st.button("💾 儲存列表變更"):
+            col_save, col_del = st.columns([1, 3])
+            
+            if col_save.button("💾 儲存列表變更"):
                 updated_count = 0
                 for index, row in edited_configs.iterrows():
+                    # 處理日期
                     s_date = row['生效起始日'] if pd.notna(row['生效起始日']) else None
                     e_date = row['生效結束日'] if pd.notna(row['生效結束日']) else None
                     
+                    # 1. 取得雇主 (無論模式為何，都保留使用者選的值)
                     raw_employer = row.get('目標雇主')
                     t_employer = str(raw_employer).strip() if pd.notna(raw_employer) and str(raw_employer).strip() else None
 
+                    # 2. 取得模式
                     user_mode_str = row.get('顯示模式')
-                    c_method = 'headcount' if user_mode_str == '按人頭' else 'fixed'
                     
-                    # 【核心修正】不再強制清空雇主，允許固定金額也有雇主
+                    # --- 【核心修正】完全信任使用者的選擇 ---
+                    # 移除 "or t_employer is not None" 的自動判斷
+                    if user_mode_str == '按人頭':
+                        c_method = 'headcount'
+                    else:
+                        c_method = 'fixed'
                     
+                    # 執行更新
                     income_model.update_recurring_config(row['id'], {
                         "amount": row['金額/單價'],
                         "calc_method": c_method,     
@@ -332,24 +365,40 @@ def render():
                 st.success(f"已成功更新 {updated_count} 筆設定。")
                 st.rerun()
 
-            # 刪除功能
-            st.markdown("###### 刪除設定")
-            del_c1, del_c2 = st.columns([3, 1])
-            config_to_del = del_c1.selectbox("選擇要刪除的設定", options=configs_df['id'], format_func=lambda x: f"{configs_df[configs_df['id']==x]['收入項目'].iloc[0]} - {configs_df[configs_df['id']==x]['宿舍地址'].iloc[0]}")
-            if del_c2.button("🗑️ 刪除", type="primary"):
-                income_model.delete_recurring_config(config_to_del)
-                st.success("刪除成功")
-                st.rerun()
+            # --- 刪除功能 (整合在列表下方) ---
+            with st.expander("🗑️ 刪除設定"):
+                # 準備刪除選單的標籤 (含日期區間)
+                del_c1, del_c2 = st.columns([3, 1])
+                delete_options_map = {}
+                for _, row in configs_df.iterrows():
+                    s_date_str = str(row['生效起始日']) if pd.notna(row['生效起始日']) else "即日起"
+                    e_date_str = str(row['生效結束日']) if pd.notna(row['生效結束日']) else "無限期"
+                    label = f"{row['收入項目']} - {row['宿舍地址']} ({s_date_str} ~ {e_date_str})"
+                    delete_options_map[row['id']] = label
 
-        # --- 3. 生成區塊 ---
+                config_to_del = del_c1.selectbox(
+                    "選擇要刪除的規則", 
+                    options=list(delete_options_map.keys()), 
+                    format_func=lambda x: delete_options_map.get(x, "未知"),
+                    key="del_config_select"
+                )
+                if del_c2.button("確認刪除", type="primary", key="del_config_btn"):
+                    income_model.delete_recurring_config(config_to_del)
+                    st.success("刪除成功")
+                    st.rerun()
+
+        # ----------------------------------------------------------------------
+        # 3. 自動生成 (Generation)
+        # ----------------------------------------------------------------------
         st.markdown("---")
         st.subheader("🚀 自動生成收入")
+        st.info("此功能會讀取上方「所有啟用中」的設定，自動產生 OtherIncome 紀錄。")
         
         gen_tab1, gen_tab2 = st.tabs(["單月生成 (指定月份)", "區間批次生成 (補帳用)"])
         
         with gen_tab1:
             with st.container(border=True):
-                st.info("針對「特定月份」執行生成。適合每個月初的例行操作。")
+                st.write("針對「特定月份」執行生成。")
                 gc1, gc2, gc3 = st.columns(3)
                 gen_year = gc1.number_input("年份", value=date.today().year)
                 gen_month = gc2.number_input("月份", value=date.today().month, min_value=1, max_value=12)
@@ -359,14 +408,16 @@ def render():
                 if gc3.button("執行單月生成", type="primary", use_container_width=True):
                     with st.spinner("正在生成收入紀錄..."):
                         success, msg = income_model.generate_monthly_recurring_income(gen_year, gen_month)
+                    
                     if success:
                         st.success(msg)
+                        st.info(f"提示：生成的紀錄已加入「收入紀錄管理」頁籤。")
                     else:
                         st.error(msg)
 
         with gen_tab2:
             with st.container(border=True):
-                st.info("針對「一段時間範圍」執行生成。")
+                st.write("針對「一段時間範圍」執行生成。")
                 bc1, bc2, bc3 = st.columns(3)
                 default_start = date(date.today().year, 1, 1)
                 batch_start_date = bc1.date_input("起始月份", value=default_start)
