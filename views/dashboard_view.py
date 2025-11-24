@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+from dateutil.relativedelta import relativedelta
 from data_models import dashboard_model
 
 def render():
@@ -76,9 +77,21 @@ def render():
         # --- 子頁籤一：按月檢視 (放入原始程式碼) ---
         with fin_tab1:
             st.markdown("##### 選擇月份")
+            
+            # --- 【核心修改】預設選取 2 個月前 ---
+            default_date = today - relativedelta(months=2)
+            default_year = default_date.year
+            default_month = default_date.month
+            
+            year_options = list(range(today_year - 2, today_year + 2))
+            try:
+                default_year_index = year_options.index(default_year)
+            except ValueError:
+                default_year_index = 2 # 預設回今年 (列表第3個)
+
             c1, c2 = st.columns(2)
-            selected_year_month = c1.selectbox("選擇年份", options=range(today_year - 2, today_year + 2), index=2, key="month_year")
-            selected_month_month = c2.selectbox("選擇月份", options=range(1, 13), index=today.month - 1, key="month_month")
+            selected_year_month = c1.selectbox("選擇年份", options=year_options, index=default_year_index, key="month_year")
+            selected_month_month = c2.selectbox("選擇月份", options=range(1, 13), index=default_month - 1, key="month_month")
             year_month_str = f"{selected_year_month}-{selected_month_month:02d}"
 
             with st.container(border=True):
@@ -96,9 +109,9 @@ def render():
                 if annual_forecast_data and seasonal_forecast_data:
                     f_col1, f_col2 = st.columns(2)
                     with f_col1:
-                        st.metric(label="預估單月總支出 (年均)", value=f"NT$ {annual_forecast_data['estimated_monthly_expense']:,.0f}", help=f"此估算基於過去 {annual_forecast_data['lookback_days']} 天的數據。")
+                        st.metric(label="單月總支出 (年均)", value=f"NT$ {annual_forecast_data['estimated_monthly_expense']:,.0f}", help=f"此估算基於過去 {annual_forecast_data['lookback_days']} 天的數據。")
                     with f_col2:
-                        st.metric(label=f"預估 {year_month_str} 單月總支出 (季節性)", value=f"NT$ {seasonal_forecast_data['estimated_monthly_expense']:,.0f}", help=f"此估算基於去年同期 ({seasonal_forecast_data.get('lookback_period', 'N/A')}) 的數據。")
+                        st.metric(label=f"{year_month_str} 單月總支出 (季節性)", value=f"NT$ {seasonal_forecast_data['estimated_monthly_expense']:,.0f}", help=f"此估算基於去年同期 ({seasonal_forecast_data.get('lookback_period', 'N/A')}) 的數據。")
                 else:
                     st.info("尚無足夠歷史數據進行預測。")
 
@@ -118,14 +131,14 @@ def render():
             if finance_df is None or finance_df.empty:
                 st.warning(f"在 {year_month_str} 沒有找到任何「我司管理」宿舍的收支數據。")
             else:
-                total_income = int(finance_df['預計總收入'].sum())
-                total_expense = int(finance_df['預計總支出'].sum())
+                total_income = int(finance_df['總收入'].sum())
+                total_expense = int(finance_df['總支出'].sum())
                 profit_loss = total_income - total_expense
                 
                 fin_col1, fin_col2, fin_col3 = st.columns(3)
-                fin_col1.metric(f"{year_month_str} 預計總收入", f"NT$ {total_income:,}")
-                fin_col2.metric(f"{year_month_str} 預計總支出", f"NT$ {total_expense:,}")
-                fin_col3.metric(f"{year_month_str} 預估損益", f"NT$ {profit_loss:,}", delta=f"{profit_loss:,}")
+                fin_col1.metric(f"{year_month_str} 總收入", f"NT$ {total_income:,}")
+                fin_col2.metric(f"{year_month_str} 總支出", f"NT$ {total_expense:,}")
+                fin_col3.metric(f"{year_month_str} 損益", f"NT$ {profit_loss:,}", delta=f"{profit_loss:,}")
 
                 st.markdown("##### 各宿舍損益詳情")
                 
@@ -134,16 +147,16 @@ def render():
                     return f'color: {color}'
                 
                 st.dataframe(
-                    finance_df.style.apply(lambda x: x.map(lambda y: style_profit(y) if x.name == '預估損益' else None)),
+                    finance_df.style.apply(lambda x: x.map(lambda y: style_profit(y) if x.name == '損益' else None)),
                     width="stretch", 
                     hide_index=True,
                     column_config={
-                        "預計總收入": st.column_config.NumberColumn(format="NT$ %d"),
+                        "總收入": st.column_config.NumberColumn(format="NT$ %d"),
                         "長期合約支出": st.column_config.NumberColumn(format="NT$ %d"),
                         "變動雜費(我司支付)": st.column_config.NumberColumn(format="NT$ %d"),
                         "長期攤銷": st.column_config.NumberColumn(format="NT$ %d"),
-                        "預計總支出": st.column_config.NumberColumn(format="NT$ %d"),
-                        "預估損益": st.column_config.NumberColumn(format="NT$ %d")
+                        "總支出": st.column_config.NumberColumn(format="NT$ %d"),
+                        "損益": st.column_config.NumberColumn(format="NT$ %d")
                     }
                 )
 
@@ -180,14 +193,14 @@ def render():
             if annual_finance_df is None or annual_finance_df.empty:
                 st.warning(f"在 {selected_year_annual} 年沒有找到任何「我司管理」宿舍的收支數據。")
             else:
-                total_income_annual = int(annual_finance_df['預計總收入'].sum())
-                total_expense_annual = int(annual_finance_df['預計總支出'].sum())
+                total_income_annual = int(annual_finance_df['總收入'].sum())
+                total_expense_annual = int(annual_finance_df['總支出'].sum())
                 profit_loss_annual = total_income_annual - total_expense_annual
                 
                 fin_col_a1, fin_col_a2, fin_col_a3 = st.columns(3)
-                fin_col_a1.metric(f"{selected_year_annual}年 預計總收入", f"NT$ {total_income_annual:,}")
-                fin_col_a2.metric(f"{selected_year_annual}年 預計總支出", f"NT$ {total_expense_annual:,}")
-                fin_col_a3.metric(f"{selected_year_annual}年 預估損益", f"NT$ {profit_loss_annual:,}", delta=f"{profit_loss_annual:,}")
+                fin_col_a1.metric(f"{selected_year_annual}年 總收入", f"NT$ {total_income_annual:,}")
+                fin_col_a2.metric(f"{selected_year_annual}年 總支出", f"NT$ {total_expense_annual:,}")
+                fin_col_a3.metric(f"{selected_year_annual}年 損益", f"NT$ {profit_loss_annual:,}", delta=f"{profit_loss_annual:,}")
 
                 st.markdown("##### 各宿舍年度損益詳情")
                 
@@ -196,15 +209,15 @@ def render():
                     return f'color: {color}'
                 
                 st.dataframe(
-                    annual_finance_df.style.apply(lambda x: x.map(lambda y: style_profit_annual(y) if x.name == '預估損益' else None)),
+                    annual_finance_df.style.apply(lambda x: x.map(lambda y: style_profit_annual(y) if x.name == '損益' else None)),
                     width="stretch", 
                     hide_index=True,
                     column_config={
-                        "預計總收入": st.column_config.NumberColumn(format="NT$ %d"),
+                        "總收入": st.column_config.NumberColumn(format="NT$ %d"),
                         "長期合約支出": st.column_config.NumberColumn(format="NT$ %d"),
                         "變動雜費(我司支付)": st.column_config.NumberColumn(format="NT$ %d"),
                         "長期攤銷": st.column_config.NumberColumn(format="NT$ %d"),
-                        "預計總支出": st.column_config.NumberColumn(format="NT$ %d"),
-                        "預估損益": st.column_config.NumberColumn(format="NT$ %d")
+                        "總支出": st.column_config.NumberColumn(format="NT$ %d"),
+                        "損益": st.column_config.NumberColumn(format="NT$ %d")
                     }
                 )

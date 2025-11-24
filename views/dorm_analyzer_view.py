@@ -4,7 +4,6 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
-# 【核心修改 1】匯入 analytics_model
 from data_models import dormitory_model, single_dorm_analyzer, analytics_model
 
 def render():
@@ -64,9 +63,19 @@ def render():
     st.subheader("數據分析")
     
     today = datetime.now()
+    default_date = today - relativedelta(months=2)
+    default_year = default_date.year
+    default_month = default_date.month
+    
+    year_options = list(range(today.year - 2, today.year + 2))
+    try:
+        default_year_index = year_options.index(default_year)
+    except ValueError:
+        default_year_index = 2
+
     sc1, sc2 = st.columns(2)
-    selected_year = sc1.selectbox("選擇年份", options=range(today.year - 2, today.year + 2), index=2)
-    selected_month = sc2.selectbox("選擇月份", options=range(1, 13), index=today.month - 1)
+    selected_year = sc1.selectbox("選擇年份", options=year_options, index=default_year_index)
+    selected_month = sc2.selectbox("選擇月份", options=range(1, 13), index=default_month - 1)
     year_month_str = f"{selected_year}-{selected_month:02d}"
 
     resident_data = single_dorm_analyzer.get_resident_summary(selected_dorm_ids, year_month_str)
@@ -241,9 +250,9 @@ def render():
     profit_loss = income_total - expense_total_our_company
 
     fin_col1, fin_col2, fin_col3 = st.columns(3)
-    fin_col1.metric("我司預估總收入 (彙總)", f"NT$ {income_total:,}", help="工人月費總和 + 其他收入")
-    fin_col2.metric("我司預估總支出 (彙總)", f"NT$ {expense_total_our_company:,}", help="僅加總支付方為「我司」的費用項目")
-    fin_col3.metric("我司預估淨損益 (彙總)", f"NT$ {profit_loss:,}", delta=f"{profit_loss:,}")
+    fin_col1.metric("我司總收入 (彙總)", f"NT$ {income_total:,}", help="工人月費總和 + 其他收入")
+    fin_col2.metric("我司總支出 (彙總)", f"NT$ {expense_total_our_company:,}", help="僅加總支付方為「我司」的費用項目")
+    fin_col3.metric("我司淨損益 (彙總)", f"NT$ {profit_loss:,}", delta=f"{profit_loss:,}")
 
     # --- 【核心修改 2】重構支出細項區塊 ---
     with st.expander("點此查看支出細項 (彙總 - 含所有支付方)"):

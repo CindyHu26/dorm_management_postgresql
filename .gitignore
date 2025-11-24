@@ -82,4 +82,6 @@ db_backup/
 maintenance_photos/
 
 run_daily_sync.py
+run_monthly_finance_sync.py
 sync_log.txt
+sync_finance_log.txt

@@ -124,7 +124,7 @@ def get_loss_making_dorms_analysis(year_month: str):
         if df is None or df.empty:
             return pd.DataFrame()
 
-        loss_df = df[df['預估損益'] < 0].copy()
+        loss_df = df[df['損益'] < 0].copy()
         if loss_df.empty:
             return pd.DataFrame()
 
@@ -153,7 +153,7 @@ def get_loss_making_dorms_analysis(year_month: str):
         loss_df['在住人數'] = loss_df['id'].map(headcount_map).fillna(0).astype(int)
         
         def get_suggestion(row):
-            deficit = abs(row['預估損益'])
+            deficit = abs(row['損益'])
             payers = row['在住人數']
             if payers == 0:
                 return "宿舍無有效收費人員，無法計算建議漲幅。請先檢查人員收費狀態。"
@@ -163,7 +163,7 @@ def get_loss_making_dorms_analysis(year_month: str):
             
         loss_df['營運建議'] = loss_df.apply(get_suggestion, axis=1)
 
-        return loss_df[['宿舍地址', '預估損益', '在住人數', '營運建議']]
+        return loss_df[['宿舍地址', '損益', '在住人數', '營運建議', '宿舍備註']]
 
     except Exception as e:
         print(f"產生營運分析時發生錯誤: {e}")

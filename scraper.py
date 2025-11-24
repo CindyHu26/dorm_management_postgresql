@@ -34,7 +34,7 @@ def generate_code_ranges() -> List[Tuple[str, str]]:
     
     # 原本: 每 26 個一組 (AA-AZ, BA-BZ...)
     # 新版: 改為每 5 個一組 (AA-AE, AF-AJ, ...)
-    letter_chunk_size = 5 
+    letter_chunk_size = 2 
     for i in range(0, len(all_letter_codes), letter_chunk_size):
         start_code = all_letter_codes[i]
         end_code_index = min(i + letter_chunk_size - 1, len(all_letter_codes) - 1)

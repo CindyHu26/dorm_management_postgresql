@@ -3,6 +3,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+from dateutil.relativedelta import relativedelta
 from data_models import employer_dashboard_model, dormitory_model
 
 def render():
@@ -43,10 +44,21 @@ def render():
         with tab1:
             st.subheader("每月財務與住宿分析")
             
-            c1, c2 = st.columns(2)
+            # --- 【核心修改】預設選取 2 個月前 ---
             today = datetime.now()
-            selected_year_month = c1.selectbox("選擇年份", options=range(today.year - 2, today.year + 2), index=2, key="monthly_year")
-            selected_month_month = c2.selectbox("選擇月份", options=range(1, 13), index=today.month - 1, key="monthly_month")
+            default_date = today - relativedelta(months=2)
+            default_year = default_date.year
+            default_month = default_date.month
+            
+            year_options = list(range(today.year - 2, today.year + 2))
+            try:
+                default_year_index = year_options.index(default_year)
+            except ValueError:
+                default_year_index = 2
+
+            c1, c2 = st.columns(2)
+            selected_year_month = c1.selectbox("選擇年份", options=year_options, index=default_year_index, key="monthly_year")
+            selected_month_month = c2.selectbox("選擇月份", options=range(1, 13), index=default_month - 1, key="monthly_month")
             year_month_str = f"{selected_year_month}-{selected_month_month:02d}"
 
             @st.cache_data
@@ -73,9 +85,9 @@ def render():
                 profit_loss = total_income - total_expense_by_us
 
                 f_col1, f_col2, f_col3 = st.columns(3)
-                f_col1.metric("預估總收入", f"NT$ {total_income:,.0f}", help="總收入 = 員工月費 + 分攤的其他收入")
-                f_col2.metric("預估我司分攤總支出", f"NT$ {total_expense_by_us:,.0f}")
-                f_col3.metric("預估淨貢獻", f"NT$ {profit_loss:,.0f}", delta=f"{profit_loss:,.0f}")
+                f_col1.metric("總收入", f"NT$ {total_income:,.0f}", help="總收入 = 員工月費 + 分攤的其他收入")
+                f_col2.metric("我司分攤總支出", f"NT$ {total_expense_by_us:,.0f}")
+                f_col3.metric("淨貢獻", f"NT$ {profit_loss:,.0f}", delta=f"{profit_loss:,.0f}")
 
                 st.markdown("##### 各宿舍收支詳情 (所選雇主)")
                 display_df = finance_df_month.copy()

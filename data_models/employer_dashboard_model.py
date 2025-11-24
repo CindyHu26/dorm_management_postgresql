@@ -243,11 +243,10 @@ def get_employer_financial_summary(employer_names: list, year_month: str):
 
 def get_employer_financial_summary_annual(employer_names: list, year: int):
     """
-    【v2.2 歷史費用修正版】為指定雇主列表和「年份」，計算整年度的收支與損益。
-    收入計算改為查詢 FeeHistory。
+    【v3.0 B04帳務版】為指定雇主列表和年份，計算整年度的收支與損益。
+    收入計算改用 FeeHistory 加總，並嚴格比對住宿期間。
     """
-    if not employer_names:
-        return pd.DataFrame()
+    if not employer_names: return pd.DataFrame()
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
 
@@ -260,102 +259,50 @@ def get_employer_financial_summary_annual(employer_names: list, year: int):
                     TO_DATE(%(year)s || '-01-01', 'YYYY-MM-DD') as first_day_of_year,
                     TO_DATE(%(year)s || '-12-31', 'YYYY-MM-DD') as last_day_of_year
             ),
-            -- 找出每年中有住宿紀錄的工人及月份
-            WorkerMonthsRaw AS (
-                SELECT DISTINCT ON (ah.worker_unique_id, date_trunc('month', s.month_in_service))
-                    ah.worker_unique_id,
-                    w.employer_name,
+            -- 1. 計算年度總人數 (用於分攤)
+            DormAnnualOccupancy AS (
+                 SELECT
                     r.dorm_id,
-                    date_trunc('month', s.month_in_service)::date as month_start,
-                    -- 計算工人在該月實際住了幾天
-                    (LEAST(COALESCE(ah.end_date, dp.last_day_of_year), (date_trunc('month', s.month_in_service) + interval '1 month - 1 day')::date, dp.last_day_of_year)::date -
-                     GREATEST(ah.start_date, date_trunc('month', s.month_in_service)::date, dp.first_day_of_year)::date + 1) as days_in_month
+                    COUNT(DISTINCT w.unique_id) as total_workers_year,
+                    COUNT(DISTINCT CASE WHEN w.employer_name = ANY(%(employer_names)s) THEN w.unique_id END) as employer_workers_year
                 FROM "AccommodationHistory" ah
                 JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
                 JOIN "Rooms" r ON ah.room_id = r.id
                 CROSS JOIN DateParams dp
-                CROSS JOIN LATERAL generate_series(
-                    GREATEST(ah.start_date, dp.first_day_of_year),
-                    LEAST(COALESCE(ah.end_date, dp.last_day_of_year), dp.last_day_of_year),
-                    '1 month'::interval
-                ) as s(month_in_service)
-                WHERE ah.start_date <= dp.last_day_of_year AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_year)
-                  AND (w.special_status IS NULL OR w.special_status NOT ILIKE '%%掛宿外住%%')
+                WHERE ah.start_date <= dp.last_day_of_year 
+                  AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_year)
+                GROUP BY r.dorm_id
             ),
-            -- 查詢每個工人在每個月底的有效費用
-            WorkerMonthlyFees AS (
-                 SELECT
-                    wmr.worker_unique_id,
-                    wmr.employer_name,
-                    wmr.dorm_id,
-                    wmr.month_start,
-                    wmr.days_in_month,
-                    (wmr.month_start + interval '1 month - 1 day')::date as month_end,
-                    COALESCE(rent.amount, 0) AS monthly_fee,
-                    COALESCE(util.amount, 0) AS utilities_fee,
-                    COALESCE(clean.amount, 0) AS cleaning_fee,
-                    COALESCE(resto.amount, 0) AS restoration_fee,
-                    COALESCE(charge.amount, 0) AS charging_cleaning_fee
-                FROM WorkerMonthsRaw wmr
-                LEFT JOIN LATERAL (
-                    SELECT amount FROM "FeeHistory" fh
-                    WHERE fh.worker_unique_id = wmr.worker_unique_id AND fh.fee_type = '房租' AND fh.effective_date <= (wmr.month_start + interval '1 month - 1 day')::date
-                    ORDER BY fh.effective_date DESC LIMIT 1
-                ) rent ON true
-                LEFT JOIN LATERAL (
-                    SELECT amount FROM "FeeHistory" fh
-                    WHERE fh.worker_unique_id = wmr.worker_unique_id AND fh.fee_type = '水電費' AND fh.effective_date <= (wmr.month_start + interval '1 month - 1 day')::date
-                    ORDER BY fh.effective_date DESC LIMIT 1
-                ) util ON true
-                LEFT JOIN LATERAL (
-                    SELECT amount FROM "FeeHistory" fh
-                    WHERE fh.worker_unique_id = wmr.worker_unique_id AND fh.fee_type = '清潔費' AND fh.effective_date <= (wmr.month_start + interval '1 month - 1 day')::date
-                    ORDER BY fh.effective_date DESC LIMIT 1
-                ) clean ON true
-                 LEFT JOIN LATERAL (
-                    SELECT amount FROM "FeeHistory" fh
-                    WHERE fh.worker_unique_id = wmr.worker_unique_id AND fh.fee_type = '宿舍復歸費' AND fh.effective_date <= (wmr.month_start + interval '1 month - 1 day')::date
-                    ORDER BY fh.effective_date DESC LIMIT 1
-                ) resto ON true
-                 LEFT JOIN LATERAL (
-                    SELECT amount FROM "FeeHistory" fh
-                    WHERE fh.worker_unique_id = wmr.worker_unique_id AND fh.fee_type = '充電清潔費' AND fh.effective_date <= (wmr.month_start + interval '1 month - 1 day')::date
-                    ORDER BY fh.effective_date DESC LIMIT 1
-                ) charge ON true
+            -- 2. 計算雇主年度收入 (核心修改：改查 FeeHistory)
+            EmployerAnnualIncome AS (
+                SELECT
+                    r.dorm_id,
+                    SUM(fh.amount) as employer_annual_income
+                FROM "FeeHistory" fh
+                JOIN "Workers" w ON fh.worker_unique_id = w.unique_id
+                JOIN "AccommodationHistory" ah ON fh.worker_unique_id = ah.worker_unique_id
+                JOIN "Rooms" r ON ah.room_id = r.id
+                CROSS JOIN DateParams dp
+                WHERE 
+                    w.employer_name = ANY(%(employer_names)s)
+                    -- 費用發生在該年度
+                    AND fh.effective_date BETWEEN dp.first_day_of_year AND dp.last_day_of_year
+                    -- 費用發生時住在這裡
+                    AND ah.start_date <= fh.effective_date
+                    AND (ah.end_date IS NULL OR ah.end_date >= fh.effective_date)
+                GROUP BY r.dorm_id
             ),
-             -- 計算每個宿舍、每位工人的年度貢獻 (按月加總，按天數比例)
-            WorkerAnnualContribution AS (
-                 SELECT
-                    dorm_id,
-                    employer_name,
-                    worker_unique_id,
-                    SUM(
-                        (monthly_fee + utilities_fee + cleaning_fee + restoration_fee + charging_cleaning_fee) *
-                        (days_in_month / EXTRACT(DAY FROM month_end)::decimal)
-                    ) as annual_fee_contribution
-                FROM WorkerMonthlyFees
-                GROUP BY dorm_id, employer_name, worker_unique_id
-            ),
-             -- 彙總每個宿舍的年度人數和目標雇主的年度收入
-            DormAnnualOccupancy AS (
-                 SELECT
-                    dorm_id,
-                    COUNT(DISTINCT worker_unique_id) as total_workers_year,
-                    COUNT(DISTINCT CASE WHEN employer_name = ANY(%(employer_names)s) THEN worker_unique_id END) as employer_workers_year,
-                    SUM(CASE WHEN employer_name = ANY(%(employer_names)s) THEN annual_fee_contribution ELSE 0 END) as employer_annual_income
-                FROM WorkerAnnualContribution
-                GROUP BY dorm_id
-            ),
-            -- 計算年度分攤比例 (使用年度總人數)
+            -- 3. 計算年度分攤比例
             DormAnnualProration AS (
                 SELECT
-                    dorm_id, employer_annual_income,
-                    -- 使用年度總人數計算比例
+                    dao.dorm_id, 
+                    COALESCE(eai.employer_annual_income, 0) as employer_annual_income,
                     CASE WHEN total_workers_year > 0 THEN employer_workers_year::decimal / total_workers_year ELSE 0 END as proration_ratio
-                FROM DormAnnualOccupancy
-                WHERE employer_workers_year > 0
+                FROM DormAnnualOccupancy dao
+                LEFT JOIN EmployerAnnualIncome eai ON dao.dorm_id = eai.dorm_id
+                WHERE dao.employer_workers_year > 0
             ),
-            -- 年度支出計算 (維持不變)
+            -- (以下年度支出計算邏輯維持不變，需保留)
             AnnualRent AS (
                 SELECT l.dorm_id, SUM(COALESCE(l.monthly_rent, 0) * ((LEAST(COALESCE(l.lease_end_date, dp.last_day_of_year), dp.last_day_of_year)::date - GREATEST(l.lease_start_date, dp.first_day_of_year)::date + 1) / 30.4375)) as total_rent
                 FROM "Leases" l JOIN "Dormitories" d ON l.dorm_id = d.id CROSS JOIN DateParams dp
@@ -364,9 +311,8 @@ def get_employer_financial_summary_annual(employer_names: list, year: int):
             AnnualUtilities AS (
                  SELECT b.dorm_id, SUM(COALESCE(b.amount, 0) * (LEAST(b.bill_end_date, dp.last_day_of_year)::date - GREATEST(b.bill_start_date, dp.first_day_of_year)::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)) as total_utils
                  FROM "UtilityBills" b JOIN "Dormitories" d ON b.dorm_id = d.id CROSS JOIN DateParams dp
-                 WHERE ( (b.bill_type IN ('水費', '電費') AND d.utilities_payer = '我司') OR (b.bill_type NOT IN ('水費', '電費') AND b.payer = '我司') )
-                   AND NOT b.is_pass_through -- 排除代收代付
-                   AND b.bill_start_date <= dp.last_day_of_year AND b.bill_end_date >= dp.first_day_of_year GROUP BY b.dorm_id
+                 WHERE ((b.bill_type IN ('水費', '電費') AND d.utilities_payer = '我司') OR (b.bill_type NOT IN ('水費', '電費') AND b.payer = '我司'))
+                   AND NOT b.is_pass_through AND b.bill_start_date <= dp.last_day_of_year AND b.bill_end_date >= dp.first_day_of_year GROUP BY b.dorm_id
             ),
              AnnualPassThroughUtilities AS (
                  SELECT b.dorm_id, SUM(COALESCE(b.amount, 0) * (LEAST(b.bill_end_date, dp.last_day_of_year)::date - GREATEST(b.bill_start_date, dp.first_day_of_year)::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)) as total_pass_through
@@ -379,13 +325,11 @@ def get_employer_financial_summary_annual(employer_names: list, year: int):
              AnnualOtherIncome AS (
                  SELECT dorm_id, SUM(amount) as total_income FROM "OtherIncome" CROSS JOIN DateParams dp WHERE transaction_date >= dp.first_day_of_year AND transaction_date <= dp.last_day_of_year GROUP BY dorm_id
              )
-            -- 最終結果 (維持不變)
             SELECT
                 d.id as dorm_id, d.original_address AS "宿舍地址",
                 ROUND(dap.employer_annual_income)::int AS "收入(員工月費)",
                 COALESCE(ROUND(aoi.total_income * dap.proration_ratio), 0)::int AS "分攤其他收入",
                 COALESCE(ROUND(ar.total_rent * dap.proration_ratio), 0)::int AS "我司分攤合約費",
-                -- 合併我司支付的雜費與代收代付的雜費後再分攤
                 COALESCE(ROUND((COALESCE(au.total_utils, 0) + COALESCE(apt.total_pass_through, 0)) * dap.proration_ratio), 0)::int AS "我司分攤雜費",
                 COALESCE(ROUND(aa.total_amort * dap.proration_ratio), 0)::int AS "我司分攤攤銷"
             FROM DormAnnualProration dap

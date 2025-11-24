@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 from datetime import datetime
+from dateutil.relativedelta import relativedelta
 from data_models import report_model, dormitory_model, export_model, employer_dashboard_model
 
 def to_excel(sheet_data: dict):
@@ -104,8 +105,18 @@ def render():
             
             with pl_c1:
                 today_pl = datetime.now()
-                selected_year_pl = st.selectbox("選擇年份", options=range(today_pl.year - 2, today_pl.year + 2), index=2, key="pl_year")
-                selected_month_pl = st.selectbox("選擇月份", options=range(1, 13), index=today_pl.month - 1, key="pl_month")
+                default_date_pl = today_pl - relativedelta(months=2)
+                default_year_pl = default_date_pl.year
+                default_month_pl = default_date_pl.month
+                
+                year_options_pl = list(range(today_pl.year - 2, today_pl.year + 2))
+                try:
+                    default_year_index_pl = year_options_pl.index(default_year_pl)
+                except ValueError:
+                    default_year_index_pl = 2
+
+                selected_year_pl = st.selectbox("選擇年份", options=year_options_pl, index=default_year_index_pl, key="pl_year")
+                selected_month_pl = st.selectbox("選擇月份", options=range(1, 13), index=default_month_pl - 1, key="pl_month")
                 year_month_str_pl = f"{selected_year_pl}-{selected_month_pl:02d}"
 
             with pl_c2:

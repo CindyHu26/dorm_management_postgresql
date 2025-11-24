@@ -162,12 +162,12 @@ def get_financial_dashboard_data(year_month: str):
             SELECT
                 d.id,
                 d.original_address AS "宿舍地址",
-                (COALESCE(wi.total_income, 0) + COALESCE(pti.total_pass_through_income, 0))::int AS "預計總收入",
+                (COALESCE(wi.total_income, 0) + COALESCE(pti.total_pass_through_income, 0))::int AS "總收入",
                 COALESCE(mc.contract_expense, 0)::int AS "長期合約支出",
                 ROUND(COALESCE(pu.total_utilities, 0))::int AS "變動雜費(我司支付)",
                 COALESCE(ae.total_amortized, 0)::int AS "長期攤銷",
-                (COALESCE(mc.contract_expense, 0) + ROUND(COALESCE(pu.total_utilities, 0)) + COALESCE(ae.total_amortized, 0) + COALESCE(pti.total_pass_through_income, 0))::int AS "預計總支出",
-                (COALESCE(wi.total_income, 0) - (COALESCE(mc.contract_expense, 0) + ROUND(COALESCE(pu.total_utilities, 0)) + COALESCE(ae.total_amortized, 0)))::int AS "預估損益"
+                (COALESCE(mc.contract_expense, 0) + ROUND(COALESCE(pu.total_utilities, 0)) + COALESCE(ae.total_amortized, 0) + COALESCE(pti.total_pass_through_income, 0))::int AS "總支出",
+                (COALESCE(wi.total_income, 0) - (COALESCE(mc.contract_expense, 0) + ROUND(COALESCE(pu.total_utilities, 0)) + COALESCE(ae.total_amortized, 0)))::int AS "損益"
             FROM "Dormitories" d
             LEFT JOIN WorkerIncome wi ON d.id = wi.dorm_id
             LEFT JOIN PassThroughIncome pti ON d.id = pti.dorm_id
@@ -175,7 +175,7 @@ def get_financial_dashboard_data(year_month: str):
             LEFT JOIN ProratedUtilities pu ON d.id = pu.dorm_id
             LEFT JOIN AmortizedExpenses ae ON d.id = ae.dorm_id
             WHERE d.primary_manager = '我司'
-            ORDER BY "預估損益" ASC;
+            ORDER BY "損益" ASC;
         """
         return _execute_query_to_dataframe(conn, query, params)
     finally:
@@ -296,27 +296,21 @@ def get_seasonal_expense_forecast(year_month: str):
 
 def get_annual_financial_dashboard_data(year: int):
     """
-    【v2.5.2 邏輯修正版】計算指定「年度」的財務收支總覽。
-    如果年份是過去，則計算完整年度 (1/1 ~ 12/31)。
-    如果年份是今年，則計算至「今日」。
+    【v3.0 B04帳務版】計算指定年度的財務收支總覽。
+    修正：統一 UNION ALL 子查詢的欄位別名為 'income'。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     
-    # --- 【核心修改】在 Python 中決定日期範圍 ---
     today = datetime.now().date()
     current_year = today.year
     
     start_date_str = f"{year}-01-01"
-    
     if year < current_year:
-        # 如果是查詢過去的年份，結束日期為該年的 12/31
         end_date_str = f"{year}-12-31"
     else:
-        # 如果是查詢今年或未來年，結束日期為「今天」
         end_date_str = today.strftime('%Y-%m-%d')
     
-    # 將計算好的日期作為參數傳入
     params = {"start_date": start_date_str, "end_date": end_date_str}
     
     try:
@@ -326,113 +320,74 @@ def get_annual_financial_dashboard_data(year: int):
                     %(start_date)s::date as start_date,
                     %(end_date)s::date as end_date
             ),
-            -- 1. 收入計算 (來自 report_model 的邏輯)
+            -- 1. 收入計算
             WorkerIncome AS (
-                SELECT r.dorm_id, SUM(
-                    (COALESCE(w.monthly_fee, 0) + COALESCE(w.utilities_fee, 0) + COALESCE(w.cleaning_fee, 0) + COALESCE(w.restoration_fee, 0) + COALESCE(w.charging_cleaning_fee, 0))
-                    *
-                    (
-                        -- 【v2.5.1 修正】 (日期 - 日期) + 1
-                        (
-                            LEAST(COALESCE(ah.end_date, dp.end_date), dp.end_date)::date - 
-                            GREATEST(ah.start_date, dp.start_date)::date
-                        ) + 1 
-                        
-                    ) / 30.4375 -- 簡化計算，用平均天數
-                ) as income
-                FROM "AccommodationHistory" ah
-                JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+                -- 【修正】別名改為 income，以便與下面的 OtherIncome 統一
+                SELECT r.dorm_id, SUM(fh.amount) as income
+                FROM "FeeHistory" fh
+                JOIN "AccommodationHistory" ah ON fh.worker_unique_id = ah.worker_unique_id
                 JOIN "Rooms" r ON ah.room_id = r.id
+                JOIN "Dormitories" d ON r.dorm_id = d.id
                 CROSS JOIN DateParams dp
-                WHERE ah.start_date <= dp.end_date 
-                  AND (ah.end_date IS NULL OR ah.end_date >= dp.start_date)
-                  AND (w.special_status IS NULL OR w.special_status NOT ILIKE '%%掛宿外住%%')
+                WHERE 
+                    fh.effective_date BETWEEN dp.start_date AND dp.end_date
+                    AND ah.start_date <= fh.effective_date
+                    AND (ah.end_date IS NULL OR ah.end_date >= fh.effective_date)
+                    AND d.primary_manager = '我司'
                 GROUP BY r.dorm_id
             ),
             OtherIncome AS (
+                -- 別名維持 income
                 SELECT dorm_id, SUM(amount) as income 
-                FROM "OtherIncome" 
-                CROSS JOIN DateParams dp 
-                WHERE transaction_date BETWEEN dp.start_date AND dp.end_date 
-                GROUP BY dorm_id
+                FROM "OtherIncome" CROSS JOIN DateParams dp 
+                WHERE transaction_date BETWEEN dp.start_date AND dp.end_date GROUP BY dorm_id
             ),
             TotalIncome AS (
+                -- 現在 UNION 的兩個來源都有 'income' 欄位，所以這裡可以 SUM(income)
                 SELECT dorm_id, SUM(income) as total_income 
                 FROM (SELECT * FROM WorkerIncome UNION ALL SELECT * FROM OtherIncome) as combined_income
                 GROUP BY dorm_id
             ),
+            -- (以下 PassThrough, Lease, Utilities, Amortized, Final Select 維持不變)
             PassThroughIncome AS (
                 SELECT b.dorm_id, SUM(
                     b.amount::decimal * (LEAST(b.bill_end_date, dp.end_date)::date - GREATEST(b.bill_start_date, dp.start_date)::date + 1)
                     / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)
                 ) as total_pass_through_income
-                FROM "UtilityBills" b 
-                CROSS JOIN DateParams dp
-                WHERE b.is_pass_through = TRUE
-                  AND b.bill_start_date <= dp.end_date 
-                  AND b.bill_end_date >= dp.start_date
-                GROUP BY b.dorm_id
+                FROM "UtilityBills" b CROSS JOIN DateParams dp
+                WHERE b.is_pass_through = TRUE AND b.bill_start_date <= dp.end_date AND b.bill_end_date >= dp.start_date GROUP BY b.dorm_id
             ),
-            -- 2. 支出細項計算 (來自 report_model 的邏輯)
             LeaseExpense AS (
                 SELECT l.dorm_id, SUM(
-                    COALESCE(l.monthly_rent, 0) * (
-                        (LEAST(COALESCE(l.lease_end_date, dp.end_date), dp.end_date)::date - GREATEST(l.lease_start_date, dp.start_date)::date + 1) 
-                        / 30.4375 -- 轉換為月數
-                    )
+                    COALESCE(l.monthly_rent, 0) * ((LEAST(COALESCE(l.lease_end_date, dp.end_date), dp.end_date)::date - GREATEST(l.lease_start_date, dp.start_date)::date + 1) / 30.4375)
                 ) as contract_expense
-                FROM "Leases" l 
-                JOIN "Dormitories" d ON l.dorm_id = d.id 
-                CROSS JOIN DateParams dp
-                WHERE l.payer = '我司' -- 僅計算我司支付的
-                  AND l.lease_start_date <= dp.end_date 
-                  AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.start_date) 
-                GROUP BY l.dorm_id
+                FROM "Leases" l JOIN "Dormitories" d ON l.dorm_id = d.id CROSS JOIN DateParams dp
+                WHERE l.payer = '我司' AND l.lease_start_date <= dp.end_date AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.start_date) GROUP BY l.dorm_id
             ),
             UtilitiesExpense AS (
                 SELECT b.dorm_id, SUM(
-                    b.amount::decimal * (LEAST(b.bill_end_date, dp.end_date)::date - GREATEST(b.bill_start_date, dp.start_date)::date + 1) 
-                    / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)
+                    b.amount::decimal * (LEAST(b.bill_end_date, dp.end_date)::date - GREATEST(b.bill_start_date, dp.start_date)::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)
                 ) as utility_expense
-                FROM "UtilityBills" b
-                JOIN "Dormitories" d ON b.dorm_id = d.id
-                CROSS JOIN DateParams dp
-                WHERE 
-                  (
-                    (b.bill_type IN ('水費', '電費') AND d.utilities_payer = '我司')
-                    OR
-                    (b.bill_type NOT IN ('水費', '電費') AND b.payer = '我司')
-                  )
-                  AND b.is_pass_through = FALSE -- 排除代收代付
-                  AND b.bill_start_date <= dp.end_date 
-                  AND b.bill_end_date >= dp.start_date
-                GROUP BY b.dorm_id
+                FROM "UtilityBills" b JOIN "Dormitories" d ON b.dorm_id = d.id CROSS JOIN DateParams dp
+                WHERE ((b.bill_type IN ('水費', '電費') AND d.utilities_payer = '我司') OR (b.bill_type NOT IN ('水費', '電費') AND b.payer = '我司'))
+                  AND b.is_pass_through = FALSE AND b.bill_start_date <= dp.end_date AND b.bill_end_date >= dp.start_date GROUP BY b.dorm_id
             ),
             AmortizedExpense AS (
                 SELECT dorm_id, SUM(
                     (total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0)) 
-                    * -- 計算實際落在本年度的月數
-                    GREATEST(0, (
-                        EXTRACT(YEAR FROM age(LEAST(TO_DATE(amortization_end_month, 'YYYY-MM'), dp.end_date), GREATEST(TO_DATE(amortization_start_month, 'YYYY-MM'), dp.start_date))) * 12 +
-                        EXTRACT(MONTH FROM age(LEAST(TO_DATE(amortization_end_month, 'YYYY-MM'), dp.end_date), GREATEST(TO_DATE(amortization_start_month, 'YYYY-MM'), dp.start_date))) + 1
-                    ))
+                    * GREATEST(0, (EXTRACT(YEAR FROM age(LEAST(TO_DATE(amortization_end_month, 'YYYY-MM'), dp.end_date), GREATEST(TO_DATE(amortization_start_month, 'YYYY-MM'), dp.start_date))) * 12 + EXTRACT(MONTH FROM age(LEAST(TO_DATE(amortization_end_month, 'YYYY-MM'), dp.end_date), GREATEST(TO_DATE(amortization_start_month, 'YYYY-MM'), dp.start_date))) + 1))
                 ) as amortized_expense
-                FROM "AnnualExpenses" 
-                CROSS JOIN DateParams dp 
-                WHERE TO_DATE(amortization_start_month, 'YYYY-MM') <= dp.end_date 
-                  AND TO_DATE(amortization_end_month, 'YYYY-MM') >= dp.start_date 
-                GROUP BY dorm_id
+                FROM "AnnualExpenses" CROSS JOIN DateParams dp WHERE TO_DATE(amortization_start_month, 'YYYY-MM') <= dp.end_date AND TO_DATE(amortization_end_month, 'YYYY-MM') >= dp.start_date GROUP BY dorm_id
             )
-            -- 3. 最終彙總
             SELECT
                 d.id,
                 d.original_address AS "宿舍地址",
-                (COALESCE(ti.total_income, 0) + COALESCE(pti.total_pass_through_income, 0))::int AS "預計總收入",
+                (COALESCE(ti.total_income, 0) + COALESCE(pti.total_pass_through_income, 0))::int AS "總收入",
                 COALESCE(le.contract_expense, 0)::int AS "長期合約支出",
                 ROUND(COALESCE(ue.utility_expense, 0))::int AS "變動雜費(我司支付)",
                 COALESCE(ae.amortized_expense, 0)::int AS "長期攤銷",
-                (COALESCE(le.contract_expense, 0) + ROUND(COALESCE(ue.utility_expense, 0)) + COALESCE(ae.amortized_expense, 0) + COALESCE(pti.total_pass_through_income, 0))::int AS "預計總支出",
-                (COALESCE(ti.total_income, 0) - (COALESCE(le.contract_expense, 0) + ROUND(COALESCE(ue.utility_expense, 0)) + COALESCE(ae.amortized_expense, 0)))::int AS "預估損益"
+                (COALESCE(le.contract_expense, 0) + ROUND(COALESCE(ue.utility_expense, 0)) + COALESCE(ae.amortized_expense, 0) + COALESCE(pti.total_pass_through_income, 0))::int AS "總支出",
+                (COALESCE(ti.total_income, 0) - (COALESCE(le.contract_expense, 0) + ROUND(COALESCE(ue.utility_expense, 0)) + COALESCE(ae.amortized_expense, 0)))::int AS "損益"
             FROM "Dormitories" d
             LEFT JOIN TotalIncome ti ON d.id = ti.dorm_id
             LEFT JOIN PassThroughIncome pti ON d.id = pti.dorm_id
@@ -440,9 +395,8 @@ def get_annual_financial_dashboard_data(year: int):
             LEFT JOIN UtilitiesExpense ue ON d.id = ue.dorm_id
             LEFT JOIN AmortizedExpense ae ON d.id = ae.dorm_id
             WHERE d.primary_manager = '我司'
-            ORDER BY "預估損益" ASC;
+            ORDER BY "損益" ASC;
         """
-        # 使用新的 params 字典
         return _execute_query_to_dataframe(conn, query, params)
     finally:
         if conn: conn.close()

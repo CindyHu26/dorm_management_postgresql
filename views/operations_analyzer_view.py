@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+from dateutil.relativedelta import relativedelta
 from data_models import operations_analyzer_model
 
 def render():
@@ -65,11 +66,20 @@ def render():
         st.subheader("📉 虧損宿舍營運建議")
         st.info("選擇一個月份，系統將分析該月份我司管理的宿舍中，出現虧損的項目，並提供調整建議。")
 
-        # --- 【核心修改點 1】新增年月選擇器 ---
         today = datetime.now()
+        default_date = today - relativedelta(months=2)
+        default_year = default_date.year
+        default_month = default_date.month
+        
+        year_options = list(range(today.year - 2, today.year + 2))
+        try:
+            default_year_index = year_options.index(default_year)
+        except ValueError:
+            default_year_index = 2
+
         c1, c2 = st.columns(2)
-        selected_year = c1.selectbox("選擇年份", options=range(today.year - 2, today.year + 2), index=2, key="op_loss_year")
-        selected_month = c2.selectbox("選擇月份", options=range(1, 13), index=today.month - 1, key="op_loss_month")
+        selected_year = c1.selectbox("選擇年份", options=year_options, index=default_year_index, key="op_loss_year")
+        selected_month = c2.selectbox("選擇月份", options=range(1, 13), index=default_month - 1, key="op_loss_month")
         year_month_str = f"{selected_year}-{selected_month:02d}"
         
         @st.cache_data
@@ -88,7 +98,8 @@ def render():
                 hide_index=True,
                 width='stretch',
                 column_config={
-                    "預估損益": st.column_config.NumberColumn(format="$ %d"),
-                    "在住人數": st.column_config.NumberColumn(format="%d 人")
+                    "損益": st.column_config.NumberColumn(format="$ %d"),
+                    "在住人數": st.column_config.NumberColumn(format="%d 人"),
+                    "宿舍備註": st.column_config.TextColumn(help="宿舍的特殊備註")
                 }
             )
