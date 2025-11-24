@@ -151,6 +151,12 @@ def render():
                     width="stretch", 
                     hide_index=True,
                     column_config={
+                        "宿舍地址": st.column_config.TextColumn(width="medium"),
+                        "雇主": st.column_config.TextColumn(
+                            "雇主", 
+                            help="該期間內住宿的雇主名單", 
+                            width="medium"
+                        ), # 新增設定
                         "總收入": st.column_config.NumberColumn(format="NT$ %d"),
                         "長期合約支出": st.column_config.NumberColumn(format="NT$ %d"),
                         "變動雜費(我司支付)": st.column_config.NumberColumn(format="NT$ %d"),
@@ -213,6 +219,12 @@ def render():
                     width="stretch", 
                     hide_index=True,
                     column_config={
+                        "宿舍地址": st.column_config.TextColumn(width="medium"),
+                        "雇主": st.column_config.TextColumn(
+                            "雇主", 
+                            help="該期間內住宿的雇主名單", 
+                            width="medium"
+                        ), # 新增設定
                         "總收入": st.column_config.NumberColumn(format="NT$ %d"),
                         "長期合約支出": st.column_config.NumberColumn(format="NT$ %d"),
                         "變動雜費(我司支付)": st.column_config.NumberColumn(format="NT$ %d"),

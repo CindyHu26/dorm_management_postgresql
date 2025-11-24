@@ -285,6 +285,21 @@ def create_all_tables_and_indexes():
                 FOREIGN KEY ("room_id") REFERENCES "Rooms" ("id") ON DELETE SET NULL
             );
             """
+            TABLES['RecurringIncomeConfigs'] = """
+            CREATE TABLE IF NOT EXISTS "RecurringIncomeConfigs" (
+                "id" SERIAL PRIMARY KEY,
+                "dorm_id" INTEGER NOT NULL,
+                "income_item" VARCHAR(100) NOT NULL,
+                "amount" INTEGER NOT NULL,
+                "start_date" DATE, -- 【新增】生效起始日
+                "end_date" DATE,   -- 【新增】生效結束日
+                "active" BOOLEAN DEFAULT TRUE,
+                "calc_method" VARCHAR(20),
+                "target_employer" VARCHAR(100);
+                "notes" TEXT,
+                FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE
+            );
+            """
 
             TABLES['FeeHistory'] = """
             CREATE TABLE IF NOT EXISTS "FeeHistory" (

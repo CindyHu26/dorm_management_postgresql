@@ -941,7 +941,9 @@ def batch_sync_dorm_bills(dorm_id: int, edited_df: pd.DataFrame):
 def batch_import_external_fees(df: pd.DataFrame):
     """
     批次匯入外部 B04 報表的費用資料至 FeeHistory。
-    【v2.0 強化匹配版】修正 None/空字串的比對問題。
+    【v3.0 自動加總版】
+    在寫入資料庫前，先將「同一人 + 同一日 + 同一費用類型」的多筆資料金額加總。
+    解決「水費+電費」對應到「水電費」時的覆蓋問題。
     """
     if df.empty:
         return 0, 0, []
@@ -953,6 +955,24 @@ def batch_import_external_fees(df: pd.DataFrame):
     skip_count = 0
     errors = []
 
+    # --- 【核心修改 1】資料預處理與加總 ---
+    # 1. 填補空值，確保 GroupBy 不會遺漏
+    df['passport_number'] = df['passport_number'].fillna("")
+    df['employer_name'] = df['employer_name'].fillna("").str.strip()
+    df['worker_name'] = df['worker_name'].fillna("").str.strip()
+    
+    # 2. 執行加總 (GroupBy)
+    # 根據「人 + 費用類型 + 日期」分組，將「金額」相加，「原始名稱」串接
+    # 例如：水費(200) + 電費(300) -> 水電費(500)
+    df_aggregated = df.groupby(
+        ['employer_name', 'worker_name', 'passport_number', 'fee_type', 'effective_date'],
+        as_index=False
+    ).agg({
+        'amount': 'sum',
+        'source_fee_name': lambda x: ', '.join(sorted(set(x))) # 備註串接，如 "水費, 電費"
+    })
+    # -----------------------------------
+
     try:
         with conn.cursor() as cursor:
             # 1. 建立員工快取
@@ -961,9 +981,8 @@ def batch_import_external_fees(df: pd.DataFrame):
             
             worker_map = {}
             for w in workers:
-                # 【修正】統一將 None 轉為空字串 ""
                 p_num = str(w['passport_number']).strip() if w['passport_number'] else ""
-                if p_num == 'None': p_num = "" # 防呆
+                if p_num == 'None': p_num = "" 
 
                 key = (
                     str(w['employer_name']).strip(),
@@ -972,31 +991,27 @@ def batch_import_external_fees(df: pd.DataFrame):
                 )
                 worker_map[key] = w['unique_id']
 
-            # 2. 遍歷資料
-            for _, row in df.iterrows():
-                # 【修正】Excel 來的護照如果是 None/NaN，也轉為空字串 ""
-                raw_passport = row['passport_number']
-                if pd.isna(raw_passport):
-                    passport_key = ""
-                else:
-                    passport_key = str(raw_passport).strip()
+            # 2. 遍歷 "加總後" 的資料進行匯入
+            for _, row in df_aggregated.iterrows():
                 
+                # 準備比對 Key
+                passport_key = str(row['passport_number']).strip()
                 key = (
-                    str(row['employer_name']).strip(),
-                    str(row['worker_name']).strip(),
+                    str(row['employer_name']),
+                    str(row['worker_name']),
                     passport_key
                 )
                 
                 worker_id = worker_map.get(key)
                 
                 if not worker_id:
-                    # 記錄錯誤時顯示清楚一點
                     p_display = passport_key if passport_key else "(無護照)"
                     errors.append(f"找不到員工: {row['employer_name']} - {row['worker_name']} - {p_display}")
                     skip_count += 1
                     continue
 
-                # 3. 執行 Upsert (邏輯不變)
+                # 3. 執行 Upsert (有則更新，無則新增)
+                # 這裡的 row['amount'] 已經是加總過的金額了
                 check_sql = """
                     SELECT id FROM "FeeHistory" 
                     WHERE worker_unique_id = %s AND fee_type = %s AND effective_date = %s
@@ -1005,9 +1020,11 @@ def batch_import_external_fees(df: pd.DataFrame):
                 existing = cursor.fetchone()
 
                 if existing:
+                    # 更新為新的總金額
                     update_sql = 'UPDATE "FeeHistory" SET amount = %s WHERE id = %s'
                     cursor.execute(update_sql, (row['amount'], existing['id']))
                 else:
+                    # 新增紀錄
                     insert_sql = """
                         INSERT INTO "FeeHistory" (worker_unique_id, fee_type, amount, effective_date)
                         VALUES (%s, %s, %s, %s)

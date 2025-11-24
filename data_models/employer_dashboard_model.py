@@ -182,12 +182,12 @@ def get_employer_financial_summary(employer_names: list, year_month: str):
             -- 3. 計算分攤比例
             DormProration AS (
                 SELECT
-                    do.dorm_id, 
+                    doc.dorm_id, 
                     COALESCE(ei.employer_income, 0) as employer_income,
                     CASE WHEN total_residents > 0 THEN employer_residents::decimal / total_residents ELSE 0 END AS proration_ratio
-                FROM DormOccupancy do
-                LEFT JOIN EmployerIncome ei ON do.dorm_id = ei.dorm_id
-                WHERE do.employer_residents > 0
+                FROM DormOccupancy doc -- 這裡改用 doc
+                LEFT JOIN EmployerIncome ei ON doc.dorm_id = ei.dorm_id
+                WHERE doc.employer_residents > 0
             ),
             -- (以下 OtherIncome, MonthlyExpenses, Final Select 維持不變，只需確保 JOIN 對象是 DormProration)
             DormOtherIncome AS (
@@ -507,5 +507,31 @@ def get_employer_financial_details_for_dorm(employer_names: list, dorm_id: int, 
 
         return income_df, expense_df
 
+    finally:
+        if conn: conn.close()
+
+def get_employers_by_dorm(dorm_id: int):
+    """
+    【v3.1 新增】取得指定宿舍目前「有在住員工」的雇主列表。
+    用於固定收入設定時的動態篩選。
+    """
+    if not dorm_id: return []
+    conn = database.get_db_connection()
+    if not conn: return []
+    try:
+        query = """
+            SELECT DISTINCT w.employer_name 
+            FROM "AccommodationHistory" ah
+            JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+            JOIN "Rooms" r ON ah.room_id = r.id
+            WHERE r.dorm_id = %s
+              AND ah.start_date <= CURRENT_DATE
+              AND (ah.end_date IS NULL OR ah.end_date > CURRENT_DATE)
+            ORDER BY w.employer_name
+        """
+        with conn.cursor() as cursor:
+            cursor.execute(query, (dorm_id,))
+            records = cursor.fetchall()
+            return [row['employer_name'] for row in records]
     finally:
         if conn: conn.close()
