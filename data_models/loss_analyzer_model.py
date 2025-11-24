@@ -14,9 +14,8 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_loss_making_dorms(period: str):
     """
-    【v2.0 B04帳務 & 備註版】查詢在指定期間內虧損的宿舍 (完整財務：含攤銷)。
-    1. 收入：改用 FeeHistory (實際應收)。
-    2. 欄位：新增 "宿舍備註" 以供查核特殊收入。
+    【v2.1 收入補完版】查詢在指定期間內虧損的宿舍 (完整財務：含攤銷)。
+    修正：將「其他收入 (OtherIncome)」加入總收入計算。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -40,8 +39,8 @@ def get_loss_making_dorms(period: str):
             WITH DateRange AS (
                 SELECT %(start_date)s::date as start_date, %(end_date)s::date as end_date
             ),
-            -- 1. 收入計算 (改為 FeeHistory)
-            ActualIncome AS (
+            -- 1. 工人收入 (使用 FeeHistory 實際帳單加總)
+            WorkerIncome AS (
                 SELECT 
                     r.dorm_id, 
                     SUM(fh.amount) as total_income
@@ -55,7 +54,17 @@ def get_loss_making_dorms(period: str):
                     AND (ah.end_date IS NULL OR ah.end_date >= fh.effective_date)
                 GROUP BY r.dorm_id
             ),
-            -- 2. 支出計算 (維持不變，依據合約/帳單/攤銷)
+            -- 2. 其他收入 (新增此區塊)
+            OtherIncome AS (
+                SELECT 
+                    dorm_id, 
+                    SUM(amount) as total_other_income
+                FROM "OtherIncome"
+                CROSS JOIN DateRange dr
+                WHERE transaction_date BETWEEN dr.start_date AND dr.end_date
+                GROUP BY dorm_id
+            ),
+            -- 3. 支出計算 (維持不變)
             AnnualExpenses AS (
                 -- 合約
                 SELECT l.dorm_id, SUM(l.monthly_rent * ((LEAST(COALESCE(l.lease_end_date, (SELECT end_date FROM DateRange)), (SELECT end_date FROM DateRange))::date - GREATEST(l.lease_start_date, (SELECT start_date FROM DateRange))::date + 1) / 30.4375)) as total_expense
@@ -77,11 +86,13 @@ def get_loss_making_dorms(period: str):
                 SELECT 
                     d.id as dorm_id, 
                     d.original_address, 
-                    d.dorm_notes, -- 【新增】取出宿舍備註
-                    COALESCE(ai.total_income, 0) as "總收入",
+                    d.dorm_notes,
+                    -- 總收入 = 工人收租 + 其他收入
+                    (COALESCE(wi.total_income, 0) + COALESCE(oi.total_other_income, 0)) as "總收入",
                     (SELECT SUM(total_expense) FROM AnnualExpenses ae WHERE ae.dorm_id = d.id) as "總支出"
                 FROM "Dormitories" d
-                LEFT JOIN ActualIncome ai ON d.id = ai.dorm_id
+                LEFT JOIN WorkerIncome wi ON d.id = wi.dorm_id
+                LEFT JOIN OtherIncome oi ON d.id = oi.dorm_id -- JOIN 其他收入
                 WHERE d.primary_manager = '我司'
             )
             SELECT
@@ -89,7 +100,7 @@ def get_loss_making_dorms(period: str):
                 "總收入"::int AS "總收入",
                 COALESCE("總支出", 0)::int AS "總支出",
                 (COALESCE("總收入", 0) - COALESCE("總支出", 0))::int AS "淨損益",
-                dorm_notes AS "宿舍備註" -- 【新增】顯示欄位
+                dorm_notes AS "宿舍備註"
             FROM FinalSummary
             WHERE (COALESCE("總收入", 0) - COALESCE("總支出", 0)) < 0
             ORDER BY "淨損益" ASC;
@@ -101,7 +112,8 @@ def get_loss_making_dorms(period: str):
 
 def get_daily_loss_making_dorms(period: str):
     """
-    【v2.0 B04帳務 & 備註版】查詢在指定期間內虧損的宿舍 (日常營運：不含攤銷)。
+    【v2.1 收入補完版】查詢在指定期間內虧損的宿舍 (日常營運：不含攤銷)。
+    修正：將「其他收入 (OtherIncome)」加入總收入計算。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -125,7 +137,7 @@ def get_daily_loss_making_dorms(period: str):
                 SELECT %(start_date)s::date as start_date, %(end_date)s::date as end_date
             ),
             -- 1. 收入 (FeeHistory)
-            ActualIncome AS (
+            WorkerIncome AS (
                 SELECT 
                     r.dorm_id, 
                     SUM(fh.amount) as total_income
@@ -139,7 +151,17 @@ def get_daily_loss_making_dorms(period: str):
                     AND (ah.end_date IS NULL OR ah.end_date >= fh.effective_date)
                 GROUP BY r.dorm_id
             ),
-            -- 2. 支出 (僅日常：合約+雜費)
+            -- 2. 其他收入 (新增)
+            OtherIncome AS (
+                SELECT 
+                    dorm_id, 
+                    SUM(amount) as total_other_income
+                FROM "OtherIncome"
+                CROSS JOIN DateRange dr
+                WHERE transaction_date BETWEEN dr.start_date AND dr.end_date
+                GROUP BY dorm_id
+            ),
+            -- 3. 支出 (僅日常：合約+雜費)
             DailyExpenses AS (
                 SELECT l.dorm_id, SUM(l.monthly_rent * ((LEAST(COALESCE(l.lease_end_date, (SELECT end_date FROM DateRange)), (SELECT end_date FROM DateRange))::date - GREATEST(l.lease_start_date, (SELECT start_date FROM DateRange))::date + 1) / 30.4375)) as total_expense
                 FROM "Leases" l CROSS JOIN DateRange dr 
@@ -154,11 +176,13 @@ def get_daily_loss_making_dorms(period: str):
                 SELECT 
                     d.id as dorm_id, 
                     d.original_address, 
-                    d.dorm_notes, -- 【新增】
-                    COALESCE(ai.total_income, 0) as "總收入",
+                    d.dorm_notes,
+                    -- 總收入 = 工人收租 + 其他收入
+                    (COALESCE(wi.total_income, 0) + COALESCE(oi.total_other_income, 0)) as "總收入",
                     (SELECT SUM(total_expense) FROM DailyExpenses de WHERE de.dorm_id = d.id) as "總支出"
                 FROM "Dormitories" d
-                LEFT JOIN ActualIncome ai ON d.id = ai.dorm_id
+                LEFT JOIN WorkerIncome wi ON d.id = wi.dorm_id
+                LEFT JOIN OtherIncome oi ON d.id = oi.dorm_id -- JOIN
                 WHERE d.primary_manager = '我司'
             )
             SELECT
@@ -166,7 +190,7 @@ def get_daily_loss_making_dorms(period: str):
                 "總收入"::int AS "總收入",
                 COALESCE("總支出", 0)::int AS "總支出",
                 (COALESCE("總收入", 0) - COALESCE("總支出", 0))::int AS "淨損益",
-                dorm_notes AS "宿舍備註" -- 【新增】
+                dorm_notes AS "宿舍備註"
             FROM FinalSummary
             WHERE (COALESCE("總收入", 0) - COALESCE("總支出", 0)) < 0
             ORDER BY "淨損益" ASC;

@@ -17,9 +17,9 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_workers_for_view(filters: dict):
     """
-    【v3.1 總收租修正版】人員管理列表。
-    總收租邏輯：找出每位員工「最新的一個收費月份」，並加總「該月份」的所有費用。
-    確保不會出現跨月混加的情況 (例如 11月房租 + 10月水電)。
+    【v3.2 上月收租修正版】人員管理列表。
+    總收租邏輯：固定顯示「上個月」的費用總和（例如現在11月，顯示10月帳單）。
+    避免因資料更新進度不同，導致有些人顯示11月、有些人顯示10月的混亂情況。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -38,25 +38,15 @@ def get_workers_for_view(filters: dict):
                     ROW_NUMBER() OVER(PARTITION BY worker_unique_id ORDER BY start_date DESC, id DESC) as rn
                 FROM "AccommodationHistory"
             ),
-            -- 1. 找出每位員工「最近一次有費用紀錄的月份」(Max Date)
-            LatestFeeMonth AS (
-                SELECT
-                    worker_unique_id,
-                    MAX(effective_date) as max_date
-                FROM "FeeHistory"
-                WHERE effective_date <= {current_date_func}
-                GROUP BY worker_unique_id
-            ),
-            -- 2. 加總該員工「該月份」的所有費用
-            TotalWorkerFee AS (
+            -- 【核心修正】改為計算「上個月」的費用總合
+            PreviousMonthFees AS (
                 SELECT 
-                    fh.worker_unique_id, 
-                    SUM(fh.amount) as total_amount
-                FROM "FeeHistory" fh
-                JOIN LatestFeeMonth lfm ON fh.worker_unique_id = lfm.worker_unique_id
-                -- 【關鍵修改】只加總「同一年月」的費用
-                WHERE TO_CHAR(fh.effective_date, 'YYYY-MM') = TO_CHAR(lfm.max_date, 'YYYY-MM')
-                GROUP BY fh.worker_unique_id
+                    worker_unique_id, 
+                    SUM(amount) as total_amount
+                FROM "FeeHistory"
+                -- 篩選條件：費用生效年月 = 當前日期減1個月的年月
+                WHERE TO_CHAR(effective_date, 'YYYY-MM') = TO_CHAR({current_date_func} - INTERVAL '1 month', 'YYYY-MM')
+                GROUP BY worker_unique_id
             )
             SELECT
                 w.unique_id,
@@ -76,8 +66,8 @@ def get_workers_for_view(filters: dict):
                     THEN '已離住' ELSE '在住'
                 END as "在住狀態",
                 
-                -- 顯示加總後的當月總金額
-                COALESCE(twf.total_amount, 0) AS "總收租",
+                -- 顯示上個月的總金額，若無資料則顯示 0
+                COALESCE(pmf.total_amount, 0) AS "上月總收租",
                 
                 w.worker_notes AS "個人備註",
                 w.passport_number AS "護照號碼", 
@@ -88,7 +78,7 @@ def get_workers_for_view(filters: dict):
             LEFT JOIN (SELECT * FROM LastAccommodation WHERE rn = 1) la ON w.unique_id = la.worker_unique_id
             LEFT JOIN "Rooms" r_actual ON la.room_id = r_actual.id
             LEFT JOIN "Dormitories" d_actual ON r_actual.dorm_id = d_actual.id
-            LEFT JOIN TotalWorkerFee twf ON w.unique_id = twf.worker_unique_id
+            LEFT JOIN PreviousMonthFees pmf ON w.unique_id = pmf.worker_unique_id
         """
 
         where_clauses = []

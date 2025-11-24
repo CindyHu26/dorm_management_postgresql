@@ -2,6 +2,7 @@ import pandas as pd
 from datetime import datetime, date
 import database
 import json
+import os
 import numpy as np
 from . import worker_model
 
@@ -1045,23 +1046,39 @@ def batch_import_external_fees(df: pd.DataFrame):
 
 def get_dynamic_fee_data_for_dashboard(filters: dict):
     """
-    【v3.0 動態欄位版】取得用於「費用標準與異常儀表板」的原始資料。
-    回傳：宿舍, 雇主, 姓名, 特殊狀況, 房號, 費用類型, 金額
+    【v3.6 完整篩選版】取得用於「費用標準與異常儀表板」的原始資料。
+    修正：新增「主要管理人」與「資料月份區間」篩選條件。
     """
     dorm_ids = filters.get("dorm_ids")
     employer_names = filters.get("employer_names")
+    # 【核心修改】取得新參數
+    primary_manager = filters.get("primary_manager")
+    data_month_start = filters.get("data_month_start")
+    data_month_end = filters.get("data_month_end")
 
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     
     try:
         query = """
-            WITH LatestFeeHistory AS (
+            WITH LatestDatePerWorker AS (
+                -- 1. 找出每位員工「最近一次有費用紀錄的日期」
                 SELECT
-                    worker_unique_id, fee_type, amount,
-                    ROW_NUMBER() OVER(PARTITION BY worker_unique_id, fee_type ORDER BY effective_date DESC) as rn
+                    worker_unique_id,
+                    MAX(effective_date) as max_date
                 FROM "FeeHistory"
                 WHERE effective_date <= CURRENT_DATE
+                GROUP BY worker_unique_id
+            ),
+            LatestMonthFees AS (
+                -- 2. 只抓取該員工「該月份」的所有費用 (同月快照)
+                SELECT
+                    fh.worker_unique_id,
+                    fh.fee_type,
+                    fh.amount
+                FROM "FeeHistory" fh
+                JOIN LatestDatePerWorker ldp ON fh.worker_unique_id = ldp.worker_unique_id
+                WHERE TO_CHAR(fh.effective_date, 'YYYY-MM') = TO_CHAR(ldp.max_date, 'YYYY-MM')
             )
             SELECT
                 d.original_address AS "宿舍地址",
@@ -1069,31 +1086,71 @@ def get_dynamic_fee_data_for_dashboard(filters: dict):
                 w.worker_name AS "姓名",
                 r.room_number AS "房號",
                 w.special_status AS "特殊狀況",
-                -- 這裡我們不 JOIN 特定費用，而是直接拿 FeeHistory 的類型
-                lfh.fee_type AS "費用類型",
-                lfh.amount AS "金額"
+                w.accommodation_start_date AS "入住日",
+                w.worker_notes AS "個人備註",
+                
+                -- 顯示該員工費用的所屬月份
+                TO_CHAR(ldp.max_date, 'YYYY-MM') AS "資料月份",
+                
+                -- 費用類型與金額 (可能為 NULL)
+                lmf.fee_type AS "費用類型",
+                lmf.amount AS "金額"
             FROM "Workers" w
-            JOIN "Rooms" r ON w.room_id = r.id
+            JOIN "AccommodationHistory" ah ON w.unique_id = ah.worker_unique_id
+            JOIN "Rooms" r ON ah.room_id = r.id
             JOIN "Dormitories" d ON r.dorm_id = d.id
-            JOIN LatestFeeHistory lfh ON w.unique_id = lfh.worker_unique_id
-            WHERE lfh.rn = 1 -- 只取最新
-              AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)
+            -- 費用相關 JOIN
+            LEFT JOIN LatestDatePerWorker ldp ON w.unique_id = ldp.worker_unique_id
+            LEFT JOIN LatestMonthFees lmf ON w.unique_id = lmf.worker_unique_id
+            WHERE 
+                (ah.end_date IS NULL OR ah.end_date > CURRENT_DATE)
+                AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)
         """
         
-        where_clauses = []
-        params = []
-        
+        # 這裡使用 append 來動態增加 SQL 條件
         if dorm_ids:
-            where_clauses.append(f"d.id = ANY(%s)")
-            params.append(list(dorm_ids))
+            query += f" AND d.id = ANY(%s)"
+            params_list = [list(dorm_ids)]
+        else:
+            params_list = []
             
         if employer_names:
-            where_clauses.append(f"w.employer_name = ANY(%s)")
-            params.append(list(employer_names))
+            query += f" AND w.employer_name = ANY(%s)"
+            params_list.append(list(employer_names))
 
-        if where_clauses:
-            query += " AND " + " AND ".join(where_clauses)
+        # 【核心修改】增加主要管理人篩選
+        if primary_manager:
+            query += f" AND d.primary_manager = %s"
+            params_list.append(primary_manager)
 
-        return _execute_query_to_dataframe(conn, query, tuple(params))
+        # 【核心修改】增加資料月份區間篩選
+        # 注意：這裡篩選的是 ldp.max_date (也就是該員工費用的所屬月份)
+        if data_month_start:
+            query += f" AND TO_CHAR(ldp.max_date, 'YYYY-MM') >= %s"
+            params_list.append(data_month_start)
+            
+        if data_month_end:
+            query += f" AND TO_CHAR(ldp.max_date, 'YYYY-MM') <= %s"
+            params_list.append(data_month_end)
+
+        return _execute_query_to_dataframe(conn, query, tuple(params_list))
     finally:
         if conn: conn.close()
+
+def get_fee_config():
+    """
+    【v3.3 新增】讀取費用設定檔，用於獲取自訂的費用排序。
+    """
+    config_file = "fee_config.json"
+    default_config = {
+        "internal_types": ["房租", "水電費", "清潔費", "宿舍復歸費", "充電清潔費", "充電費"],
+        "mapping": {}
+    }
+    
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return default_config
+    return default_config
