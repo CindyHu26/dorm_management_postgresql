@@ -208,19 +208,20 @@ def get_compliance_records_for_dorm(dorm_id: int, record_type: str):
 # --- 房租管理 (已升級為通用費用管理) ---
 def get_workers_for_fee_management(filters: dict):
     """
-    【v2.9 費用來源修正版】根據提供的多重篩選條件(宿舍、雇主)，查詢在住移工的費用資訊。
-    所有費用欄位 (房租、水電等) 改為從 FeeHistory 查詢最新一筆紀錄。
+    【v3.1 全選修正版】根據提供的多重篩選條件(宿舍、雇主)，查詢在住移工的費用資訊。
+    修正：若未選擇篩選條件，預設顯示「全部」資料，而非空白。
     """
     dorm_ids = filters.get("dorm_ids")
     employer_names = filters.get("employer_names")
 
-    if not dorm_ids and not employer_names:
-        return pd.DataFrame()
+    # --- 【核心修改 1】移除這行 "若無篩選則回傳空" 的限制 ---
+    # if not dorm_ids and not employer_names:
+    #     return pd.DataFrame()
+    # ---------------------------------------------------
 
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
-        # 【核心修改 1】建立 CTE 查詢所有費用的最新一筆歷史
         base_query = """
             WITH LatestFeeHistory AS (
                 SELECT
@@ -233,8 +234,7 @@ def get_workers_for_fee_management(filters: dict):
                 w.unique_id, d.original_address AS "宿舍地址", r.room_number AS "房號",
                 w.employer_name AS "雇主", w.worker_name AS "姓名", 
                 
-                -- 【核心修改 2】將所有費用欄位改為從 LatestFeeHistory 抓取
-                COALESCE(rent.amount, NULL) AS "月費(房租)", -- 顯示 NULL 而不是 0
+                COALESCE(rent.amount, NULL) AS "月費(房租)",
                 COALESCE(util.amount, NULL) AS "水電費",
                 COALESCE(clean.amount, NULL) AS "清潔費",
                 COALESCE(resto.amount, NULL) AS "宿舍復歸費",
@@ -246,7 +246,6 @@ def get_workers_for_fee_management(filters: dict):
             JOIN "Rooms" r ON w.room_id = r.id
             JOIN "Dormitories" d ON r.dorm_id = d.id
             
-            -- 【核心修改 3】LEFT JOIN 每一個費用類型
             LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '房租' AND rn = 1) rent ON w.unique_id = rent.worker_unique_id
             LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '水電費' AND rn = 1) util ON w.unique_id = util.worker_unique_id
             LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '清潔費' AND rn = 1) clean ON w.unique_id = clean.worker_unique_id
@@ -254,19 +253,21 @@ def get_workers_for_fee_management(filters: dict):
             LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '充電清潔費' AND rn = 1) charge ON w.unique_id = charge.worker_unique_id
         """
         
-        where_clauses = []
+        # --- 【核心修改 2】修正 SQL 組合邏輯 ---
+        # 必須先放入「基本條件」(在住)，再依篩選條件動態加入 AND
+        where_clauses = ["(w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)"]
         params = []
         
         if dorm_ids:
-            where_clauses.append(f"d.id IN ({', '.join(['%s'] * len(dorm_ids))})")
-            params.extend(dorm_ids)
+            where_clauses.append(f"d.id = ANY(%s)")
+            params.append(list(dorm_ids))
             
         if employer_names:
-            where_clauses.append(f"w.employer_name IN ({', '.join(['%s'] * len(employer_names))})")
-            params.extend(employer_names)
+            where_clauses.append(f"w.employer_name = ANY(%s)")
+            params.append(list(employer_names))
 
+        # 組合 WHERE 子句
         base_query += " WHERE " + " AND ".join(where_clauses)
-        base_query += " AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)"
         base_query += " ORDER BY d.original_address, r.room_number, w.worker_name"
         
         return _execute_query_to_dataframe(conn, base_query, tuple(params))

@@ -109,22 +109,21 @@ def batch_update_zero_rent_workers(workers_df: pd.DataFrame):
 
 def get_loss_making_dorms_analysis(year_month: str):
     """
-    【v1.2 修改版】找出所有我司管理的虧損宿舍，並計算建議的費用調整。
-    可接收指定的年月進行分析。
+    【v1.3 欄位修正版】找出所有我司管理的虧損宿舍，並計算建議的費用調整。
+    修正：對應 dashboard_model 的新欄位名稱 (預估損益 -> 淨損益)。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
 
     try:
-        # --- 【核心修改點 1】從 dashboard_model 引入函式 ---
         from . import dashboard_model
-        # --- 【核心修改點 2】使用傳入的 year_month 參數 ---
         df = dashboard_model.get_financial_dashboard_data(year_month)
 
         if df is None or df.empty:
             return pd.DataFrame()
 
-        loss_df = df[df['損益'] < 0].copy()
+        # 【修正】改用 "淨損益"
+        loss_df = df[df['淨損益'] < 0].copy()
         if loss_df.empty:
             return pd.DataFrame()
 
@@ -153,7 +152,7 @@ def get_loss_making_dorms_analysis(year_month: str):
         loss_df['在住人數'] = loss_df['id'].map(headcount_map).fillna(0).astype(int)
         
         def get_suggestion(row):
-            deficit = abs(row['損益'])
+            deficit = abs(row['淨損益']) # 【修正】改用 "淨損益"
             payers = row['在住人數']
             if payers == 0:
                 return "宿舍無有效收費人員，無法計算建議漲幅。請先檢查人員收費狀態。"
@@ -163,7 +162,8 @@ def get_loss_making_dorms_analysis(year_month: str):
             
         loss_df['營運建議'] = loss_df.apply(get_suggestion, axis=1)
 
-        return loss_df[['宿舍地址', '損益', '在住人數', '營運建議', '宿舍備註']]
+        # 【修正】回傳欄位也改為 "淨損益"
+        return loss_df[['宿舍地址', '淨損益', '在住人數', '營運建議', '宿舍備註']]
 
     except Exception as e:
         print(f"產生營運分析時發生錯誤: {e}")

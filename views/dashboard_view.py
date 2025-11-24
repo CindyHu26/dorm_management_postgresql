@@ -1,3 +1,5 @@
+# views/dashboard_view.py
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -65,7 +67,7 @@ def render():
                 }
             )
 
-    # --- 頁籤二：財務分析 (***核心修改處***) ---
+    # --- 頁籤二：財務分析 ---
     with tab2:
         st.subheader("我司管理宿舍 - 財務分析")
 
@@ -74,11 +76,11 @@ def render():
         today = datetime.now()
         today_year = today.year
 
-        # --- 子頁籤一：按月檢視 (放入原始程式碼) ---
+        # --- 子頁籤一：按月檢視 ---
         with fin_tab1:
             st.markdown("##### 選擇月份")
             
-            # --- 【核心修改】預設選取 2 個月前 ---
+            # 預設選取 2 個月前
             default_date = today - relativedelta(months=2)
             default_year = default_date.year
             default_month = default_date.month
@@ -87,7 +89,7 @@ def render():
             try:
                 default_year_index = year_options.index(default_year)
             except ValueError:
-                default_year_index = 2 # 預設回今年 (列表第3個)
+                default_year_index = 2
 
             c1, c2 = st.columns(2)
             selected_year_month = c1.selectbox("選擇年份", options=year_options, index=default_year_index, key="month_year")
@@ -109,9 +111,9 @@ def render():
                 if annual_forecast_data and seasonal_forecast_data:
                     f_col1, f_col2 = st.columns(2)
                     with f_col1:
-                        st.metric(label="單月總支出 (年均)", value=f"NT$ {annual_forecast_data['estimated_monthly_expense']:,.0f}", help=f"此估算基於過去 {annual_forecast_data['lookback_days']} 天的數據。")
+                        st.metric(label="預估單月總支出 (年均)", value=f"NT$ {annual_forecast_data['estimated_monthly_expense']:,.0f}", help=f"此估算基於過去 {annual_forecast_data['lookback_days']} 天的數據。")
                     with f_col2:
-                        st.metric(label=f"{year_month_str} 單月總支出 (季節性)", value=f"NT$ {seasonal_forecast_data['estimated_monthly_expense']:,.0f}", help=f"此估算基於去年同期 ({seasonal_forecast_data.get('lookback_period', 'N/A')}) 的數據。")
+                        st.metric(label=f"預估 {year_month_str} 單月總支出 (季節性)", value=f"NT$ {seasonal_forecast_data['estimated_monthly_expense']:,.0f}", help=f"此估算基於去年同期 ({seasonal_forecast_data.get('lookback_period', 'N/A')}) 的數據。")
                 else:
                     st.info("尚無足夠歷史數據進行預測。")
 
@@ -138,7 +140,7 @@ def render():
                 fin_col1, fin_col2, fin_col3 = st.columns(3)
                 fin_col1.metric(f"{year_month_str} 總收入", f"NT$ {total_income:,}")
                 fin_col2.metric(f"{year_month_str} 總支出", f"NT$ {total_expense:,}")
-                fin_col3.metric(f"{year_month_str} 損益", f"NT$ {profit_loss:,}", delta=f"{profit_loss:,}")
+                fin_col3.metric(f"{year_month_str} 淨損益", f"NT$ {profit_loss:,}", delta=f"{profit_loss:,}")
 
                 st.markdown("##### 各宿舍損益詳情")
                 
@@ -146,35 +148,34 @@ def render():
                     color = 'red' if val < 0 else 'green' if val > 0 else 'grey'
                     return f'color: {color}'
                 
+                # 【核心修改】設定欄位顯示與隱藏
                 st.dataframe(
-                    finance_df.style.apply(lambda x: x.map(lambda y: style_profit(y) if x.name == '損益' else None)),
+                    finance_df.style.apply(lambda x: x.map(lambda y: style_profit(y) if x.name == '淨損益' else None)),
                     width="stretch", 
                     hide_index=True,
+                    column_order=["宿舍地址", "雇主", "總收入", "總支出", "淨損益"], # <--- 這裡設定預設顯示的欄位
                     column_config={
-                        "宿舍地址": st.column_config.TextColumn(width="medium"),
-                        "雇主": st.column_config.TextColumn(
-                            "雇主", 
-                            help="該期間內住宿的雇主名單", 
-                            width="medium"
-                        ), # 新增設定
-                        "總收入": st.column_config.NumberColumn(format="NT$ %d"),
-                        "長期合約支出": st.column_config.NumberColumn(format="NT$ %d"),
-                        "變動雜費(我司支付)": st.column_config.NumberColumn(format="NT$ %d"),
-                        "長期攤銷": st.column_config.NumberColumn(format="NT$ %d"),
-                        "總支出": st.column_config.NumberColumn(format="NT$ %d"),
-                        "損益": st.column_config.NumberColumn(format="NT$ %d")
+                        "宿舍地址": st.column_config.TextColumn("宿舍地址", width="medium"),
+                        "雇主": st.column_config.TextColumn("雇主", width="medium"),
+                        "總收入": st.column_config.NumberColumn("總收入", format="NT$ %d"),
+                        "總支出": st.column_config.NumberColumn("總支出", format="NT$ %d"),
+                        "淨損益": st.column_config.NumberColumn("淨損益", format="NT$ %d"),
+                        # 其他欄位不需要特別設定 hidden，只要不在 column_order 中，
+                        # 在支援的 Streamlit 版本中會自動隱藏但可透過「眼睛」開啟
+                        "長期合約支出": st.column_config.NumberColumn("長期合約支出", format="NT$ %d"),
+                        "變動雜費(我司支付)": st.column_config.NumberColumn("變動雜費", format="NT$ %d"),
+                        "長期攤銷": st.column_config.NumberColumn("長期攤銷", format="NT$ %d"),
+                        "宿舍備註": st.column_config.TextColumn("宿舍備註")
                     }
                 )
 
-        # --- 子頁籤二：按年檢視 (新功能) ---
+        # --- 子頁籤二：按年檢視 ---
         with fin_tab2:
             st.markdown("##### 選擇年份")
-            # --- 【核心修改 2】使用 today_year 變數 ---
             selected_year_annual = st.selectbox("選擇年份", options=range(today_year - 2, today_year + 2), index=2, key="annual_year")
 
             st.markdown("---")
             
-            # --- 【核心修改 3】動態產生標題和說明文字 ---
             if selected_year_annual < today_year:
                 annual_title = f"{selected_year_annual} 年度實際損益 (完整年度)"
                 annual_info = f"此報表統計 {selected_year_annual} 年 1月1日 至 12月31日 的完整年度收支總額。"
@@ -184,11 +185,9 @@ def render():
             
             st.subheader(annual_title)
             st.info(annual_info)
-            # --- 修改結束 ---
             
             @st.cache_data
             def get_annual_finance_data(year):
-                # 呼叫我們更新後的函式
                 return dashboard_model.get_annual_financial_dashboard_data(year)
 
             if st.button("🔍 產生年度財務報表", key="generate_annual_report"):
@@ -206,7 +205,7 @@ def render():
                 fin_col_a1, fin_col_a2, fin_col_a3 = st.columns(3)
                 fin_col_a1.metric(f"{selected_year_annual}年 總收入", f"NT$ {total_income_annual:,}")
                 fin_col_a2.metric(f"{selected_year_annual}年 總支出", f"NT$ {total_expense_annual:,}")
-                fin_col_a3.metric(f"{selected_year_annual}年 損益", f"NT$ {profit_loss_annual:,}", delta=f"{profit_loss_annual:,}")
+                fin_col_a3.metric(f"{selected_year_annual}年 淨損益", f"NT$ {profit_loss_annual:,}", delta=f"{profit_loss_annual:,}")
 
                 st.markdown("##### 各宿舍年度損益詳情")
                 
@@ -214,22 +213,21 @@ def render():
                     color = 'red' if val < 0 else 'green' if val > 0 else 'grey'
                     return f'color: {color}'
                 
+                # 【核心修改】設定欄位顯示與隱藏 (同月度表)
                 st.dataframe(
-                    annual_finance_df.style.apply(lambda x: x.map(lambda y: style_profit_annual(y) if x.name == '損益' else None)),
+                    annual_finance_df.style.apply(lambda x: x.map(lambda y: style_profit_annual(y) if x.name == '淨損益' else None)),
                     width="stretch", 
                     hide_index=True,
+                    column_order=["宿舍地址", "雇主", "總收入", "總支出", "淨損益"],
                     column_config={
-                        "宿舍地址": st.column_config.TextColumn(width="medium"),
-                        "雇主": st.column_config.TextColumn(
-                            "雇主", 
-                            help="該期間內住宿的雇主名單", 
-                            width="medium"
-                        ), # 新增設定
-                        "總收入": st.column_config.NumberColumn(format="NT$ %d"),
-                        "長期合約支出": st.column_config.NumberColumn(format="NT$ %d"),
-                        "變動雜費(我司支付)": st.column_config.NumberColumn(format="NT$ %d"),
-                        "長期攤銷": st.column_config.NumberColumn(format="NT$ %d"),
-                        "總支出": st.column_config.NumberColumn(format="NT$ %d"),
-                        "損益": st.column_config.NumberColumn(format="NT$ %d")
+                        "宿舍地址": st.column_config.TextColumn("宿舍地址", width="medium"),
+                        "雇主": st.column_config.TextColumn("雇主", width="medium"),
+                        "總收入": st.column_config.NumberColumn("總收入", format="NT$ %d"),
+                        "總支出": st.column_config.NumberColumn("總支出", format="NT$ %d"),
+                        "淨損益": st.column_config.NumberColumn("淨損益", format="NT$ %d"),
+                        "長期合約支出": st.column_config.NumberColumn("長期合約支出", format="NT$ %d"),
+                        "變動雜費(我司支付)": st.column_config.NumberColumn("變動雜費", format="NT$ %d"),
+                        "長期攤銷": st.column_config.NumberColumn("長期攤銷", format="NT$ %d"),
+                        "宿舍備註": st.column_config.TextColumn("宿舍備註")
                     }
                 )

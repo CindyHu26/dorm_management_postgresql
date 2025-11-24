@@ -371,24 +371,27 @@ def render():
 
         elif selected_main_category != "請選擇...":
             st.info(f"在 {year_month_str} 期間，找不到「{selected_main_category}」的任何明細紀錄。")
-    # --- 核心修改結束 ---
 
     st.markdown("---")
-    st.subheader("歷史財務趨勢 (近24個月 - 彙總)")
+    st.caption(f"基準月份：{year_month_str} (往前推算24個月)")
     
+    # 【核心修改 1】傳入 year_month 參數
     @st.cache_data
-    def get_trend_data(dorm_ids):
-        return single_dorm_analyzer.get_monthly_financial_trend(list(dorm_ids))
+    def get_trend_data(dorm_ids, year_month):
+        # 這裡 year_month 是 "YYYY-MM" 格式，轉為 "YYYY-MM-01" 傳給後端
+        end_date_str = f"{year_month}-01"
+        return single_dorm_analyzer.get_monthly_financial_trend(list(dorm_ids), end_date_str)
 
-    trend_df = get_trend_data(selected_dorm_ids)
+    # 呼叫時帶入使用者選擇的月份
+    trend_df = get_trend_data(selected_dorm_ids, year_month_str)
 
-    if not trend_df.empty:
-        chart_df = trend_df.set_index("月份")
     if not trend_df.empty:
         chart_df = trend_df.set_index("月份")
         st.line_chart(chart_df)
+        
         with st.expander("查看趨勢圖原始數據"):
-            st.dataframe(trend_df, width="stretch", hide_index=True)
+            # 【核心修改 2】將表格依月份倒序排列 (最新的在上面)
+            st.dataframe(trend_df.sort_values("月份", ascending=False), width="stretch", hide_index=True)
     else:
         st.info("尚無足夠的歷史資料可繪製趨勢圖。")
     

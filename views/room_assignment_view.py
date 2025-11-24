@@ -1,5 +1,5 @@
-# 檔案路徑: views/room_assignment_view.py
-# (v2.2 - 新增修正模式)
+# views/room_assignment_view.py
+# (v2.3 - 移除快取以解決資料不同步問題)
 
 import streamlit as st
 import pandas as pd
@@ -18,7 +18,7 @@ def render():
     )
 
     # --- 步驟一：篩選宿舍 (共用) ---
-    @st.cache_data
+    # 【核心修改】移除 @st.cache_data，確保能讀到最新新增的宿舍
     def get_my_dorms():
         return dormitory_model.get_my_company_dorms_for_selection()
 
@@ -29,7 +29,6 @@ def render():
     
     dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in my_dorms}
     
-    # 為了讓切換模式時宿舍選項不跑掉，我們用 session state 稍微控制一下 key
     selected_dorm_id = st.selectbox(
         "步驟一：請選擇宿舍",
         options=[None] + list(dorm_options.keys()),
@@ -40,7 +39,7 @@ def render():
     if not selected_dorm_id:
         return
 
-    @st.cache_data
+    # 【核心修改】移除 @st.cache_data，確保能讀到最新新增的房號
     def get_rooms_for_dorm(dorm_id):
         rooms_in_dorm = dormitory_model.get_rooms_for_selection(dorm_id) or []
         # 排除 [未分配房間]，只顯示真實房間
@@ -66,7 +65,7 @@ def render():
             """
         )
 
-        @st.cache_data
+        # 【核心修改】移除 @st.cache_data，確保能讀到最新的人員狀態
         def get_unassigned(dorm_id):
             return room_assignment_model.get_unassigned_workers(dorm_id)
 
@@ -155,11 +154,12 @@ def render():
                     if failed_cnt > 0: st.error(msg)
                     else: st.success(msg)
                         
+                    # 雖然移除了函式快取，但仍清除全域快取以防萬一
                     st.cache_data.clear()
                     st.rerun()
 
     # ==========================================================================
-    # 模式 B: 修正現有房號 (新功能)
+    # 模式 B: 修正現有房號
     # ==========================================================================
     else:
         st.info(
@@ -170,7 +170,7 @@ def render():
             """
         )
 
-        @st.cache_data
+        # 【核心修改】移除 @st.cache_data，確保能讀到最新的人員狀態
         def get_residents_for_correction(dorm_id):
             return room_assignment_model.get_active_residents_for_correction(dorm_id)
 
@@ -184,14 +184,9 @@ def render():
             st.subheader("步驟二：直接修正房號/床位")
             st.caption(f"此宿舍共有 {len(residents_df)} 位在住員工。請直接在下方修改他們的房號。")
 
-            # 準備編輯欄位
-            # 預設值設為 None，強迫使用者必須主動去選，避免誤觸
-            # 或者：如果不改動就不送出，這裡我們採用 "有更動才送出" 的邏輯
             residents_df["修正後房號"] = None 
             residents_df["修正後床位"] = None 
 
-            # 為了方便對照，我們可以把目前的房號顯示在旁邊
-            # 使用 data_editor 讓使用者選
             edited_df = st.data_editor(
                 residents_df,
                 key="correction_editor",
@@ -209,7 +204,7 @@ def render():
                         "修正後房號 (若無變更請留空)",
                         options=list(room_options.keys()),
                         format_func=lambda x: room_options.get(x, ""),
-                        required=False # 允許留空代表不改
+                        required=False 
                     ),
                     "修正後床位": st.column_config.TextColumn("修正後床位 (選填)")
                 },
@@ -236,35 +231,18 @@ def render():
             submitted = st.form_submit_button("🚀 執行修正 (直接更新)", type="primary")
 
             if submitted:
-                # 找出有變更的行：修正後房號有值，或者修正後床位有值
-                # 但因為我們的邏輯是 "修正房號" 為主，如果只修床位也可以
-                # 這裡簡單起見：如果 "修正後房號" 有填，就執行更新
-                
                 updates_list = []
                 for _, row in edited_df.iterrows():
                     new_room_val = row['修正後房號']
                     new_bed_val = row['修正後床位']
                     
-                    # 如果使用者有選新房號
                     if pd.notna(new_room_val):
                         updates_list.append({
                             'ah_id': row['ah_id'],
                             'worker_id': row['worker_unique_id'],
                             'new_room_id': int(new_room_val),
-                            # 如果床位沒填，就保留原本的？或是清空？
-                            # 依照UI設計，"修正後床位" 是文字欄位，若沒填就是 None/NaN
-                            # 為了方便，如果使用者改了房號但沒填床位，我們假設床位為空 (或沿用原本的邏輯比較複雜)
-                            # 這裡採用：若有填寫床位欄位就用新的，若沒填寫（None/Empty）則設為 None (清空) -> 這是修正邏輯
                             'new_bed_number': str(new_bed_val).strip() if pd.notna(new_bed_val) and str(new_bed_val).strip() else None
                         })
-                    # 如果使用者沒選新房號，但填了新床位 -> 代表只想改床位，房號不變
-                    elif pd.notna(new_bed_val) and str(new_bed_val).strip():
-                         # 既然房號沒變，我們要找出原本的 room_id
-                         # 反查有點麻煩，但我們可以從 room_options 的 value 反查 key (比較慢)
-                         # 或者簡單一點：要求使用者如果要改床位，也要重選一次房號 (比較安全)
-                         # 這裡為了防呆，我們略過只有改床位的情況，或者你可以實作反查邏輯
-                         # 簡單作法：提示使用者
-                         pass
 
                 if not updates_list:
                     st.warning("您沒有選擇任何要修正的「新房號」。")

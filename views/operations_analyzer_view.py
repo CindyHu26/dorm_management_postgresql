@@ -1,3 +1,5 @@
+# views/operations_analyzer_view.py
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -66,6 +68,7 @@ def render():
         st.subheader("📉 虧損宿舍營運建議")
         st.info("選擇一個月份，系統將分析該月份我司管理的宿舍中，出現虧損的項目，並提供調整建議。")
 
+        # --- 設定日期選擇器 (預設為2個月前) ---
         today = datetime.now()
         default_date = today - relativedelta(months=2)
         default_year = default_date.year
@@ -86,7 +89,6 @@ def render():
         def get_loss_analysis(period):
             return operations_analyzer_model.get_loss_making_dorms_analysis(period)
 
-        # --- 【核心修改點 2】將選擇的年月傳入函式 ---
         loss_analysis_df = get_loss_analysis(year_month_str)
 
         if loss_analysis_df.empty:
@@ -98,7 +100,7 @@ def render():
                 hide_index=True,
                 width='stretch',
                 column_config={
-                    "損益": st.column_config.NumberColumn(format="$ %d"),
+                    "淨損益": st.column_config.NumberColumn(format="$ %d"),
                     "在住人數": st.column_config.NumberColumn(format="%d 人"),
                     "宿舍備註": st.column_config.TextColumn(help="宿舍的特殊備註")
                 }

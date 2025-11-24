@@ -281,6 +281,7 @@ def create_all_tables_and_indexes():
                 "transaction_date" DATE NOT NULL, 
                 "amount" INTEGER NOT NULL, 
                 "notes" TEXT,
+                "target_employer" VARCHAR(100),
                 FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE,
                 FOREIGN KEY ("room_id") REFERENCES "Rooms" ("id") ON DELETE SET NULL
             );

@@ -1,32 +1,11 @@
-# views/fee_dashboard_view.py (v3.1 - 支援自訂欄位排序)
-
 import streamlit as st
 import pandas as pd
-import json
-import os
 from data_models import finance_model, dormitory_model, employer_dashboard_model
-
-# --- 新增：讀取費用設定檔 ---
-FEE_CONFIG_FILE = "fee_config.json"
-
-def load_fee_order():
-    """讀取設定檔中的費用類型順序"""
-    default_order = ["房租", "水電費", "清潔費", "宿舍復歸費", "充電清潔費"]
-    
-    if os.path.exists(FEE_CONFIG_FILE):
-        try:
-            with open(FEE_CONFIG_FILE, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                # 回傳設定檔中的 internal_types，若無則回傳預設
-                return config.get("internal_types", default_order)
-        except Exception:
-            pass
-    return default_order
 
 def render():
     """渲染「費用標準與異常儀表板」"""
     st.header("費用標準與異常儀表板")
-    st.info("此儀表板會自動掃描資料庫中**所有出現過的費用類型**，並依照您在「財務爬取與設定」頁面定義的順序排列。")
+    st.info("此儀表板自動分析各「宿舍」、「雇主」與「特殊狀況」的收費慣例（標準），並列出收費不同的特例人員。")
 
     # --- 1. 篩選條件 ---
     @st.cache_data
@@ -55,63 +34,54 @@ def render():
     }
 
     with st.spinner("正在分析費用結構..."):
-        # 取得長表格式資料
-        raw_long_df = finance_model.get_dynamic_fee_data_for_dashboard(filters)
+        raw_df = finance_model.get_workers_for_fee_management(filters)
 
-    if raw_long_df.empty:
-        st.warning("查無符合條件的人員費用資料。")
+    if raw_df.empty:
+        st.warning("查無符合條件的人員資料。")
         return
 
-    # --- 3. 資料處理：長表轉寬表 (Pivot) ---
-    raw_long_df['特殊狀況'] = raw_long_df['特殊狀況'].fillna('一般').replace('', '一般')
-
-    # 使用 pivot_table 將「費用類型」轉為欄位
-    pivot_df = raw_long_df.pivot_table(
-        index=['宿舍地址', '雇主', '特殊狀況', '姓名', '房號'], 
-        columns='費用類型', 
-        values='金額', 
-        fill_value=0
-    ).reset_index()
-
-    # --- 【核心修改】排序欄位 ---
-    # 1. 找出資料中實際出現的所有費用欄位
-    data_fee_cols = [c for c in pivot_df.columns if c not in ['宿舍地址', '雇主', '特殊狀況', '姓名', '房號']]
+    # --- 3. 數據處理核心邏輯 ---
+    # 定義要分析的費用欄位
+    fee_cols = ["月費(房租)", "水電費", "清潔費", "宿舍復歸費", "充電清潔費"]
     
-    # 2. 讀取使用者設定的偏好順序
-    preferred_order = load_fee_order()
+    analysis_df = raw_df.copy()
     
-    # 3. 進行排序：
-    #    邏輯：如果在偏好清單中，依照清單順序 (index)；
-    #         如果不在清單中 (新出現的)，則排在最後面 (999)。
-    fee_cols = sorted(data_fee_cols, key=lambda x: preferred_order.index(x) if x in preferred_order else 999)
+    # 處理特殊狀況：填補空值為 '一般'
+    analysis_df['特殊狀況'] = analysis_df['特殊狀況'].fillna('一般').replace('', '一般')
 
-    # --- 4. 異常分析邏輯 ---
+    # 預處理：填補費用空值為 0 以利計算
+    for col in fee_cols:
+        analysis_df[col] = pd.to_numeric(analysis_df[col], errors='coerce').fillna(0).astype(int)
+
+    # 準備結果容器
     summary_data = []
     exception_details = []
 
-    grouped = pivot_df.groupby(['宿舍地址', '雇主', '特殊狀況'])
+    # 依照 (宿舍, 雇主, 特殊狀況) 分組
+    grouped = analysis_df.groupby(['宿舍地址', '雇主', '特殊狀況'])
 
     for (dorm, emp, status), group in grouped:
         group_stats = {
             "宿舍": dorm,
             "雇主": emp,
-            "特殊狀況": status,
+            "特殊狀況": status, 
             "總人數": len(group)
         }
         
         for col in fee_cols:
-            # 計算標準費用 (眾數)
+            # 計算眾數 (Mode) 作為 "標準費用"
             modes = group[col].mode()
             standard_fee = modes[0] if not modes.empty else 0
             
             group_stats[f"標準{col}"] = standard_fee
             
-            # 找出異常
+            # 找出異常 (費用不等於標準費用的)
             exceptions = group[group[col] != standard_fee]
             
             if not exceptions.empty:
                 group_stats[f"{col}異常"] = len(exceptions)
                 
+                # 記錄異常細節
                 for _, row in exceptions.iterrows():
                     exception_details.append({
                         "宿舍": dorm,
@@ -121,7 +91,9 @@ def render():
                         "房號": row['房號'],
                         "費用項目": col,
                         "標準金額": standard_fee,
-                        "實際金額": row[col]
+                        "實際金額": row[col],
+                        "入住日": row.get('入住日'), # 【核心修改】新增入住日欄位
+                        "備註": row.get('個人備註')
                     })
             else:
                 group_stats[f"{col}異常"] = 0
@@ -131,11 +103,11 @@ def render():
     summary_df = pd.DataFrame(summary_data)
     exceptions_df = pd.DataFrame(exception_details)
 
-    # --- 5. 顯示彙總表 ---
+    # --- 4. 顯示彙總表 ---
     st.subheader("📊 收費標準總覽")
-    
+    st.info("系統已依據「特殊狀況」自動分組。")
+
     if not summary_df.empty:
-        # 設定顯示欄位順序 (這裡也要依照排序後的 fee_cols)
         cols_order = ["宿舍", "雇主", "特殊狀況", "總人數"]
         for col in fee_cols:
             cols_order.append(f"標準{col}")
@@ -150,22 +122,21 @@ def render():
             column_config[f"{col}異常"] = st.column_config.NumberColumn(label="異常", help=f"{col}的異常人數")
 
         st.dataframe(
-            summary_df[cols_order], # 使用排序後的順序
+            summary_df[cols_order],
             width="stretch",
             hide_index=True,
             column_config=column_config
         )
 
-    # --- 6. 顯示特例細節 ---
+    # --- 5. 顯示特例人員清單 (含入住日) ---
     st.markdown("---")
     st.subheader("🔍 特例人員清單")
     
     if exceptions_df.empty:
-        st.success("恭喜！所有人員的收費皆符合標準。")
+        st.success("恭喜！所有人員的收費皆符合該宿舍、雇主與狀態的標準。")
     else:
         st.warning(f"共發現 {len(exceptions_df)} 筆收費特例。")
         
-        # 篩選器也依照排序後的順序顯示
         filter_ex_col = st.multiselect("篩選費用項目", options=fee_cols, default=fee_cols)
         
         if filter_ex_col:
@@ -178,5 +149,6 @@ def render():
                 column_config={
                     "標準金額": st.column_config.NumberColumn(format="$%d"),
                     "實際金額": st.column_config.NumberColumn(format="$%d"),
+                    "入住日": st.column_config.DateColumn(format="YYYY-MM-DD"), # 【核心修改】格式化日期
                 }
             )

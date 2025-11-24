@@ -18,9 +18,8 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_dormitory_dashboard_data():
     """
-    【v2.9 費用來源修正版】獲取每個宿舍的人數與租金統計，用於「住宿總覽」頁籤。
-    改為從 AccommodationHistory 查詢實際在住人數。
-    費用改為從 FeeHistory 查詢最新一筆紀錄。
+    【v3.2 同月計算修正版】獲取每個宿舍的人數與租金統計。
+    修正：費用計算改為找出每位員工「最新的一個收費月份」，並加總該月份的所有費用。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -34,31 +33,36 @@ def get_dormitory_dashboard_data():
                 FROM "AccommodationHistory" ah
                 JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
                 WHERE (ah.end_date IS NULL OR ah.end_date > CURRENT_DATE)
-                  AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE) -- 雙重保險
+                  AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)
             ),
-            LatestFeeHistory AS (
+            -- 1. 找出每位員工「最近一次有費用紀錄的月份」
+            LatestFeeMonth AS (
                 SELECT
-                    worker_unique_id, fee_type, amount,
-                    ROW_NUMBER() OVER(PARTITION BY worker_unique_id, fee_type ORDER BY effective_date DESC) as rn
+                    worker_unique_id,
+                    MAX(effective_date) as max_date
                 FROM "FeeHistory"
                 WHERE effective_date <= CURRENT_DATE
+                GROUP BY worker_unique_id
+            ),
+            -- 2. 加總該員工「該月份」的所有費用
+            WorkerCurrentTotal AS (
+                SELECT 
+                    fh.worker_unique_id, 
+                    SUM(fh.amount) as total_fee
+                FROM "FeeHistory" fh
+                JOIN LatestFeeMonth lfm ON fh.worker_unique_id = lfm.worker_unique_id
+                -- 【關鍵】只加總同一年月的費用
+                WHERE TO_CHAR(fh.effective_date, 'YYYY-MM') = TO_CHAR(lfm.max_date, 'YYYY-MM')
+                GROUP BY fh.worker_unique_id
             ),
             CurrentResidents AS (
                 SELECT
                     ca.room_id,
                     ca.unique_id,
                     ca.gender,
-                    (
-                        COALESCE(rent.amount, 0) + COALESCE(util.amount, 0) + 
-                        COALESCE(clean.amount, 0) + COALESCE(resto.amount, 0) + 
-                        COALESCE(charge.amount, 0)
-                    ) as total_fee
+                    COALESCE(wct.total_fee, 0) as total_fee
                 FROM CurrentAccommodation ca
-                LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '房租' AND rn = 1) rent ON ca.unique_id = rent.worker_unique_id
-                LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '水電費' AND rn = 1) util ON ca.unique_id = util.worker_unique_id
-                LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '清潔費' AND rn = 1) clean ON ca.unique_id = clean.worker_unique_id
-                LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '宿舍復歸費' AND rn = 1) resto ON ca.unique_id = resto.worker_unique_id
-                LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '充電清潔費' AND rn = 1) charge ON ca.unique_id = charge.worker_unique_id
+                LEFT JOIN WorkerCurrentTotal wct ON ca.unique_id = wct.worker_unique_id
             )
             SELECT 
                 d.original_address AS "宿舍地址", d.primary_manager AS "主要管理人",
@@ -72,7 +76,7 @@ def get_dormitory_dashboard_data():
             LEFT JOIN "Rooms" r ON d.id = r.dorm_id
             LEFT JOIN CurrentResidents cr ON r.id = cr.room_id
             GROUP BY d.id, d.original_address, d.primary_manager
-            HAVING COUNT(cr.unique_id) > 0 -- 只顯示有住人的宿舍
+            HAVING COUNT(cr.unique_id) > 0
             ORDER BY "主要管理人", "總人數" DESC
         """
         return _execute_query_to_dataframe(conn, query)
