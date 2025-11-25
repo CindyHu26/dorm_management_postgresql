@@ -185,57 +185,76 @@ def render():
                 )
 
     with st.container(border=True):
-            st.subheader("單一宿舍深度分析報表")
-            st.info("選擇一個我司管理的宿舍，產生一份包含人數、國籍、性別統計與人員詳情的完整報告。")
+        st.subheader("單一宿舍深度分析報表")
+        st.info("選擇一個宿舍與月份，產生包含人數、國籍、性別統計與人員詳情的完整報告。")
 
-            my_dorms = dormitory_model.get_my_company_dorms_for_selection()
-            if not my_dorms:
-                st.warning("目前沒有「我司管理」的宿舍可供選擇。")
-            else:
-                dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in my_dorms}
-                selected_dorm_id = st.selectbox(
-                    "請選擇要匯出報表的宿舍：", 
-                    options=list(dorm_options.keys()), 
-                    format_func=lambda x: dorm_options.get(x),
-                    key="deep_report_dorm_select"
-                )
+        my_dorms = dormitory_model.get_my_company_dorms_for_selection()
+        if not my_dorms:
+            st.warning("目前沒有「我司管理」的宿舍可供選擇。")
+        else:
+            dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in my_dorms}
+            
+            # 版面配置：宿舍 + 日期
+            dc1, dc2, dc3 = st.columns(3)
+            
+            selected_dorm_id = dc1.selectbox(
+                "選擇宿舍", 
+                options=list(dorm_options.keys()), 
+                format_func=lambda x: dorm_options.get(x),
+                key="deep_report_dorm_select"
+            )
+            
+            # 預設上個月
+            today_deep = datetime.now()
+            default_date_deep = today_deep - relativedelta(months=1)
+            
+            year_opts_deep = list(range(today_deep.year - 2, today_deep.year + 2))
+            default_year_idx = year_opts_deep.index(default_date_deep.year) if default_date_deep.year in year_opts_deep else 2
 
-                if st.button("🚀 產生並下載宿舍報表", key="download_dorm_report"):
-                    if not selected_dorm_id:
-                        st.error("請先選擇一個宿舍。")
-                    else:
-                        with st.spinner("正在產生報表..."):
-                            report_df = report_model.get_dorm_report_data(selected_dorm_id)
+            selected_year_deep = dc2.selectbox("年份", options=year_opts_deep, index=default_year_idx, key="deep_rep_year")
+            selected_month_deep = dc3.selectbox("月份", options=range(1, 13), index=default_date_deep.month - 1, key="deep_rep_month")
+            
+            year_month_str_deep = f"{selected_year_deep}-{selected_month_deep:02d}"
+
+            if st.button("🚀 產生並下載宿舍報表", key="download_dorm_report"):
+                if not selected_dorm_id:
+                    st.error("請先選擇一個宿舍。")
+                else:
+                    with st.spinner(f"正在產生 {year_month_str_deep} 的報表..."):
+                        # 傳入年月
+                        report_df = report_model.get_dorm_report_data(selected_dorm_id, year_month_str_deep)
+                        
+                        if report_df.empty:
+                            st.warning(f"此宿舍在 {year_month_str_deep} 沒有在住人員紀錄。")
+                        else:
+                            # 製作摘要表
+                            nationality_counts = report_df['國籍'].dropna().value_counts().to_dict()
+                            summary_items = ["總人數", "男性人數", "女性人數"] + [f"{nat}籍人數" for nat in nationality_counts.keys()]
+                            summary_values = [
+                                len(report_df), 
+                                len(report_df[report_df['性別'] == '男']), 
+                                len(report_df[report_df['性別'] == '女'])
+                            ] + list(nationality_counts.values())
+                            summary_df = pd.DataFrame({"統計項目": summary_items, "數值": summary_values})
+
+                            # 【核心修改】客製化標題：地址 人數摘要 (YYYY-MM)
+                            dorm_address_str = dorm_options.get(selected_dorm_id, "").split(') ')[-1] # 取出括號後面的地址部分
+                            custom_title = f"{dorm_address_str} 人數摘要 ({year_month_str_deep})"
+
+                            excel_file_data = {
+                                "宿舍報表": [
+                                    {"dataframe": summary_df, "title": custom_title}, # 使用新標題
+                                    {"dataframe": report_df, "title": "在住人員明細"}
+                                ]
+                            }
+                            excel_file = to_excel(excel_file_data)
                             
-                            if report_df.empty:
-                                st.warning("此宿舍目前沒有在住人員可供匯出。")
-                            else:
-                                nationality_counts = report_df['國籍'].dropna().value_counts().to_dict()
-                                summary_items = ["總人數", "男性人數", "女性人數"] + [f"{nat}籍人數" for nat in nationality_counts.keys()]
-                                summary_values = [
-                                    len(report_df), 
-                                    len(report_df[report_df['性別'] == '男']), 
-                                    len(report_df[report_df['性別'] == '女'])
-                                ] + list(nationality_counts.values())
-                                summary_df = pd.DataFrame({"統計項目": summary_items, "數值": summary_values})
-
-                                # 由於後端已經重新命名，這裡直接使用 report_df 即可
-                                details_df = report_df
-
-                                excel_file_data = {
-                                    "宿舍報表": [
-                                        {"dataframe": summary_df, "title": "宿舍人數摘要"},
-                                        {"dataframe": details_df, "title": "在住人員明細"}
-                                    ]
-                                }
-                                excel_file = to_excel(excel_file_data)
-                                
-                                dorm_name_for_file = dorm_options.get(selected_dorm_id, "export").replace(" ", "_").replace("/", "_")
-                                st.download_button(
-                                    label="✅ 報表已產生！點此下載",
-                                    data=excel_file,
-                                    file_name=f"宿舍報表_{dorm_name_for_file}.xlsx"
-                                )
+                            dorm_name_for_file = dorm_address_str.replace(" ", "_").replace("/", "_")
+                            st.download_button(
+                                label="✅ 報表已產生！點此下載",
+                                data=excel_file,
+                                file_name=f"宿舍報表_{dorm_name_for_file}_{year_month_str_deep}.xlsx"
+                            )
 
     st.markdown("---")
     with st.container(border=True):

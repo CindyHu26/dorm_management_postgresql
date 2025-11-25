@@ -17,19 +17,24 @@ def render():
     # --- Session State 初始化 ---
     if 'worker_active_tab' not in st.session_state:
         st.session_state.worker_active_tab = "✏️ 編輯核心資料"
-    if 'selected_worker_id' not in st.session_state:
-        st.session_state.selected_worker_id = None
-    if 'last_selected_worker_id' not in st.session_state:
-        st.session_state.last_selected_worker_id = None
-    if st.session_state.selected_worker_id != st.session_state.last_selected_worker_id:
-        st.session_state.worker_active_tab = "✏️ 編輯核心資料"
-        st.session_state.last_selected_worker_id = st.session_state.selected_worker_id
+    
+    # 初始化篩選器的 State (如果還沒有的話)
+    # 使用獨立的 key 來管理，避免與其他頁面衝突
+    init_state_once('w_filter_search', '')
+    init_state_once('w_filter_status', '全部')
+    init_state_once('w_filter_gender', '全部')
+    init_state_once('w_filter_dorm', None)
+    init_state_once('w_filter_room', None)
+    init_state_once('w_filter_nationality', '全部')
 
-    # --- 新增手動管理人員區塊 (維持不變) ---
-# --- 新增手動管理人員區塊 ---
+    # 定義 Callback：當宿舍改變時，重設房號
+    def on_dorm_change():
+        st.session_state.w_filter_room = None
+
+    # --- 新增手動管理人員區塊--
     with st.expander("➕ 新增手動管理人員 (他仲等)"):
         
-        # 【修正】：將宿舍與房間選擇移出 st.form，以支援動態連動
+        # 將宿舍與房間選擇移出 st.form，以支援動態連動
         st.markdown("##### 1. 選擇住宿位置")
         dorms = dormitory_model.get_dorms_for_selection() or []
         dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms}
@@ -136,82 +141,80 @@ def render():
     # --- 移工總覽區塊 ---
     st.subheader("移工總覽 (所有宿舍)")
 
-    # --- 初始化新的 session_state ---
-    if 'worker_view_filters' not in st.session_state:
-        st.session_state.worker_view_filters = {
-            'name_search': '', 'dorm_id': None, 'status': '全部',
-            'room_id': None, 'nationality': '全部', 'gender': '全部'
-        }
-
     @st.cache_data
     def get_dorms_list():
         return dormitory_model.get_dorms_for_selection()
     
-    # --- 取得新篩選器的選項 ---
     @st.cache_data
     def get_nationality_list():
-        # 呼叫我們新增的函式
         return ["全部"] + worker_model.get_distinct_nationalities()
 
     dorms = get_dorms_list() or []
-    dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms}
+    # 建立 ID 到 顯示名稱 的對應
+    dorm_options_map = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms}
     nationality_options = get_nationality_list()
     gender_options = ["全部", "男", "女"]
     
-    # --- 重新排版篩選器 (2x3) ---
+    # --- 篩選器排版 ---
     f_row1_c1, f_row1_c2, f_row1_c3 = st.columns(3)
     f_row2_c1, f_row2_c2, f_row2_c3 = st.columns(3)
 
     # Row 1
-    st.session_state.worker_view_filters['name_search'] = f_row1_c1.text_input(
+    f_row1_c1.text_input(
         "搜尋姓名、雇主或地址", 
-        value=st.session_state.worker_view_filters['name_search']
+        key="w_filter_search"
     )
-    st.session_state.worker_view_filters['status'] = f_row1_c2.selectbox(
+    f_row1_c2.selectbox(
         "篩選在住狀態", 
         ["全部", "在住", "已離住"], 
-        index=["全部", "在住", "已離住"].index(st.session_state.worker_view_filters['status'])
+        key="w_filter_status"
     )
-    st.session_state.worker_view_filters['gender'] = f_row1_c3.selectbox(
+    f_row1_c3.selectbox(
         "篩選性別", 
         gender_options, 
-        index=gender_options.index(st.session_state.worker_view_filters['gender'])
+        key="w_filter_gender"
     )
     
     # Row 2
-    # 宿舍篩選 (Dorm)
-    selected_dorm_id = f_row2_c1.selectbox(
+    # 宿舍篩選 (Dorm) - 綁定 on_change
+    f_row2_c1.selectbox(
         "篩選宿舍", 
-        options=[None] + list(dorm_options.keys()), 
-        format_func=lambda x: "全部宿舍" if x is None else dorm_options.get(x), 
-        index=[None, *dorm_options.keys()].index(st.session_state.worker_view_filters['dorm_id'])
+        options=[None] + list(dorm_options_map.keys()), 
+        format_func=lambda x: "全部宿舍" if x is None else dorm_options_map.get(x),
+        key="w_filter_dorm",
+        on_change=on_dorm_change # 當宿舍改變時，重設房號
     )
-    # --- 如果宿舍變更，清空房號篩選 ---
-    if selected_dorm_id != st.session_state.worker_view_filters['dorm_id']:
-        st.session_state.worker_view_filters['room_id'] = None # Reset room filter
-    st.session_state.worker_view_filters['dorm_id'] = selected_dorm_id
 
     # 房號篩選 (Room) - 依賴宿舍篩選
-    rooms_for_filter = dormitory_model.get_rooms_for_selection(st.session_state.worker_view_filters['dorm_id']) or []
+    rooms_for_filter = dormitory_model.get_rooms_for_selection(st.session_state.w_filter_dorm) or []
     room_filter_options = {r['id']: r['room_number'] for r in rooms_for_filter}
     
-    st.session_state.worker_view_filters['room_id'] = f_row2_c2.selectbox(
+    f_row2_c2.selectbox(
         "篩選房號", 
         options=[None] + list(room_filter_options.keys()), 
         format_func=lambda x: "全部房號" if x is None else room_filter_options.get(x, "N/A"), 
-        index=[None, *room_filter_options.keys()].index(st.session_state.worker_view_filters['room_id']),
-        disabled=not st.session_state.worker_view_filters['dorm_id'] # 沒選宿舍就禁用
+        key="w_filter_room",
+        disabled=not st.session_state.w_filter_dorm # 沒選宿舍就禁用
     )
     
     # 國籍篩選 (Nationality)
-    st.session_state.worker_view_filters['nationality'] = f_row2_c3.selectbox(
+    f_row2_c3.selectbox(
         "篩選國籍", 
         nationality_options, 
-        index=nationality_options.index(st.session_state.worker_view_filters['nationality']) if st.session_state.worker_view_filters['nationality'] in nationality_options else 0
+        key="w_filter_nationality"
     )
-    # --- 篩選器排版結束 ---
 
-    workers_df = worker_model.get_workers_for_view(st.session_state.worker_view_filters)
+    # 準備傳給 Model 的參數
+    filters = {
+        'name_search': st.session_state.w_filter_search,
+        'dorm_id': st.session_state.w_filter_dorm,
+        'status': st.session_state.w_filter_status,
+        'room_id': st.session_state.w_filter_room,
+        'nationality': st.session_state.w_filter_nationality,
+        'gender': st.session_state.w_filter_gender
+    }
+
+    workers_df = worker_model.get_workers_for_view(filters)
     
     st.dataframe(workers_df, width="stretch", hide_index=True, column_config={"unique_id": None}) 
 

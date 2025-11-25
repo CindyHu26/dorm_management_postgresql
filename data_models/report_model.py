@@ -1,6 +1,24 @@
 import pandas as pd
 import database
 from datetime import datetime, date
+import json
+import os
+
+def get_fee_config():
+    """讀取費用設定檔，用於獲取自訂的費用排序 (與 finance_model 共用邏輯)。"""
+    config_file = "fee_config.json"
+    default_config = {
+        "internal_types": ["房租", "水電費", "清潔費", "宿舍復歸費", "充電清潔費", "充電費"],
+        "mapping": {}
+    }
+    
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return default_config
+    return default_config
 
 def _execute_query_to_dataframe(conn, query, params=None):
     """一個輔助函式，用來手動執行查詢並回傳 DataFrame。"""
@@ -14,83 +32,114 @@ def _execute_query_to_dataframe(conn, query, params=None):
         columns = [desc[0] for desc in cursor.description]
         return pd.DataFrame(records, columns=columns)
 
-def get_dorm_report_data(dorm_id: int):
+def get_dorm_report_data(dorm_id: int, year_month: str):
     """
-    【v3.0 B04連動版】查詢宿舍的在住人員詳細資料 (用於匯出 Excel)。
-    費用欄位改為從 FeeHistory 查詢最新一筆紀錄，以確保與 B04 匯入資料一致。
+    【v3.4 費用區間修正版】查詢宿舍在指定月份的住宿人員詳細資料。
+    修正：費用欄位「嚴格」只抓取該月份 (當月1號~當月月底) 的紀錄。
+         若該員工當月無費用，則顯示 0，不再回溯抓取舊資料。
     """
-    if not dorm_id:
-        return pd.DataFrame()
-
+    if not dorm_id: return pd.DataFrame()
     conn = database.get_db_connection()
-    if not conn: 
-        return pd.DataFrame()
+    if not conn: return pd.DataFrame()
         
     try:
-        # 使用 CTE 找出每位員工每個費用類型的最新金額
+        # 1. SQL 查詢
         query = """
-            WITH LatestFeeHistory AS (
+            WITH DateParams AS (
                 SELECT
-                    worker_unique_id, fee_type, amount,
-                    ROW_NUMBER() OVER(PARTITION BY worker_unique_id, fee_type ORDER BY effective_date DESC) as rn
-                FROM "FeeHistory"
-                WHERE effective_date <= CURRENT_DATE
+                    TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as month_start,
+                    (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as month_end
+            ),
+            -- 【核心修正】只抓取「該月份」的費用，不回溯
+            TargetMonthFees AS (
+                SELECT
+                    fh.worker_unique_id, 
+                    fh.fee_type, 
+                    SUM(fh.amount) as amount -- 若同月有多筆(如補扣)，將其加總
+                FROM "FeeHistory" fh
+                CROSS JOIN DateParams dp
+                WHERE fh.effective_date BETWEEN dp.month_start AND dp.month_end
+                GROUP BY fh.worker_unique_id, fh.fee_type
             )
             SELECT
-                r.room_number,
-                w.worker_name,
-                w.employer_name,
-                w.gender,
-                w.nationality,
-                -- 從 FeeHistory 抓取最新費用
-                COALESCE(rent.amount, 0) AS monthly_fee,
-                COALESCE(util.amount, 0) AS utilities_fee,
-                COALESCE(clean.amount, 0) AS cleaning_fee,
-                COALESCE(resto.amount, 0) AS restoration_fee,
-                COALESCE(charge.amount, 0) AS charging_cleaning_fee,
+                r.room_number AS "房號",
+                w.worker_name AS "姓名",
+                w.employer_name AS "雇主",
+                w.gender AS "性別",
+                w.nationality AS "國籍",
+                w.special_status AS "特殊狀況",
+                w.worker_notes AS "備註",
                 
-                w.special_status,
-                w.worker_notes
+                -- 費用資料 (若無當月紀錄則為 NULL)
+                tmf.fee_type,
+                tmf.amount
             FROM "AccommodationHistory" ah
             JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
             JOIN "Rooms" r ON ah.room_id = r.id
+            CROSS JOIN DateParams dp
             
-            -- 針對每個費用類型進行 LEFT JOIN
-            LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '房租' AND rn = 1) rent ON w.unique_id = rent.worker_unique_id
-            LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '水電費' AND rn = 1) util ON w.unique_id = util.worker_unique_id
-            LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '清潔費' AND rn = 1) clean ON w.unique_id = clean.worker_unique_id
-            LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '宿舍復歸費' AND rn = 1) resto ON w.unique_id = resto.worker_unique_id
-            LEFT JOIN (SELECT worker_unique_id, amount FROM LatestFeeHistory WHERE fee_type = '充電清潔費' AND rn = 1) charge ON w.unique_id = charge.worker_unique_id
+            -- 關聯費用 (使用新的 TargetMonthFees)
+            LEFT JOIN TargetMonthFees tmf ON w.unique_id = tmf.worker_unique_id
             
-            WHERE r.dorm_id = %s
-            AND (ah.end_date IS NULL OR ah.end_date > CURRENT_DATE)
+            WHERE r.dorm_id = %(dorm_id)s
+            -- 住宿期間與查詢月份有重疊
+            AND ah.start_date <= dp.month_end
+            AND (ah.end_date IS NULL OR ah.end_date >= dp.month_start)
+            
             ORDER BY r.room_number, w.worker_name
         """
-        df = _execute_query_to_dataframe(conn, query, (dorm_id,))
         
-        if not df.empty:
-            df.rename(columns={
-                'room_number': '房號', 
-                'worker_name': '姓名', 
-                'employer_name': '雇主', 
-                'gender': '性別', 
-                'nationality': '國籍', 
-                'monthly_fee': '月費(房租)', 
-                'utilities_fee': '水電費',
-                'cleaning_fee': '清潔費',
-                'restoration_fee': '宿舍復歸費',
-                'charging_cleaning_fee': '充電清潔費',
-                'special_status': '特殊狀況', 
-                'worker_notes': '備註'
-            }, inplace=True)
-        return df
+        params = {"dorm_id": dorm_id, "year_month": year_month}
+        raw_df = _execute_query_to_dataframe(conn, query, params)
+        
+        if raw_df.empty:
+            return pd.DataFrame()
+
+        # 2. 資料處理與轉置 (Pivot)
+        raw_df['fee_type'] = raw_df['fee_type'].fillna('__NO_FEE__')
+        raw_df['amount'] = raw_df['amount'].fillna(0)
+        
+        # 填補基本資料空值
+        fill_values = {
+            "房號": "", "姓名": "", "雇主": "", 
+            "性別": "", "國籍": "", 
+            "特殊狀況": "", "備註": ""
+        }
+        raw_df = raw_df.fillna(value=fill_values)
+        
+        index_cols = ["房號", "姓名", "雇主", "性別", "國籍", "特殊狀況", "備註"]
+        
+        pivot_df = raw_df.pivot_table(
+            index=index_cols,
+            columns='fee_type',
+            values='amount',
+            aggfunc='sum',
+            fill_value=0
+        ).reset_index()
+        
+        if '__NO_FEE__' in pivot_df.columns:
+            pivot_df.drop(columns=['__NO_FEE__'], inplace=True)
+            
+        # 3. 排序與加總
+        fee_cols = [c for c in pivot_df.columns if c not in index_cols]
+        config = get_fee_config()
+        ordered_types = config.get("internal_types", [])
+        
+        def sort_key(col_name):
+            if col_name in ordered_types: return ordered_types.index(col_name)
+            return 999
+
+        fee_cols = sorted(fee_cols, key=sort_key)
+        pivot_df['總收租'] = pivot_df[fee_cols].sum(axis=1)
+        
+        final_cols = index_cols + fee_cols + ['總收租']
+        return pivot_df[final_cols]
         
     except Exception as e:
         print(f"查詢宿舍報表資料時發生錯誤: {e}")
         return pd.DataFrame()
     finally:
-        if conn: 
-            conn.close()
+        if conn: conn.close()
 
 def get_monthly_exception_report(year_month: str):
     """
