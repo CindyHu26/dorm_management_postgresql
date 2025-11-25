@@ -20,11 +20,11 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], None]):
     """
-    【v2.32 "str vs date 修正" 版】執行核心的資料庫更新流程。
-    - 修正了 v2.31 中，'str' >= 'date' 的型別比較錯誤。
-    - 確保從爬蟲讀取的 final_departure_date 立即被轉為 date object。
+    【v2.34 離住誤判修正版】執行核心的資料庫更新流程。
+    修正：確保即使地址對應失敗 (new_room_id 為 None)，員工仍會被標記為「已處理」，
+         防止因地址問題導致所有手動調整人員被誤判為離住。
     """
-    log_callback("\n===== 開始執行核心資料庫更新程序 (v2.32 str vs date 修正版) =====")
+    log_callback("\n===== 開始執行核心資料庫更新程序 (v2.34 離住誤判修正版) =====")
     today = datetime.now().date()
     yesterday = today - timedelta(days=1)
     
@@ -37,7 +37,7 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
         
     try:
         with conn.cursor() as cursor:
-            # --- 步驟 1, 2, 3 (維持不變) ---
+            # --- 步驟 1, 2, 3 (維持不變，負責處理新地址) ---
             log_callback("INFO: 步驟 1/5 - 同步宿舍地址...")
             db_dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, normalized_address, original_address FROM "Dormitories"')
             db_addresses_norm = set(db_dorms_df['normalized_address']) if not db_dorms_df.empty else set()
@@ -79,7 +79,7 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
             fresh_df['room_id'] = fresh_df['normalized_address'].map(address_room_map)
             fresh_df['room_id'] = fresh_df['room_id'].fillna(fresh_df['original_address'].map(original_addr_to_room_map))
 
-            # --- 步驟 4/5：取得現有工人狀態 (v2.31 邏輯) ---
+            # --- 步驟 4/5：取得現有工人狀態 ---
             log_callback("INFO: 步驟 4/5 - 正在取得現有工人的最新住宿與來源狀態...")
             all_workers_info_query = """
                 WITH LatestHistory AS (
@@ -121,31 +121,32 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                 unique_id = fresh_worker['unique_id']
                 data_source = worker_data_sources.get(unique_id)
 
+                # 1. 手動管理(他仲)：完全跳過，但標記為已處理 (避免被誤刪)
                 if data_source == '手動管理(他仲)':
-                    log_callback(f"INFO: [完全鎖定] 工人 '{unique_id}' 為手動管理(他仲)狀態，跳過所有自動更新。")
+                    # log_callback(f"INFO: [完全鎖定] 工人 '{unique_id}' 為手動管理(他仲)狀態，跳過所有自動更新。")
                     processed_ids.add(unique_id) 
                     continue
 
+                # 2. 取得新地址 (可能為 None)
                 raw_room_id = fresh_worker.get('room_id')
                 new_room_id = int(raw_room_id) if pd.notna(raw_room_id) else None
                 
+                # 【核心修正】: 就算找不到地址，也不能 continue 跳過！必須往下執行，才能加入 processed_ids
                 if new_room_id is None:
-                    log_callback(f"CRITICAL: 工人 {unique_id} (地址: {fresh_worker.get('original_address')}) 找不到對應的 [未分配房間] ID。**修復程序已執行但仍失敗**。已跳過此筆紀錄。")
-                    continue
+                    # 僅記錄警告，不中斷流程
+                    log_callback(f"WARNING: 工人 {unique_id} (地址: {fresh_worker.get('original_address')}) 找不到對應的 [未分配房間] ID。將跳過地址更新，但保留在職狀態。")
                 
-                # --- 【核心修改 v2.32】 ---
-                # 在這裡將 str 轉為 date object
+                # 3. 日期轉換
                 departure_date_from_file_str = fresh_worker.get('departure_date')
-                final_departure_date = None # Default
+                final_departure_date = None 
                 if pd.notna(departure_date_from_file_str) and departure_date_from_file_str:
                     try:
-                        # 將 'YYYY-MM-DD' 字串轉為 date 物件
                         final_departure_date = datetime.strptime(departure_date_from_file_str, '%Y-%m-%d').date()
                     except ValueError:
                         log_callback(f"WARNING: 工人 '{unique_id}' 的出境日期 '{departure_date_from_file_str}' 格式無效，將視為 NULL。")
                         final_departure_date = None
-                # --- 修正結束 ---
 
+                # 4. 取得當前狀態
                 current_room_id = current_accommodation_records.get(unique_id)
                 current_history_end_date = current_accommodation_end_dates.get(unique_id)
                 current_worker_end_date = worker_end_dates.get(unique_id)
@@ -153,19 +154,18 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                 
                 is_new_worker = (unique_id not in worker_data_sources)
 
+                # 5. 執行更新或新增
                 if not is_new_worker:
-                    # --- 更新現有工人 ---
-                    
+                    # --- A. 更新現有工人 ---
                     update_cols = ['native_name', 'gender', 'nationality', 'passport_number', 'arc_number', 'work_permit_expiry_date']
                     update_details = {col: fresh_worker.get(col) for col in update_cols if col in fresh_worker}
                     update_details['accommodation_end_date'] = final_departure_date
                     
-                    if data_source == '手動調整':
-                        update_details['room_id'] = current_room_id 
-                        log_prefix = "INFO: [保護] "
-                    else: 
-                        update_details['room_id'] = new_room_id
-                        log_prefix = "INFO: [自動] "
+                    # 只有當 new_room_id 有效時，才更新系統地址 (room_id)
+                    if new_room_id is not None:
+                        update_details['room_id'] = new_room_id 
+                    
+                    log_prefix = "INFO: [保護] " if data_source == '手動調整' else "INFO: [自動] "
 
                     fields = ', '.join([f'"{key}" = %s' for key in update_details.keys()])
                     values = list(update_details.values()) + [unique_id]
@@ -173,80 +173,84 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                     cursor.execute(f'UPDATE "Workers" SET {fields} WHERE unique_id = %s', tuple(values))
                     updated_count += 1 
                     
-                    # --- 住宿歷史更新 (AccommodationHistory) ---
+                    # --- B. 住宿歷史更新 (AccommodationHistory) ---
+                    # 條件：不是手動調整 且 地址有變動(且新地址有效)
                     
-                    new_dorm_id = room_to_dorm_map.get(new_room_id)
-                    current_dorm_id = room_to_dorm_map.get(current_room_id)
-                    
-                    is_dorm_change = (new_dorm_id != current_dorm_id)
-                    
-                    is_long_term_rehire = False
-                    if (current_worker_end_date is not None) and (final_departure_date is None):
-                        # (current_worker_end_date 是 date object, today 也是 date object)
-                        time_difference = today - current_worker_end_date
-                        if time_difference.days > REHIRE_THRESHOLD_DAYS:
-                            is_long_term_rehire = True
-                    
-                    if data_source != '手動調整' and (is_dorm_change or is_long_term_rehire):
-                        # --- 情況 A: 執行換宿 (新增 [未分配房間]) ---
-                        if current_history_end_date is None:
-                            cursor.execute('UPDATE "AccommodationHistory" SET end_date = %s WHERE worker_unique_id = %s AND end_date IS NULL', (yesterday, unique_id))
+                    # 如果新地址無效，無法判斷換宿，直接跳過住宿邏輯
+                    if new_room_id is not None:
+                        new_dorm_id = room_to_dorm_map.get(new_room_id)
+                        current_dorm_id = room_to_dorm_map.get(current_room_id)
                         
-                        cursor.execute('INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, end_date) VALUES (%s, %s, %s, %s)', (unique_id, new_room_id, today, final_departure_date))
-                        moved_count += 1
-                        log_callback(f"{log_prefix}偵測到住宿異動(換宿/長期重入職)！工人 '{unique_id}' 已移至房間 {new_room_id} (宿舍ID: {new_dorm_id})。")
-                    
-                    elif final_departure_date != current_history_end_date:
-                        # --- 情況 B: 僅更新 end_date (離住/復活) ---
+                        is_dorm_change = (new_dorm_id != current_dorm_id)
                         
-                        # 【v2.31 核心防護】
-                        is_valid_update = False
-                        if final_departure_date is None:
-                            is_valid_update = True # "復活" (設為 NULL) 永遠有效
-                        elif current_history_start_date and final_departure_date >= current_history_start_date:
-                            # (現在這裡是 date >= date，比較成功！)
-                            is_valid_update = True # 結束日 >= 起始日
+                        is_long_term_rehire = False
+                        if (current_worker_end_date is not None) and (final_departure_date is None):
+                            time_difference = today - current_worker_end_date
+                            if time_difference.days > REHIRE_THRESHOLD_DAYS:
+                                is_long_term_rehire = True
                         
-                        if is_valid_update:
-                            cursor.execute(
-                                """
-                                SELECT id FROM "AccommodationHistory" 
-                                WHERE worker_unique_id = %s 
-                                ORDER BY start_date DESC, id DESC 
-                                LIMIT 1
-                                """,
-                                (unique_id,)
-                            )
-                            latest_history_record = cursor.fetchone()
-
-                            if latest_history_record:
-                                latest_history_id = latest_history_record['id']
+                        if data_source != '手動調整' and (is_dorm_change or is_long_term_rehire):
+                            # --- 情況 B1: 執行換宿 ---
+                            if current_history_end_date is None:
+                                cursor.execute('UPDATE "AccommodationHistory" SET end_date = %s WHERE worker_unique_id = %s AND end_date IS NULL', (yesterday, unique_id))
+                            
+                            cursor.execute('INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, end_date) VALUES (%s, %s, %s, %s)', (unique_id, new_room_id, today, final_departure_date))
+                            moved_count += 1
+                            log_callback(f"{log_prefix}偵測到住宿異動(換宿/長期重入職)！工人 '{unique_id}' 已移至房間 {new_room_id} (宿舍ID: {new_dorm_id})。")
+                        
+                        elif final_departure_date != current_history_end_date:
+                            # --- 情況 B2: 僅更新 end_date ---
+                            is_valid_update = False
+                            if final_departure_date is None:
+                                is_valid_update = True 
+                            elif current_history_start_date and final_departure_date >= current_history_start_date:
+                                is_valid_update = True 
+                            
+                            if is_valid_update:
+                                # ... (維持原有的 end_date 更新邏輯) ...
                                 cursor.execute(
-                                    'UPDATE "AccommodationHistory" SET end_date = %s WHERE id = %s',
-                                    (final_departure_date, latest_history_id)
+                                    """
+                                    SELECT id FROM "AccommodationHistory" 
+                                    WHERE worker_unique_id = %s 
+                                    ORDER BY start_date DESC, id DESC 
+                                    LIMIT 1
+                                    """,
+                                    (unique_id,)
                                 )
+                                latest_history_record = cursor.fetchone()
 
-                                if cursor.rowcount > 0:
-                                    if final_departure_date:
-                                        log_callback(f"{log_prefix}工人 '{unique_id}' 在房間 {current_room_id} 更新住宿歷史 end_date 為 {final_departure_date}。")
-                                    else:
-                                         log_callback(f"{log_prefix}工人 '{unique_id}' 在房間 {current_room_id} 移除住宿歷史 end_date（設為 NULL）。(短暫消失後復活)")
+                                if latest_history_record:
+                                    latest_history_id = latest_history_record['id']
+                                    cursor.execute(
+                                        'UPDATE "AccommodationHistory" SET end_date = %s WHERE id = %s',
+                                        (final_departure_date, latest_history_id)
+                                    )
+                                    if cursor.rowcount > 0:
+                                        if final_departure_date:
+                                            log_callback(f"{log_prefix}工人 '{unique_id}' 更新住宿歷史 end_date 為 {final_departure_date}。")
+                                        else:
+                                             log_callback(f"{log_prefix}工人 '{unique_id}' 移除住宿歷史 end_date（設為 NULL）。")
+                                else:
+                                    log_callback(f"WARNING: 工人 '{unique_id}' 存在，但在 AccommodationHistory 中找不到任何紀錄可供更新 end_date。")
                             else:
-                                log_callback(f"WARNING: 工人 '{unique_id}' 存在，但在 AccommodationHistory 中找不到任何紀錄可供更新 end_date。")
-                        else:
-                            # 偵測到錯誤！
-                            log_callback(f"WARNING: [資料異常] 工人 '{unique_id}' (房號 {current_room_id})。爬蟲提供的離住日 {final_departure_date} 早於最新一筆入住日 {current_history_start_date}。已跳過更新 AccommodationHistory 以避免資料錯誤。")
-
-                    # --- 修正結束 ---
+                                log_callback(f"WARNING: [資料異常] 工人 '{unique_id}' (房號 {current_room_id})。爬蟲提供的離住日 {final_departure_date} 早於最新一筆入住日 {current_history_start_date}。已跳過更新。")
                     
                 else:
-                    # --- 新增工人 (v2.29 邏輯) ---
+                    # --- C. 新增工人 ---
+                    # 如果連新工人都沒有有效地址，我們還是得新增他，但 room_id 設為 None (這在 Workers 表是允許的)
+                    # 但 AccommodationHistory 不允許 room_id 為 NULL，所以如果新地址無效，我們無法建立住宿歷史
+                    
                     new_worker_details = fresh_worker.to_dict()
                     new_worker_details['data_source'] = '系統自動更新'
                     new_worker_details['special_status'] = None
                     
                     final_details = {k: v for k, v in new_worker_details.items() if k in worker_columns}
-                    final_details['room_id'] = new_room_id
+                    
+                    if new_room_id is not None:
+                        final_details['room_id'] = new_room_id
+                    else:
+                        final_details['room_id'] = None # 允許空值
+                        
                     final_details['accommodation_end_date'] = final_departure_date
                     
                     columns = ', '.join(f'"{k}"' for k in final_details.keys())
@@ -255,23 +259,26 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                     cursor.execute(f'INSERT INTO "Workers" ({columns}) VALUES ({placeholders})', tuple(final_details.values()))
                     added_count += 1
                     
-                    # 【v2.32 修正】
-                    # 爬蟲的 'accommodation_start_date' 是 str，也要轉
-                    start_date_str = new_worker_details.get('accommodation_start_date')
-                    start_date = today # 預設
-                    if pd.notna(start_date_str) and start_date_str:
-                        try:
-                            start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
-                        except ValueError:
-                            start_date = today # 格式錯誤，使用 today
-                    
-                    cursor.execute('INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, end_date) VALUES (%s, %s, %s, %s)', 
-                                   (unique_id, new_room_id, start_date, final_departure_date))
-                    moved_count += 1 
+                    # 只有在有有效房號時，才建立住宿歷史
+                    if new_room_id is not None:
+                        start_date_str = new_worker_details.get('accommodation_start_date')
+                        start_date = today 
+                        if pd.notna(start_date_str) and start_date_str:
+                            try:
+                                start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+                            except ValueError:
+                                start_date = today
+                        
+                        cursor.execute('INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, end_date) VALUES (%s, %s, %s, %s)', 
+                                    (unique_id, new_room_id, start_date, final_departure_date))
+                        moved_count += 1 
+                    else:
+                         log_callback(f"WARNING: 新增工人 {unique_id} 成功，但因地址無效，未建立住宿歷史。")
                 
+                # 【關鍵修正】無論上述過程如何，只要迴圈跑到這裡，就代表此人在名單上
                 processed_ids.add(unique_id)
             
-            # --- "工人消失" 邏輯 (v2.23 邏輯) ---
+            # --- "工人消失" 邏輯 (維持不變) ---
             cursor.execute('SELECT unique_id, data_source FROM "Workers" WHERE data_source != %s', ('手動管理(他仲)',))
             db_syncable_workers = {rec['unique_id']: rec['data_source'] for rec in cursor.fetchall()}
             
@@ -290,7 +297,6 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                     
                     if cursor.rowcount > 0: 
                         marked_as_left_count += 1
-                        
                         cursor.execute('UPDATE "AccommodationHistory" SET end_date = %s WHERE worker_unique_id = %s AND end_date IS NULL', (today, uid))
                         log_callback(f"INFO: [自動] 移工 '{uid}' (資料來源: {db_syncable_workers.get(uid)}) 已不在最新名單，已同步更新 Workers 表與 AccommodationHistory 表的結束日。")
 

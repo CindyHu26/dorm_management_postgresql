@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import datetime, date
 from data_models import worker_model, dormitory_model
 
-# --- 新增輔助函式：確保 Session State 只被初始化一次 ---
+# --- 輔助函式：確保 Session State 只被初始化一次 ---
 def init_state_once(key, value):
     """如果 key 不在 session_state 中，則設定其初始值。"""
     if key not in st.session_state:
@@ -14,7 +14,7 @@ def render():
     """【v2.10 修改版】渲染「人員管理」頁面，修正 NaN 錯誤"""
     st.header("移工住宿人員管理")
     
-    # --- Session State 初始化 (維持不變) ---
+    # --- Session State 初始化 ---
     if 'worker_active_tab' not in st.session_state:
         st.session_state.worker_active_tab = "✏️ 編輯核心資料"
     if 'selected_worker_id' not in st.session_state:
@@ -26,9 +26,38 @@ def render():
         st.session_state.last_selected_worker_id = st.session_state.selected_worker_id
 
     # --- 新增手動管理人員區塊 (維持不變) ---
+# --- 新增手動管理人員區塊 ---
     with st.expander("➕ 新增手動管理人員 (他仲等)"):
+        
+        # 【修正】：將宿舍與房間選擇移出 st.form，以支援動態連動
+        st.markdown("##### 1. 選擇住宿位置")
+        dorms = dormitory_model.get_dorms_for_selection() or []
+        dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms}
+        
+        loc_c1, loc_c2 = st.columns(2)
+        # 宿舍選單 (會觸發 Rerun)
+        selected_dorm_id_new = loc_c1.selectbox(
+            "宿舍地址", 
+            [None] + list(dorm_options.keys()), 
+            format_func=lambda x: "未分配" if x is None else dorm_options.get(x), 
+            key="new_manual_worker_dorm_select"
+        )
+        
+        # 根據宿舍動態載入房間
+        rooms = dormitory_model.get_rooms_for_selection(selected_dorm_id_new) or []
+        room_options = {r['id']: r['room_number'] for r in rooms}
+        
+        # 房間選單 (會觸發 Rerun)
+        selected_room_id_new = loc_c2.selectbox(
+            "房間號碼", 
+            [None] + list(room_options.keys()), 
+            format_func=lambda x: "未分配" if x is None else room_options.get(x), 
+            key="new_manual_worker_room_select"
+        )
+
+        # --- 表單開始 ---
         with st.form("new_manual_worker_form", clear_on_submit=True):
-            st.subheader("新人員基本資料")
+            st.markdown("##### 2. 填寫人員資料")
             c1, c2, c3 = st.columns(3)
             employer_name = c1.text_input("雇主名稱 (必填)")
             worker_name = c2.text_input("移工姓名 (必填)")
@@ -38,18 +67,10 @@ def render():
             selected_nationality = c2.selectbox("國籍", options=nationality_options)
             custom_nationality = c2.text_input("手動輸入國籍", help="若上方選擇「其他」，請在此填寫")
             arc_number = c3.text_input("居留證號")
-            st.subheader("住宿與費用")
-            dorms = dormitory_model.get_dorms_for_selection() or []
-            dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms}
             
-            sc1, sc2, sc3 = st.columns(3)
-            selected_dorm_id_new = sc1.selectbox("宿舍地址", [None] + list(dorm_options.keys()), format_func=lambda x: "未分配" if x is None else dorm_options.get(x), key="new_dorm_select")
-            
-            rooms = dormitory_model.get_rooms_for_selection(selected_dorm_id_new) or []
-            room_options = {r['id']: r['room_number'] for r in rooms}
-            selected_room_id_new = sc2.selectbox("房間號碼", [None] + list(room_options.keys()), format_func=lambda x: "未分配" if x is None else room_options.get(x), key="new_room_select")
-            
-            bed_number_new = sc3.text_input("床位編號")
+            st.markdown("##### 3. 費用與狀態")
+            # 這裡不再放置宿舍選單，改放床位編號
+            bed_number_new = st.text_input("床位編號")
 
             f1, f2, f3 = st.columns(3)
             monthly_fee = f1.number_input("月費(房租)", min_value=0, step=100)
@@ -62,12 +83,15 @@ def render():
             payment_method = ff1.selectbox("付款方", ["", "員工自付", "雇主支付"])
             accommodation_start_date = ff2.date_input("起住日期", value=date.today())
             worker_notes = st.text_area("個人備註")
+            
             st.subheader("初始狀態")
             s1, s2 = st.columns(2)
             initial_status_options = ["", "掛宿外住(不收費)", "掛宿外住(收費)", "費用不同", "其他"]
             initial_status = s1.selectbox("初始狀態 (若為正常在住，此處請留空)", initial_status_options)
             status_notes = s2.text_area("狀態備註")
+            
             submitted = st.form_submit_button("儲存新人員")
+            
             if submitted:
                 if not employer_name or not worker_name:
                     st.error("雇主和移工姓名為必填欄位！")
@@ -79,18 +103,20 @@ def render():
                     final_nationality = custom_nationality if selected_nationality == "其他 (請手動輸入)" else selected_nationality
                     if pass_clean:
                         unique_id += f"_{pass_clean}"
+                    
+                    # 使用外部選擇的 selected_dorm_id_new 和 selected_room_id_new
                     details = {
-                    'unique_id': unique_id, 'employer_name': emp_clean, 'worker_name': name_clean,
-                    'passport_number': pass_clean if pass_clean else None,
-                    'gender': gender, 'nationality': final_nationality, 'arc_number': arc_number,
-                    'dorm_id': selected_dorm_id_new,
-                    'room_id': selected_room_id_new, 
-                    'monthly_fee': monthly_fee,
-                    'utilities_fee': utilities_fee, 'cleaning_fee': cleaning_fee,
-                    'restoration_fee': restoration_fee, 'charging_cleaning_fee': charging_cleaning_fee,
-                    'payment_method': payment_method,
-                    'accommodation_start_date': str(accommodation_start_date) if accommodation_start_date else None,
-                    'worker_notes': worker_notes
+                        'unique_id': unique_id, 'employer_name': emp_clean, 'worker_name': name_clean,
+                        'passport_number': pass_clean if pass_clean else None,
+                        'gender': gender, 'nationality': final_nationality, 'arc_number': arc_number,
+                        'dorm_id': selected_dorm_id_new,  # 取用外部變數
+                        'room_id': selected_room_id_new,  # 取用外部變數
+                        'monthly_fee': monthly_fee,
+                        'utilities_fee': utilities_fee, 'cleaning_fee': cleaning_fee,
+                        'restoration_fee': restoration_fee, 'charging_cleaning_fee': charging_cleaning_fee,
+                        'payment_method': payment_method,
+                        'accommodation_start_date': str(accommodation_start_date) if accommodation_start_date else None,
+                        'worker_notes': worker_notes
                     }
                     status_details = {
                         'status': initial_status,
@@ -110,7 +136,7 @@ def render():
     # --- 移工總覽區塊 ---
     st.subheader("移工總覽 (所有宿舍)")
 
-    # --- 【核心修改 1】初始化新的 session_state ---
+    # --- 初始化新的 session_state ---
     if 'worker_view_filters' not in st.session_state:
         st.session_state.worker_view_filters = {
             'name_search': '', 'dorm_id': None, 'status': '全部',
@@ -121,7 +147,7 @@ def render():
     def get_dorms_list():
         return dormitory_model.get_dorms_for_selection()
     
-    # --- 【核心修改 2】取得新篩選器的選項 ---
+    # --- 取得新篩選器的選項 ---
     @st.cache_data
     def get_nationality_list():
         # 呼叫我們新增的函式
@@ -132,7 +158,7 @@ def render():
     nationality_options = get_nationality_list()
     gender_options = ["全部", "男", "女"]
     
-    # --- 【核心修改 3】重新排版篩選器 (2x3) ---
+    # --- 重新排版篩選器 (2x3) ---
     f_row1_c1, f_row1_c2, f_row1_c3 = st.columns(3)
     f_row2_c1, f_row2_c2, f_row2_c3 = st.columns(3)
 
@@ -160,7 +186,7 @@ def render():
         format_func=lambda x: "全部宿舍" if x is None else dorm_options.get(x), 
         index=[None, *dorm_options.keys()].index(st.session_state.worker_view_filters['dorm_id'])
     )
-    # --- 【核心修改 4】如果宿舍變更，清空房號篩選 ---
+    # --- 如果宿舍變更，清空房號篩選 ---
     if selected_dorm_id != st.session_state.worker_view_filters['dorm_id']:
         st.session_state.worker_view_filters['room_id'] = None # Reset room filter
     st.session_state.worker_view_filters['dorm_id'] = selected_dorm_id
@@ -235,13 +261,28 @@ def render():
                 if selected_tab == "✏️ 編輯核心資料":
                     with st.form("edit_worker_form"):
                         st.info(f"資料來源: **{worker_details.get('data_source')}**")
-                        st.markdown("##### 基本資料 (多由系統同步)")
+                        
+                        st.markdown("##### 基本資料")
                         ec1, ec2, ec3 = st.columns(3)
                         ec1.text_input("性別", value=worker_details.get('gender'), disabled=True)
                         ec2.text_input("國籍", value=worker_details.get('nationality'), disabled=True)
                         ec3.text_input("護照號碼", value=worker_details.get('passport_number'), disabled=True)
-                        st.markdown("##### 住宿分配")
-                        st.info("工人的住宿地點管理已移至「🏠 住宿歷史管理」分頁。")
+                        
+                        st.markdown("##### 住宿資訊")
+                        
+                        # --- 【核心新增】顯示系統地址 ---
+                        sys_addr = worker_details.get('system_dorm_address')
+                        sys_room = worker_details.get('system_room_number')
+                        
+                        if sys_addr:
+                            st.info(f"🔗 **公司系統位址 (僅供參考)**：{sys_addr} / {sys_room}")
+                        else:
+                            st.caption("此員工尚無公司系統位址紀錄。")
+                        
+                        # 實際地址
+                        real_addr = worker_details.get('current_dorm_address') or '未分配'
+                        real_room = worker_details.get('current_room_number') or ''
+                        st.text_input("目前實際住宿 (請至「住宿歷史」分頁修改)", value=f"{real_addr} {real_room}", disabled=True)
                                                 
                         # =========================================================
                         # 【核心修改】動態費用明細 (唯讀)

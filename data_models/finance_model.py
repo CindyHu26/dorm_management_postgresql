@@ -1046,12 +1046,12 @@ def batch_import_external_fees(df: pd.DataFrame):
 
 def get_dynamic_fee_data_for_dashboard(filters: dict):
     """
-    【v3.6 完整篩選版】取得用於「費用標準與異常儀表板」的原始資料。
-    修正：新增「主要管理人」與「資料月份區間」篩選條件。
+    【v3.5 入住日修正版】取得用於「費用標準與異常儀表板」的原始資料。
+    修正：將「入住日」改為抓取 AccommodationHistory (ah.start_date)，
+         確保顯示的是該員工「目前這段住宿」的實際開始日期，而非員工主檔的原始資料。
     """
     dorm_ids = filters.get("dorm_ids")
     employer_names = filters.get("employer_names")
-    # 【核心修改】取得新參數
     primary_manager = filters.get("primary_manager")
     data_month_start = filters.get("data_month_start")
     data_month_end = filters.get("data_month_end")
@@ -1086,7 +1086,10 @@ def get_dynamic_fee_data_for_dashboard(filters: dict):
                 w.worker_name AS "姓名",
                 r.room_number AS "房號",
                 w.special_status AS "特殊狀況",
-                w.accommodation_start_date AS "入住日",
+                
+                -- 【核心修正】改為使用住宿歷史的開始日期，反映真實入住時間
+                ah.start_date AS "入住日",
+                
                 w.worker_notes AS "個人備註",
                 
                 -- 顯示該員工費用的所屬月份
@@ -1096,6 +1099,7 @@ def get_dynamic_fee_data_for_dashboard(filters: dict):
                 lmf.fee_type AS "費用類型",
                 lmf.amount AS "金額"
             FROM "Workers" w
+            -- 改用 AccommodationHistory 找目前住宿
             JOIN "AccommodationHistory" ah ON w.unique_id = ah.worker_unique_id
             JOIN "Rooms" r ON ah.room_id = r.id
             JOIN "Dormitories" d ON r.dorm_id = d.id
@@ -1103,28 +1107,28 @@ def get_dynamic_fee_data_for_dashboard(filters: dict):
             LEFT JOIN LatestDatePerWorker ldp ON w.unique_id = ldp.worker_unique_id
             LEFT JOIN LatestMonthFees lmf ON w.unique_id = lmf.worker_unique_id
             WHERE 
+                -- 確保是目前的住宿紀錄
                 (ah.end_date IS NULL OR ah.end_date > CURRENT_DATE)
+                -- 確保員工狀態也是在住
                 AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)
         """
         
-        # 這裡使用 append 來動態增加 SQL 條件
+        where_clauses = []
+        params_list = []
+        
+        # 動態增加篩選條件
         if dorm_ids:
             query += f" AND d.id = ANY(%s)"
-            params_list = [list(dorm_ids)]
-        else:
-            params_list = []
+            params_list.append(list(dorm_ids))
             
         if employer_names:
             query += f" AND w.employer_name = ANY(%s)"
             params_list.append(list(employer_names))
 
-        # 【核心修改】增加主要管理人篩選
         if primary_manager:
             query += f" AND d.primary_manager = %s"
             params_list.append(primary_manager)
 
-        # 【核心修改】增加資料月份區間篩選
-        # 注意：這裡篩選的是 ldp.max_date (也就是該員工費用的所屬月份)
         if data_month_start:
             query += f" AND TO_CHAR(ldp.max_date, 'YYYY-MM') >= %s"
             params_list.append(data_month_start)

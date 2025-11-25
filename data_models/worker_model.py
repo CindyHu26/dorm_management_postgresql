@@ -17,9 +17,8 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_workers_for_view(filters: dict):
     """
-    【v3.2 上月收租修正版】人員管理列表。
-    總收租邏輯：固定顯示「上個月」的費用總和（例如現在11月，顯示10月帳單）。
-    避免因資料更新進度不同，導致有些人顯示11月、有些人顯示10月的混亂情況。
+    【v3.3 系統地址顯示版】人員管理列表。
+    修正：新增「系統地址」與「系統房號」欄位，顯示爬蟲抓取到的原始位置 (Workers.room_id)。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -38,13 +37,11 @@ def get_workers_for_view(filters: dict):
                     ROW_NUMBER() OVER(PARTITION BY worker_unique_id ORDER BY start_date DESC, id DESC) as rn
                 FROM "AccommodationHistory"
             ),
-            -- 【核心修正】改為計算「上個月」的費用總合
             PreviousMonthFees AS (
                 SELECT 
                     worker_unique_id, 
                     SUM(amount) as total_amount
                 FROM "FeeHistory"
-                -- 篩選條件：費用生效年月 = 當前日期減1個月的年月
                 WHERE TO_CHAR(effective_date, 'YYYY-MM') = TO_CHAR({current_date_func} - INTERVAL '1 month', 'YYYY-MM')
                 GROUP BY worker_unique_id
             )
@@ -52,8 +49,11 @@ def get_workers_for_view(filters: dict):
                 w.unique_id,
                 w.employer_name AS "雇主",
                 w.worker_name AS "姓名",
+                
+                -- 實際住宿 (AccommodationHistory)
                 d_actual.original_address AS "實際地址",
                 r_actual.room_number AS "實際房號",
+                
                 la.bed_number AS "床位編號",
                 w.gender AS "性別",
                 w.nationality AS "國籍",
@@ -66,18 +66,23 @@ def get_workers_for_view(filters: dict):
                     THEN '已離住' ELSE '在住'
                 END as "在住狀態",
                 
-                -- 顯示上個月的總金額，若無資料則顯示 0
                 COALESCE(pmf.total_amount, 0) AS "上月總收租",
-                
+                -- 【新增】系統掛帳 (Workers.room_id)
+                d_sys.original_address AS "系統地址",
                 w.worker_notes AS "個人備註",
                 w.passport_number AS "護照號碼", 
                 w.arc_number AS "居留證號碼",
                 d_actual.primary_manager AS "主要管理人",
                 w.data_source as "資料來源"
             FROM "Workers" w
+            -- 1. 關聯實際住宿
             LEFT JOIN (SELECT * FROM LastAccommodation WHERE rn = 1) la ON w.unique_id = la.worker_unique_id
             LEFT JOIN "Rooms" r_actual ON la.room_id = r_actual.id
             LEFT JOIN "Dormitories" d_actual ON r_actual.dorm_id = d_actual.id
+            -- 2. 關聯系統掛帳 (Workers.room_id)
+            LEFT JOIN "Rooms" r_sys ON w.room_id = r_sys.id
+            LEFT JOIN "Dormitories" d_sys ON r_sys.dorm_id = d_sys.id
+            -- 3. 費用
             LEFT JOIN PreviousMonthFees pmf ON w.unique_id = pmf.worker_unique_id
         """
 
@@ -86,10 +91,12 @@ def get_workers_for_view(filters: dict):
 
         if filters.get('name_search'):
             term = f"%{filters['name_search']}%"
-            where_clauses.append('(w.worker_name ILIKE %s OR w.employer_name ILIKE %s OR d_actual.original_address ILIKE %s)')
-            params.extend([term, term, term])
+            # 搜尋範圍也包含系統地址，方便查找
+            where_clauses.append('(w.worker_name ILIKE %s OR w.employer_name ILIKE %s OR d_actual.original_address ILIKE %s OR d_sys.original_address ILIKE %s)')
+            params.extend([term, term, term, term])
 
         if filters.get('dorm_id'):
+            # 這裡維持篩選「實際地址」，因為管理上通常是看人實際上在哪
             where_clauses.append("d_actual.id = %s")
             params.append(filters['dorm_id'])
 
@@ -121,13 +128,47 @@ def get_workers_for_view(filters: dict):
         if conn: conn.close()
 
 def get_single_worker_details(unique_id: str):
-    """取得單一移工的所有詳細資料。"""
+    """
+    【v2.4 系統地址修正版】取得單一移工的所有詳細資料。
+    1. 查詢「實際」住宿紀錄 (AccommodationHistory) -> 用於顯示目前住哪
+    2. 查詢「系統」住宿紀錄 (Workers.room_id) -> 用於顯示公司系統掛哪
+    """
     conn = database.get_db_connection()
     if not conn: return None
     try:
         with conn.cursor() as cursor:
-            query = 'SELECT * FROM "Workers" WHERE unique_id = %s'
-            cursor.execute(query, (unique_id,))
+            # 修改查詢：同時 JOIN 實際住宿 (ah/r/d) 和 系統紀錄 (sys_r/sys_d)
+            query = """
+                SELECT 
+                    w.*,
+                    -- 實際住宿 (來自 AccommodationHistory 最新一筆)
+                    d_actual.original_address AS current_dorm_address,
+                    r_actual.room_number AS current_room_number,
+                    
+                    -- 系統紀錄 (來自 Workers.room_id，由爬蟲更新)
+                    d_system.original_address AS system_dorm_address,
+                    r_system.room_number AS system_room_number
+
+                FROM "Workers" w
+                
+                -- 1. 關聯實際住宿
+                LEFT JOIN (
+                    SELECT room_id, worker_unique_id
+                    FROM "AccommodationHistory"
+                    WHERE worker_unique_id = %s
+                    ORDER BY start_date DESC, id DESC
+                    LIMIT 1
+                ) ah ON w.unique_id = ah.worker_unique_id
+                LEFT JOIN "Rooms" r_actual ON ah.room_id = r_actual.id
+                LEFT JOIN "Dormitories" d_actual ON r_actual.dorm_id = d_actual.id
+                
+                -- 2. 關聯系統紀錄 (直接用 w.room_id)
+                LEFT JOIN "Rooms" r_system ON w.room_id = r_system.id
+                LEFT JOIN "Dormitories" d_system ON r_system.dorm_id = d_system.id
+
+                WHERE w.unique_id = %s
+            """
+            cursor.execute(query, (unique_id, unique_id))
             record = cursor.fetchone()
             return dict(record) if record else None
     finally:
