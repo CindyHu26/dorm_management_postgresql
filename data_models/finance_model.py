@@ -17,6 +17,26 @@ def _execute_query_to_dataframe(conn, query, params=None):
         columns = [desc[0] for desc in cursor.description]
         return pd.DataFrame(records, columns=columns)
 
+# --- 安全型別轉換函式 ---
+def safe_int(val):
+    """安全地將各種型態轉為 int，失敗回傳 0 (用於金額)"""
+    if pd.isna(val) or val is None or str(val).strip() == '':
+        return 0
+    try:
+        # 先轉 float 再轉 int，可以處理 "100.0" 這種字串或浮點數
+        return int(float(val))
+    except:
+        return 0
+
+def safe_float(val):
+    """安全地將各種型態轉為 float，失敗回傳 None (用於用量)"""
+    if pd.isna(val) or val is None or str(val).strip() == '':
+        return None
+    try:
+        return float(val)
+    except:
+        return None
+
 def add_building_permit_record(permit_details: dict, expense_details: dict):
     """
     新增一筆完整的建物申報紀錄。
@@ -368,11 +388,17 @@ def get_single_bill_details(record_id: int):
         if conn: conn.close()
 
 def add_bill_record(details: dict):
-    """【v1.1 修改版】新增一筆獨立的帳單紀錄，包含用量欄位。"""
+    """
+    【v2.2 修正版】新增費用紀錄，使用 safe_int 確保金額正確。
+    """
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed.", None
     try:
         with conn.cursor() as cursor:
+            # 轉換金額為安全的整數
+            details['amount'] = safe_int(details.get('amount'))
+            
+            # 檢查重複
             query = 'SELECT id FROM "UtilityBills" WHERE dorm_id = %s AND bill_type = %s AND bill_start_date = %s AND amount = %s'
             params = (details['dorm_id'], details['bill_type'], details['bill_start_date'], details['amount'])
             cursor.execute(query, params)
@@ -393,11 +419,14 @@ def add_bill_record(details: dict):
         if conn: conn.close()
 
 def update_bill_record(record_id: int, details: dict):
-    """【v1.1 修改版】更新一筆已存在的費用帳單，包含用量欄位。"""
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed."
     try:
         with conn.cursor() as cursor:
+            # 轉換金額
+            if 'amount' in details:
+                details['amount'] = safe_int(details['amount'])
+                
             fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
             values = list(details.values()) + [record_id]
             sql = f'UPDATE "UtilityBills" SET {fields} WHERE id = %s'
@@ -445,11 +474,12 @@ def get_annual_expenses_for_dorm_as_df(dorm_id: int):
         if conn: conn.close()
 
 def add_annual_expense_record(details: dict):
-    """新增一筆年度費用紀錄。"""
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed.", None
     try:
         with conn.cursor() as cursor:
+            if 'total_amount' in details:
+                details['total_amount'] = safe_int(details['total_amount'])
             columns = ', '.join(f'"{k}"' for k in details.keys())
             placeholders = ', '.join(['%s'] * len(details))
             sql = f'INSERT INTO "AnnualExpenses" ({columns}) VALUES ({placeholders}) RETURNING id'
@@ -532,30 +562,22 @@ def get_single_compliance_details(compliance_record_id: int):
         if conn: conn.close()
 
 def update_compliance_expense_record(expense_id: int, expense_details: dict, compliance_id: int, compliance_details: dict, record_type: str):
-    """
-    【交易】同時更新一筆年度費用及其關聯的合規紀錄。
-    """
     conn = database.get_db_connection()
     if not conn: return False, "資料庫連線失敗。"
     try:
         with conn.cursor() as cursor:
-            # 步驟 1: 更新 AnnualExpenses 表
-            # 安全性措施：不允許透過此函式修改關聯ID
+            if 'total_amount' in expense_details:
+                expense_details['total_amount'] = safe_int(expense_details['total_amount'])
             expense_details.pop('compliance_record_id', None)
             expense_fields = ', '.join([f'"{key}" = %s' for key in expense_details.keys()])
             expense_values = list(expense_details.values()) + [expense_id]
             sql_expense = f'UPDATE "AnnualExpenses" SET {expense_fields} WHERE id = %s'
             cursor.execute(sql_expense, tuple(expense_values))
-
-            # 步驟 2: 更新 ComplianceRecords 表的 details 欄位
-            # 為了讓 reminder_model 能查詢到，我們在 JSON 中也存一份
+            
             if record_type == '消防安檢' and compliance_details.get('next_declaration_start'):
                  compliance_details['next_check_date'] = compliance_details['next_declaration_start']
-
             sql_compliance = 'UPDATE "ComplianceRecords" SET details = %s WHERE id = %s'
-            # 將 Python 字典轉為 JSON 字串進行儲存
             cursor.execute(sql_compliance, (json.dumps(compliance_details, ensure_ascii=False, default=str), compliance_id))
-
         conn.commit()
         return True, "費用與合規紀錄更新成功！"
     except Exception as e:
@@ -565,14 +587,13 @@ def update_compliance_expense_record(expense_id: int, expense_details: dict, com
         if conn: conn.close()
 
 def update_annual_expense_record(expense_id: int, details: dict):
-    """更新一筆已存在的年度費用紀錄。"""
     conn = database.get_db_connection()
     if not conn: return False, "DB connection failed."
     try:
         with conn.cursor() as cursor:
-            # 安全性措施：不允許透過此函式修改與合規紀錄的關聯
+            if 'total_amount' in details:
+                details['total_amount'] = safe_int(details['total_amount'])
             details.pop('compliance_record_id', None)
-            
             fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
             values = list(details.values()) + [expense_id]
             sql = f'UPDATE "AnnualExpenses" SET {fields} WHERE id = %s'
@@ -902,12 +923,23 @@ def batch_sync_dorm_bills(dorm_id: int, edited_df: pd.DataFrame):
                         raw_end_date_upd = row['bill_end_date']
 
                         if not row['bill_type'] or pd.isna(raw_start_date_upd) or pd.isna(raw_end_date_upd) or pd.isna(row['amount']):
-                            raise Exception(f"更新失敗 (ID: {bill_id_to_update})：『費用類型』、『帳單金額』、『起始日』、『結束日』不可為空。")
+                            raise Exception(f"更新失敗 (ID: {bill_id_to_update})：必填欄位不可為空。")
                         
                         start_date_obj_upd = pd.to_datetime(raw_start_date_upd).date()
                         end_date_obj_upd = pd.to_datetime(raw_end_date_upd).date()
-                        if start_date_obj_upd > end_date_obj_upd:
-                             raise Exception(f"更新失敗 (ID: {bill_id_to_update})：『起始日』不可晚於『結束日』。")
+
+                        # 【核心修正】強制轉換並印出數值以便除錯
+                        try:
+                            amount_val_upd = int(row['amount'])
+                            usage_val_upd = float(row['usage_amount']) if pd.notna(row.get('usage_amount')) else None
+                            meter_id_val_upd = int(row['meter_id']) if pd.notna(row.get('meter_id')) else None
+                            
+                            # 除錯訊息：如果金額很大，印出來看看
+                            if amount_val_upd > 30000:
+                                print(f"DEBUG: Updating ID {bill_id_to_update} - Amount: {amount_val_upd} (Type: {type(amount_val_upd)})")
+
+                        except ValueError as ve:
+                             raise Exception(f"數值格式錯誤 (ID: {bill_id_to_update}): {ve}")
 
                         update_sql = """
                             UPDATE "UtilityBills" SET 
@@ -916,20 +948,25 @@ def batch_sync_dorm_bills(dorm_id: int, edited_df: pd.DataFrame):
                                 is_pass_through = %s, is_invoiced = %s, notes = %s
                             WHERE id = %s
                         """
-                        cursor.execute(update_sql, (
-                            row.get('meter_id'),
-                            row['bill_type'], row['amount'], row.get('usage_amount'),
-                            start_date_obj_upd, # 使用轉換後的物件
-                            end_date_obj_upd,   # 使用轉換後的物件
-                            row.get('payer', '我司'),
-                            bool(row.get('is_pass_through')),
-                            bool(row.get('is_invoiced')),
-                            row.get('notes'),
-                            bill_id_to_update
-                        ))
+                        
+                        try:
+                            cursor.execute(update_sql, (
+                                meter_id_val_upd,
+                                row['bill_type'], amount_val_upd, usage_val_upd,
+                                start_date_obj_upd,
+                                end_date_obj_upd,
+                                row.get('payer', '我司'),
+                                bool(row.get('is_pass_through')),
+                                bool(row.get('is_invoiced')),
+                                row.get('notes'),
+                                bill_id_to_update
+                            ))
+                        except Exception as sql_err:
+                            # 捕捉 SQL 執行錯誤並提供詳細資訊
+                            raise Exception(f"SQL執行失敗 (ID: {bill_id_to_update}): {sql_err} | 嘗試寫入數值: Amount={amount_val_upd}, MeterID={meter_id_val_upd}")
         
         conn.commit()
-        return True, "宿舍帳單資料已成功同步。"
+        return True, "帳單資料已成功同步。"
 
     except Exception as e:
         if conn: conn.rollback() 
