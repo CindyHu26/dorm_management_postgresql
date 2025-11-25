@@ -149,14 +149,36 @@ def render():
     if archivable_df.empty:
         st.success("目前沒有符合條件可批次轉入的維修費用。")
     else:
+        # --- 全選/取消全選按鈕 ---
+        # 初始化 session state
+        if 'maint_archive_reset_counter' not in st.session_state:
+             st.session_state.maint_archive_reset_counter = 0
+        if 'maint_archive_default_val' not in st.session_state:
+             st.session_state.maint_archive_default_val = False
+
+        col_tools1, col_tools2 = st.columns(2)
+        if col_tools1.button("✅ 全選"):
+            st.session_state.maint_archive_default_val = True
+            st.session_state.maint_archive_reset_counter += 1
+            st.rerun()
+        if col_tools2.button("⬜ 取消全選"):
+            st.session_state.maint_archive_default_val = False
+            st.session_state.maint_archive_reset_counter += 1
+            st.rerun()
+
         archivable_df_with_selection = archivable_df.copy()
-        archivable_df_with_selection.insert(0, "選取", False)
+        # 根據 session state 設定預設值
+        archivable_df_with_selection.insert(0, "選取", st.session_state.maint_archive_default_val)
         
+        # 使用 dynamic key 強制重置 data_editor 狀態
+        editor_key = f"archive_editor_{st.session_state.maint_archive_reset_counter}"
+
         edited_df = st.data_editor(
             archivable_df_with_selection,
             hide_index=True,
             column_config={"選取": st.column_config.CheckboxColumn(required=True)},
-            disabled=archivable_df.columns
+            disabled=archivable_df.columns,
+            key=editor_key
         )
         
         selected_rows = edited_df[edited_df.選取]
@@ -171,6 +193,9 @@ def render():
             if failure_count > 0:
                 st.error(f"有 {failure_count} 筆費用處理失敗，請檢查後台日誌。")
             
+            # 操作完成後，重置全選狀態並清除快取
+            st.session_state.maint_archive_default_val = False
+            st.session_state.maint_archive_reset_counter += 1
             st.cache_data.clear()
             st.rerun()
 
