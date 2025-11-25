@@ -59,7 +59,48 @@ def get_unassigned_workers(dorm_id: int):
     finally:
         if conn: conn.close()
 
-# --- 【核心修改 1】修改函式定義，加入 protection_level 參數 ---
+def get_all_unassigned_workers_global():
+    """
+    【v2.1 新增】查詢全系統中，所有住在「我司管理」宿舍且房號為「[未分配房間]」的人員。
+    """
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        query = """
+            WITH LatestAccommodation AS (
+                SELECT
+                    id AS ah_id,
+                    worker_unique_id,
+                    room_id,
+                    start_date,
+                    end_date,
+                    ROW_NUMBER() OVER(PARTITION BY worker_unique_id ORDER BY start_date DESC, id DESC) as rn
+                FROM "AccommodationHistory"
+            )
+            SELECT 
+                d.original_address AS "宿舍地址",
+                w.employer_name AS "雇主",
+                w.worker_name AS "姓名",
+                w.gender AS "性別",
+                w.nationality AS "國籍",
+                la.start_date AS "入住日期",
+                d.primary_manager AS "管理人"
+            FROM LatestAccommodation la
+            JOIN "Workers" w ON la.worker_unique_id = w.unique_id
+            JOIN "Rooms" r ON la.room_id = r.id
+            JOIN "Dormitories" d ON r.dorm_id = d.id
+            WHERE 
+                la.rn = 1 
+                AND la.end_date IS NULL 
+                AND r.room_number = '[未分配房間]'
+                AND d.primary_manager = '我司'
+            ORDER BY d.original_address, w.employer_name, w.worker_name
+        """
+        return _execute_query_to_dataframe(conn, query)
+    finally:
+        if conn: conn.close()
+
+# --- 修改函式定義，加入 protection_level 參數 ---
 def batch_update_assignments(updates: list, protection_level: str):
     """
     批次 "覆蓋" 住宿歷史紀錄。

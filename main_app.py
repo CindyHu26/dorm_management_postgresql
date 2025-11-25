@@ -36,6 +36,7 @@ from views import (
     inventory_view,
     cleaning_schedule_view,
     accounting_scraper_view,
+    unassigned_worker_view,
 )
 
 def load_config():
@@ -48,46 +49,49 @@ def load_config():
 
 # 頁面結構化 (維持不變)
 PAGES = {
-    "總覽與報表": {
-        "儀表板": dashboard_view,
-        "費用標準與異常儀表板": fee_dashboard_view,
-        "智慧提醒": reminder_view,
-        "歷史在住查詢": residency_analyzer_view,
-        "營運分析": operations_analyzer_view,
-        "宿舍深度分析": dorm_analyzer_view,
-        "雇主儀表板": employer_dashboard_view,
-        "水電費用分析": analytics_view,
-        "虧損宿舍分析": loss_analyzer_view,
-        "匯出報表": report_view
-    },
-    "核心業務管理": {
-        "人員管理": worker_view,
-        "地址管理": dormitory_view,
-        "空床位查詢": placement_view,
-        "房間分配": room_assignment_view,
-        "工人房租管理": rent_view,
-        "進階批次 (換宿/換費用/離住/資料來源)": batch_operations_view,
-        "住宿歷史批次編輯": batch_history_editor_view,
-        "其他收入管理": income_view,
-        "資產與庫存管理": inventory_view,
-        "設備管理": equipment_view,
-        "清掃排程管理": cleaning_schedule_view,
-        "廠商資料管理": vendor_view
-    },
-    "支出業務管理": {
-        "變動費用管理": expense_view,
-        "錶號費用管理": meter_expense_view,
-        "年度費用管理": annual_expense_view,
-        "維修追蹤管理": maintenance_view,
-        "長期合約管理": lease_view,
-        "長期合約分項總覽": contract_view,
-        "電水錶管理": meter_view,
+    "📊 數據決策儀表板": {
+        "系統總覽儀表板": dashboard_view,
+        "費用基準與異常分析": fee_dashboard_view,      # 抓出收費異常
+        "雇主損益分析": employer_dashboard_view, # 算雇主賺賠
+        "虧損宿舍分析": loss_analyzer_view,      # 算宿舍賺賠
+        "水電用量分析": analytics_view,          # 抓水電異常
+        "宿舍深度分析": dorm_analyzer_view,      # 查單一宿舍詳情
+        "歷史在住查詢": residency_analyzer_view, # 查歷史名單
+        "營運優化建議": operations_analyzer_view,# 抓未設定房租的人
+        "智慧提醒": reminder_view               # 到期提醒
     },
 
-    "資料與系統維護": {
-        "批次匯入": batch_import_view,
-        "移工系統爬取": scraper_view,
-        "財務爬取與設定": accounting_scraper_view
+    "🏠 宿舍與人員營運": {
+        "人員管理": worker_view,                # 增刪修人員
+        "地址與房間管理": dormitory_view,        # 增刪修宿舍
+        "空床位查詢": placement_view,            # 找空床
+        "房間分配 (入住/換宿)": room_assignment_view, # 派房
+        "未分配房間人員總覽": unassigned_worker_view, # 抓漏網之魚
+        "進階批次作業": batch_operations_view,   # 批次換宿/離住
+        "歷史紀錄修正": batch_history_editor_view, # 修錯資料
+        "設備資產管理": equipment_view,          # 管冷氣/飲水機
+        "庫存物品管理": inventory_view,          # 管備品/鑰匙
+        "清掃排程管理": cleaning_schedule_view,  # 管打掃
+        "電水錶號管理": meter_view,               # 管錶號 (非費用)
+        "廠商資料管理": vendor_view,                 # 建房東/廠商
+    },
+
+    "💰 財務收支管理": {
+        "變動費用 (水電帳單)": expense_view,         # 輸入每月帳單
+        "錶號費用 (快速輸入)": meter_expense_view,   # 依錶號輸費用
+        "年度/攤銷費用": annual_expense_view,        # 輸入消防/保險/稅
+        "維修追蹤與費用": maintenance_view,          # 輸入維修費
+        "長期合約 (房租/網)": lease_view,            # 輸入固定租金
+        "合約項目總覽": contract_view,               # 看合約列表
+        "其他收入管理": income_view,                 # 輸入雜項收入/補貼
+        "工人房租設定": rent_view                    # 設定跟工人收多少錢
+    },
+
+    "⚙️ 資料與系統維護": {
+        "批次資料匯入": batch_import_view,           # Excel 匯入
+        "移工系統同步 (爬蟲)": scraper_view,          # 抓人
+        "財務系統同步 (B04)": accounting_scraper_view, # 抓錢
+        "報表匯出中心": report_view                  # 下載報表
     }
 }
 
