@@ -436,3 +436,38 @@ def get_annual_financial_dashboard_data(year: int):
         return pd.DataFrame()
     finally:
         if conn: conn.close()
+
+def get_employer_resident_counts(year_month: str, min_count: int = 0):
+    """
+    計算指定月份，各雇主的在住總人數，並可依人數篩選 (>= min_count)。
+    """
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    
+    try:
+        # 參數: year_month (YYYY-MM), min_count
+        params = {"year_month": year_month, "min_count": min_count}
+        
+        query = """
+            WITH DateParams AS (
+                SELECT
+                    TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
+                    (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
+            )
+            SELECT 
+                w.employer_name AS "雇主",
+                COUNT(DISTINCT w.unique_id) AS "在住人數"
+            FROM "AccommodationHistory" ah
+            JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+            CROSS JOIN DateParams dp
+            WHERE 
+                -- 邏輯：住宿期間與查詢月份有重疊即算在住
+                ah.start_date <= dp.last_day_of_month
+                AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
+            GROUP BY w.employer_name
+            HAVING COUNT(DISTINCT w.unique_id) >= %(min_count)s
+            ORDER BY "在住人數" DESC;
+        """
+        return _execute_query_to_dataframe(conn, query, params)
+    finally:
+        if conn: conn.close()

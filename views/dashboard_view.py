@@ -7,10 +7,10 @@ from dateutil.relativedelta import relativedelta
 from data_models import dashboard_model
 
 def render():
-    """渲染儀表板頁面，包含「住宿總覽」和「財務分析」兩個頁籤。"""
+    """渲染儀表板頁面，包含「住宿總覽」、「財務分析」與「雇主統計」三個頁籤。"""
     st.header("系統儀表板")
 
-    tab1, tab2 = st.tabs(["📊 住宿情況總覽", "💰 財務收支分析"])
+    tab1, tab2, tab3 = st.tabs(["📊 住宿情況總覽", "💰 財務收支分析", "👥 雇主住宿統計"])
 
     # --- 頁籤一：住宿總覽 (維持不變) ---
     with tab1:
@@ -67,9 +67,39 @@ def render():
                 }
             )
 
-    # --- 頁籤二：財務分析 ---
+    # --- 頁籤二：財務分析 (加入名詞解釋) ---
     with tab2:
         st.subheader("我司管理宿舍 - 財務分析")
+
+        # === 【新增】費用名詞解釋區塊 ===
+        with st.expander("💡 費用項目名詞解釋 (點此查看)", expanded=False):
+            st.markdown("為方便理解財務報表，以下為各費用類別的定義：")
+            c_info1, c_info2, c_info3 = st.columns(3)
+            
+            with c_info1:
+                st.markdown("##### 📋 長期合約")
+                st.caption("""
+                指每月金額固定的經常性支出。
+                * **例如**：付給房東的房租、固定網路費、垃圾清運費。
+                * **來源**：長期合約管理。
+                """)
+            
+            with c_info2:
+                st.markdown("##### 💧 變動雜費")
+                st.caption("""
+                指依據帳單浮動的支出。
+                * **例如**：台電電費、自來水費、瓦斯費、臨時小額修繕。
+                * **來源**：費用帳單管理。
+                """)
+            
+            with c_info3:
+                st.markdown("##### 📅 長期攤銷")
+                st.caption("""
+                指一次付清但分攤至各月的成本。
+                * **例如**：年度消防安檢、商業保險、設備採購、大型修繕工程。
+                * **來源**：年度/攤銷費用、設備管理。
+                """)
+        # ==============================
 
         fin_tab1, fin_tab2 = st.tabs(["按月檢視", "按年檢視"])
         
@@ -80,7 +110,6 @@ def render():
         with fin_tab1:
             st.markdown("##### 選擇月份")
             
-            # 預設選取 2 個月前
             default_date = today - relativedelta(months=2)
             default_year = default_date.year
             default_month = default_date.month
@@ -131,7 +160,7 @@ def render():
             finance_df = get_finance_data(year_month_str)
 
             if finance_df is None or finance_df.empty:
-                st.warning(f"在 {year_month_str} 沒有找到任何「我司管理」宿舍的收支數據。")
+                st.warning(f"在 {year_month_str} 沒有找到任何「我司管理」的收支數據。")
             else:
                 total_income = int(finance_df['總收入'].sum())
                 total_expense = int(finance_df['總支出'].sum())
@@ -148,23 +177,23 @@ def render():
                     color = 'red' if val < 0 else 'green' if val > 0 else 'grey'
                     return f'color: {color}'
                 
-                # 【核心修改】設定欄位顯示與隱藏
+                # 【修改】在 column_config 中加入 help 提示
                 st.dataframe(
                     finance_df.style.apply(lambda x: x.map(lambda y: style_profit(y) if x.name == '淨損益' else None)),
                     width="stretch", 
                     hide_index=True,
-                    column_order=["宿舍地址", "雇主", "總收入", "總支出", "淨損益"], # <--- 這裡設定預設顯示的欄位
+                    column_order=["宿舍地址", "雇主", "總收入", "總支出", "淨損益"],
                     column_config={
                         "宿舍地址": st.column_config.TextColumn("宿舍地址", width="medium"),
                         "雇主": st.column_config.TextColumn("雇主", width="medium"),
-                        "總收入": st.column_config.NumberColumn("總收入", format="NT$ %d"),
-                        "總支出": st.column_config.NumberColumn("總支出", format="NT$ %d"),
+                        "總收入": st.column_config.NumberColumn("總收入", format="NT$ %d", help="包含工人月費扣款 + 其他雜項收入"),
+                        "總支出": st.column_config.NumberColumn("總支出", format="NT$ %d", help="包含合約 + 變動雜費 + 年度攤銷"),
                         "淨損益": st.column_config.NumberColumn("淨損益", format="NT$ %d"),
-                        # 其他欄位不需要特別設定 hidden，只要不在 column_order 中，
-                        # 在支援的 Streamlit 版本中會自動隱藏但可透過「眼睛」開啟
-                        "長期合約支出": st.column_config.NumberColumn("長期合約支出", format="NT$ %d"),
-                        "變動雜費(我司支付)": st.column_config.NumberColumn("變動雜費", format="NT$ %d"),
-                        "長期攤銷": st.column_config.NumberColumn("長期攤銷", format="NT$ %d"),
+                        
+                        # 隱藏欄位 (點擊眼睛可見)，加上詳細說明
+                        "長期合約支出": st.column_config.NumberColumn("長期合約支出", format="NT$ %d", help="固定的月費支出 (如房租)"),
+                        "變動雜費(我司支付)": st.column_config.NumberColumn("變動雜費", format="NT$ %d", help="浮動的帳單支出 (如水電)"),
+                        "長期攤銷": st.column_config.NumberColumn("長期攤銷", format="NT$ %d", help="分攤至本月的年度費用 (如保險、修繕)"),
                         "宿舍備註": st.column_config.TextColumn("宿舍備註")
                     }
                 )
@@ -196,7 +225,7 @@ def render():
             annual_finance_df = get_annual_finance_data(selected_year_annual)
 
             if annual_finance_df is None or annual_finance_df.empty:
-                st.warning(f"在 {selected_year_annual} 年沒有找到任何「我司管理」宿舍的收支數據。")
+                st.warning(f"在 {selected_year_annual} 年沒有找到任何「我司管理」的收支數據。")
             else:
                 total_income_annual = int(annual_finance_df['總收入'].sum())
                 total_expense_annual = int(annual_finance_df['總支出'].sum())
@@ -213,7 +242,7 @@ def render():
                     color = 'red' if val < 0 else 'green' if val > 0 else 'grey'
                     return f'color: {color}'
                 
-                # 【核心修改】設定欄位顯示與隱藏 (同月度表)
+                # 【修改】同樣加入 help 提示
                 st.dataframe(
                     annual_finance_df.style.apply(lambda x: x.map(lambda y: style_profit_annual(y) if x.name == '淨損益' else None)),
                     width="stretch", 
@@ -222,12 +251,55 @@ def render():
                     column_config={
                         "宿舍地址": st.column_config.TextColumn("宿舍地址", width="medium"),
                         "雇主": st.column_config.TextColumn("雇主", width="medium"),
-                        "總收入": st.column_config.NumberColumn("總收入", format="NT$ %d"),
-                        "總支出": st.column_config.NumberColumn("總支出", format="NT$ %d"),
+                        "總收入": st.column_config.NumberColumn("總收入", format="NT$ %d", help="包含工人月費扣款 + 其他雜項收入"),
+                        "總支出": st.column_config.NumberColumn("總支出", format="NT$ %d", help="包含合約 + 變動雜費 + 年度攤銷"),
                         "淨損益": st.column_config.NumberColumn("淨損益", format="NT$ %d"),
-                        "長期合約支出": st.column_config.NumberColumn("長期合約支出", format="NT$ %d"),
-                        "變動雜費(我司支付)": st.column_config.NumberColumn("變動雜費", format="NT$ %d"),
-                        "長期攤銷": st.column_config.NumberColumn("長期攤銷", format="NT$ %d"),
+                        
+                        "長期合約支出": st.column_config.NumberColumn("長期合約支出", format="NT$ %d", help="固定的月費支出 (如房租)"),
+                        "變動雜費(我司支付)": st.column_config.NumberColumn("變動雜費", format="NT$ %d", help="浮動的帳單支出 (如水電)"),
+                        "長期攤銷": st.column_config.NumberColumn("長期攤銷", format="NT$ %d", help="分攤至本月的年度費用 (如保險、修繕)"),
                         "宿舍備註": st.column_config.TextColumn("宿舍備註")
                     }
                 )
+
+    # --- 頁籤三：雇主住宿統計---
+    with tab3:
+        st.subheader("各雇主月度住宿人數統計")
+        
+        today_emp = datetime.now()
+        ec1, ec2, ec3 = st.columns(3)
+        
+        selected_year_emp = ec1.selectbox("選擇年份", options=range(today_emp.year - 2, today_emp.year + 2), index=2, key="emp_stat_year")
+        selected_month_emp = ec2.selectbox("選擇月份", options=range(1, 13), index=today_emp.month - 1, key="emp_stat_month")
+        min_headcount = ec3.number_input("最小人數篩選 (>= N)", min_value=0, value=10, step=1, help="只顯示在住人數大於或等於此數字的雇主")
+        
+        year_month_str_emp = f"{selected_year_emp}-{selected_month_emp:02d}"
+        
+        @st.cache_data
+        def get_emp_counts(period, min_cnt):
+            return dashboard_model.get_employer_resident_counts(period, min_cnt)
+
+        if st.button("🔍 查詢雇主統計", key="btn_query_emp_stats"):
+            get_emp_counts.clear()
+
+        df_emp_counts = get_emp_counts(year_month_str_emp, min_headcount)
+        
+        st.markdown("---")
+        
+        if df_emp_counts.empty:
+            st.warning(f"在 {year_month_str_emp} 期間，找不到人數 >= {min_headcount} 的雇主資料。")
+        else:
+            st.success(f"共找到 {len(df_emp_counts)} 位符合條件的雇主。")
+            # st.markdown("##### 人數分佈圖")
+            # chart_data = df_emp_counts.set_index("雇主")
+            # st.bar_chart(chart_data)
+            
+            st.markdown("##### 詳細數據表")
+            st.dataframe(
+                df_emp_counts, 
+                width="stretch", 
+                hide_index=True,
+                column_config={
+                    "在住人數": st.column_config.NumberColumn(format="%d 人"),
+                }
+            )
