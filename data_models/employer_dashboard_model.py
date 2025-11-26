@@ -131,10 +131,8 @@ def get_employer_resident_details(employer_names: list, year_month: str = None):
 
 def get_employer_financial_summary(employer_names: list, year_month: str):
     """
-    【v3.2 最終完整版】為指定雇主列表和月份，計算收支與損益。
-    1. 收入計算：使用 FeeHistory (MAX effective_date) 確保抓到最新費率。
-    2. 費用分攤：使用「人天數 (Occupancy Days)」作為分攤基礎，比單純人頭更準確。
-    3. 其他收入：支援「指定雇主 (100%歸屬)」與「共用收入 (按比例分攤)」的混合計算。
+    【v3.3 修正版】為指定雇主列表和月份，計算收支與損益。
+    修正：DormMonthlyExpenses 區塊正確關聯各個支出表，並使用 payer = '我司' 進行篩選。
     """
     if not employer_names:
         return pd.DataFrame()
@@ -223,7 +221,7 @@ def get_employer_financial_summary(employer_names: list, year_month: str):
                 SELECT dorm_id, SUM(amount) as direct_income
                 FROM "OtherIncome" CROSS JOIN DateParams dp
                 WHERE transaction_date >= dp.first_day_of_month AND transaction_date <= dp.last_day_of_month
-                  AND target_employer = ANY(%(employer_names)s) -- 只選目標雇主
+                  AND target_employer = ANY(%(employer_names)s)
                 GROUP BY dorm_id
             ),
             -- 7. 其他收入 - 未指定/共用的 (Shared)
@@ -234,7 +232,7 @@ def get_employer_financial_summary(employer_names: list, year_month: str):
                   AND (target_employer IS NULL OR target_employer = '')
                 GROUP BY dorm_id
             ),
-            -- 8. 宿舍總支出 (全棟)
+            -- 8. 宿舍總支出 (全棟，使用 payer = '我司' 判斷)
             DormMonthlyExpenses AS (
                  SELECT
                     d.id as dorm_id, d.original_address, d.dorm_notes,
@@ -244,19 +242,27 @@ def get_employer_financial_summary(employer_names: list, year_month: str):
                     COALESCE(ae.total_amortized, 0) AS amortized_expense
                 FROM "Dormitories" d
                 LEFT JOIN (
+                    -- 合約費用 (payer = '我司')
                     SELECT l.dorm_id, SUM(l.monthly_rent) as contract_expense
                     FROM "Leases" l CROSS JOIN DateParams dp
-                    WHERE l.payer = '我司' AND l.lease_start_date <= dp.last_day_of_month AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month) GROUP BY l.dorm_id
+                    WHERE l.payer = '我司' AND l.lease_start_date <= dp.last_day_of_month AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month) 
+                    GROUP BY l.dorm_id
                 ) l ON d.id = l.dorm_id
                 LEFT JOIN (
+                    -- 變動費用 (payer = '我司')
                     SELECT b.dorm_id,
                         SUM(CASE WHEN b.is_pass_through THEN (b.amount::decimal * (LEAST(b.bill_end_date, dp.last_day_of_month)::date - GREATEST(b.bill_start_date, dp.first_day_of_month)::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)) ELSE 0 END) as pass_through_expense,
-                        SUM(CASE WHEN NOT b.is_pass_through AND ((b.bill_type IN ('水費', '電費') AND d_filter.utilities_payer = '我司') OR (b.bill_type NOT IN ('水費', '電費') AND b.payer = '我司')) THEN (b.amount::decimal * (LEAST(b.bill_end_date, dp.last_day_of_month)::date - GREATEST(b.bill_start_date, dp.first_day_of_month)::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)) ELSE 0 END) as company_expense
-                    FROM "UtilityBills" b JOIN "Dormitories" d_filter ON b.dorm_id = d_filter.id CROSS JOIN DateParams dp WHERE b.bill_start_date <= dp.last_day_of_month AND b.bill_end_date >= dp.first_day_of_month GROUP BY b.dorm_id
+                        SUM(CASE WHEN NOT b.is_pass_through AND b.payer = '我司' THEN (b.amount::decimal * (LEAST(b.bill_end_date, dp.last_day_of_month)::date - GREATEST(b.bill_start_date, dp.first_day_of_month)::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)) ELSE 0 END) as company_expense
+                    FROM "UtilityBills" b CROSS JOIN DateParams dp 
+                    WHERE b.bill_start_date <= dp.last_day_of_month AND b.bill_end_date >= dp.first_day_of_month 
+                    GROUP BY b.dorm_id
                 ) pu ON d.id = pu.dorm_id
                 LEFT JOIN (
+                    -- 攤銷
                     SELECT dorm_id, SUM(ROUND(total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0))) as total_amortized
-                    FROM "AnnualExpenses" CROSS JOIN DateParams dp WHERE TO_DATE(amortization_start_month, 'YYYY-MM') <= dp.first_day_of_month AND TO_DATE(amortization_end_month, 'YYYY-MM') >= dp.first_day_of_month GROUP BY dorm_id
+                    FROM "AnnualExpenses" CROSS JOIN DateParams dp 
+                    WHERE TO_DATE(amortization_start_month, 'YYYY-MM') <= dp.first_day_of_month AND TO_DATE(amortization_end_month, 'YYYY-MM') >= dp.first_day_of_month 
+                    GROUP BY dorm_id
                 ) ae ON d.id = ae.dorm_id
             )
             -- 9. 最終組合計算
@@ -289,7 +295,7 @@ def get_employer_financial_summary(employer_names: list, year_month: str):
             df["損益"] = (df["收入(員工月費)"] + df["分攤其他收入"]) - \
                         (df["我司分攤合約費"] + df["我司分攤雜費"] + df["我司分攤攤銷"])
             
-            # 調整欄位順序以便閱讀
+            # 調整欄位順序
             cols = ["宿舍地址", "宿舍備註", "損益", "收入(員工月費)", "分攤其他收入", 
                     "我司分攤合約費", "我司分攤雜費", "我司分攤攤銷"]
             df = df[cols]
@@ -363,7 +369,6 @@ def get_employer_financial_summary_annual(employer_names: list, year: int):
                 LEFT JOIN EmployerAnnualIncome eai ON dao.dorm_id = eai.dorm_id
                 WHERE dao.employer_workers_year > 0
             ),
-            -- (以下年度支出計算邏輯維持不變，需保留)
             AnnualRent AS (
                 SELECT l.dorm_id, SUM(COALESCE(l.monthly_rent, 0) * ((LEAST(COALESCE(l.lease_end_date, dp.last_day_of_year), dp.last_day_of_year)::date - GREATEST(l.lease_start_date, dp.first_day_of_year)::date + 1) / 30.4375)) as total_rent
                 FROM "Leases" l JOIN "Dormitories" d ON l.dorm_id = d.id CROSS JOIN DateParams dp
@@ -371,11 +376,11 @@ def get_employer_financial_summary_annual(employer_names: list, year: int):
             ),
             AnnualUtilities AS (
                  SELECT b.dorm_id, SUM(COALESCE(b.amount, 0) * (LEAST(b.bill_end_date, dp.last_day_of_year)::date - GREATEST(b.bill_start_date, dp.first_day_of_year)::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)) as total_utils
-                 FROM "UtilityBills" b JOIN "Dormitories" d ON b.dorm_id = d.id CROSS JOIN DateParams dp
-                 WHERE ((b.bill_type IN ('水費', '電費') AND d.utilities_payer = '我司') OR (b.bill_type NOT IN ('水費', '電費') AND b.payer = '我司'))
+                 FROM "UtilityBills" b CROSS JOIN DateParams dp
+                 WHERE b.payer = '我司'
                    AND NOT b.is_pass_through AND b.bill_start_date <= dp.last_day_of_year AND b.bill_end_date >= dp.first_day_of_year GROUP BY b.dorm_id
             ),
-             AnnualPassThroughUtilities AS (
+            AnnualPassThroughUtilities AS (
                  SELECT b.dorm_id, SUM(COALESCE(b.amount, 0) * (LEAST(b.bill_end_date, dp.last_day_of_year)::date - GREATEST(b.bill_start_date, dp.first_day_of_year)::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)) as total_pass_through
                  FROM "UtilityBills" b CROSS JOIN DateParams dp WHERE b.is_pass_through = TRUE AND b.bill_start_date <= dp.last_day_of_year AND b.bill_end_date >= dp.first_day_of_year GROUP BY b.dorm_id
              ),
@@ -383,7 +388,7 @@ def get_employer_financial_summary_annual(employer_names: list, year: int):
                  SELECT dorm_id, SUM((total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0)) * GREATEST(0, (EXTRACT(YEAR FROM age(LEAST(TO_DATE(amortization_end_month, 'YYYY-MM'), dp.last_day_of_year), GREATEST(TO_DATE(amortization_start_month, 'YYYY-MM'), dp.first_day_of_year)))*12 + EXTRACT(MONTH FROM age(LEAST(TO_DATE(amortization_end_month, 'YYYY-MM'), dp.last_day_of_year), GREATEST(TO_DATE(amortization_start_month, 'YYYY-MM'), dp.first_day_of_year))) + 1))) as total_amort
                  FROM "AnnualExpenses" CROSS JOIN DateParams dp WHERE TO_DATE(amortization_start_month, 'YYYY-MM') <= dp.last_day_of_year AND TO_DATE(amortization_end_month, 'YYYY-MM') >= dp.first_day_of_year GROUP BY dorm_id
             ),
-             AnnualOtherIncome AS (
+            AnnualOtherIncome AS (
                  SELECT dorm_id, SUM(amount) as total_income FROM "OtherIncome" CROSS JOIN DateParams dp WHERE transaction_date >= dp.first_day_of_year AND transaction_date <= dp.last_day_of_year GROUP BY dorm_id
              )
             SELECT
@@ -533,12 +538,10 @@ def get_employer_financial_details_for_dorm(employer_names: list, dorm_id: int, 
                 SUM(ROUND(l.monthly_rent * ((LEAST(COALESCE(l.lease_end_date, dp.end_date), dp.end_date)::date - GREATEST(l.lease_start_date, dp.start_date)::date + 1) / 30.4375)))::numeric as "原始總額",
                 l.payer as "支付方"
             FROM "Leases" l 
-            -- 【修改】不再需要 JOIN Dormitories
             CROSS JOIN DateParams dp
             WHERE l.dorm_id = %(dorm_id)s 
               AND l.lease_start_date <= dp.end_date 
               AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.start_date) 
-            -- 【核心修改】將 GROUP BY d.rent_payer 改為 l.payer
             GROUP BY l.contract_item, l.payer
             
             UNION ALL
@@ -546,9 +549,10 @@ def get_employer_financial_details_for_dorm(employer_names: list, dorm_id: int, 
             SELECT
                 b.bill_type || CASE WHEN b.is_pass_through THEN ' (代收代付)' ELSE '' END,
                 SUM(ROUND(b.amount::decimal * (LEAST(b.bill_end_date, dp.end_date)::date - GREATEST(b.bill_start_date, dp.start_date)::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)))::numeric,
-                CASE WHEN b.is_pass_through THEN '代收代付' WHEN b.bill_type IN ('水費', '電費') THEN d.utilities_payer ELSE b.payer END as "支付方"
-            FROM "UtilityBills" b JOIN "Dormitories" d ON b.dorm_id = d.id CROSS JOIN DateParams dp
-            WHERE b.dorm_id = %(dorm_id)s AND b.bill_start_date <= dp.end_date AND b.bill_end_date >= dp.start_date GROUP BY b.bill_type, b.is_pass_through, d.utilities_payer, b.payer
+                CASE WHEN b.is_pass_through THEN '代收代付' ELSE b.payer END as "支付方"
+            FROM "UtilityBills" b CROSS JOIN DateParams dp
+            WHERE b.dorm_id = %(dorm_id)s AND b.bill_start_date <= dp.end_date AND b.bill_end_date >= dp.start_date 
+            GROUP BY b.bill_type, b.is_pass_through, b.payer
             
             UNION ALL
             

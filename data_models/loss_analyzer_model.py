@@ -74,9 +74,9 @@ def get_loss_making_dorms(period: str):
                 UNION ALL
                 -- 雜費
                 SELECT b.dorm_id, SUM(b.amount::decimal * ((LEAST(b.bill_end_date, (SELECT end_date FROM DateRange))::date - GREATEST(b.bill_start_date, (SELECT start_date FROM DateRange))::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)::decimal))
-                FROM "UtilityBills" b JOIN "Dormitories" d ON b.dorm_id = d.id CROSS JOIN DateRange dr 
-                WHERE ( (b.bill_type IN ('水費', '電費') AND d.utilities_payer = '我司') OR (b.bill_type NOT IN ('水費', '電費') AND b.payer = '我司') )
-                  AND b.is_pass_through = FALSE AND b.bill_start_date <= dr.end_date AND b.bill_end_date >= dr.start_date GROUP BY b.dorm_id
+                FROM "UtilityBills" b CROSS JOIN DateRange dr 
+                WHERE b.payer = '我司' AND b.is_pass_through = FALSE
+                AND b.bill_start_date <= dr.end_date AND b.bill_end_date >= dr.start_date GROUP BY b.dorm_id
                 UNION ALL
                 -- 攤銷
                 SELECT dorm_id, SUM( (total_amount::decimal / NULLIF(((EXTRACT(YEAR FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(YEAR FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) * 12 + (EXTRACT(MONTH FROM TO_DATE(amortization_end_month, 'YYYY-MM')) - EXTRACT(MONTH FROM TO_DATE(amortization_start_month, 'YYYY-MM'))) + 1), 0)) * (EXTRACT(YEAR FROM age(LEAST(TO_DATE(amortization_end_month, 'YYYY-MM'), (SELECT end_date FROM DateRange))::date, GREATEST(TO_DATE(amortization_start_month, 'YYYY-MM'), (SELECT start_date FROM DateRange))::date))*12 + EXTRACT(MONTH FROM age(LEAST(TO_DATE(amortization_end_month, 'YYYY-MM'), (SELECT end_date FROM DateRange))::date, GREATEST(TO_DATE(amortization_start_month, 'YYYY-MM'), (SELECT start_date FROM DateRange))::date)) + 1))

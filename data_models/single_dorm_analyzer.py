@@ -125,7 +125,7 @@ def get_resident_summary(dorm_ids: list, year_month: str):
     if df.empty:
         return {
             "total_residents": 0, "gender_counts": pd.DataFrame(columns=['性別', '人數']),
-            "nationality_counts": pd.DataFrame(columns=['國籍', '人數']), "rent_summary": pd.DataFrame(columns=['房租金額', '人數'])
+            "nationality_counts": pd.DataFrame(columns=['國籍', '人數']), "rent_summary": pd.DataFrame(columns=['該月總收租', '人數'])
         }
 
     gender_counts = df['gender'].value_counts().reset_index()
@@ -136,13 +136,13 @@ def get_resident_summary(dorm_ids: list, year_month: str):
 
     # 房租統計使用從 FeeHistory 查詢到的 monthly_fee
     rent_summary = df['monthly_fee'].fillna(0).astype(int).value_counts().reset_index()
-    rent_summary.columns = ['房租金額', '人數']
+    rent_summary.columns = ['該月總收租', '人數'] # 修改這裡：從 '房租金額' 改為 '該月總收租'
 
     return {
         "total_residents": len(df),
         "gender_counts": gender_counts,
         "nationality_counts": nationality_counts,
-        "rent_summary": rent_summary.sort_values(by='房租金額')
+        "rent_summary": rent_summary.sort_values(by='該月總收租')
     }
 
 def get_expense_summary(dorm_ids: list, year_month: str):
@@ -179,24 +179,17 @@ def get_expense_summary(dorm_ids: list, year_month: str):
             SELECT 
                 CASE 
                     WHEN b.is_pass_through THEN b.bill_type || ' (代收代付)'
-                    ELSE 
-                        b.bill_type || ' (' || 
-                            CASE
-                                WHEN b.bill_type IN ('水費', '電費') THEN d.utilities_payer
-                                ELSE b.payer
-                            END
-                        || '支付)'
+                    ELSE b.bill_type || ' (' || b.payer || '支付)'
                 END AS "費用項目",
                 SUM(b.amount::decimal * (LEAST(b.bill_end_date, (SELECT last_day_of_month FROM DateParams))::date - GREATEST(b.bill_start_date, (SELECT first_day_of_month FROM DateParams))::date + 1)
                     / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)
                 ) as "金額"
             FROM "UtilityBills" b
-            JOIN "Dormitories" d ON b.dorm_id = d.id
             CROSS JOIN DateParams dp
             WHERE b.dorm_id = ANY(%(dorm_ids)s)
               AND b.bill_start_date <= dp.last_day_of_month 
               AND b.bill_end_date >= dp.first_day_of_month
-            GROUP BY b.bill_type, d.utilities_payer, b.payer, b.is_pass_through
+            GROUP BY b.bill_type, b.payer, b.is_pass_through
 
             UNION ALL
 

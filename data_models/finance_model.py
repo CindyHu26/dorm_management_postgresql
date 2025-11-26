@@ -935,8 +935,8 @@ def batch_sync_dorm_bills(dorm_id: int, edited_df: pd.DataFrame):
                             meter_id_val_upd = int(row['meter_id']) if pd.notna(row.get('meter_id')) else None
                             
                             # 除錯訊息：如果金額很大，印出來看看
-                            if amount_val_upd > 30000:
-                                print(f"DEBUG: Updating ID {bill_id_to_update} - Amount: {amount_val_upd} (Type: {type(amount_val_upd)})")
+                            # if amount_val_upd > 30000:
+                            #     print(f"DEBUG: Updating ID {bill_id_to_update} - Amount: {amount_val_upd} (Type: {type(amount_val_upd)})")
 
                         except ValueError as ve:
                              raise Exception(f"數值格式錯誤 (ID: {bill_id_to_update}): {ve}")

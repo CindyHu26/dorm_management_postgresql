@@ -103,7 +103,7 @@ def render():
         st.markdown("**國籍分佈 (彙總)**")
         st.dataframe(resident_data['nationality_counts'],  width="stretch", hide_index=True)
     with res_c3:
-        st.markdown("**房租簡表 (彙總)**")
+        st.markdown("**該月總收租簡表 (彙總)**")
         st.dataframe(resident_data['rent_summary'],  width="stretch", hide_index=True)
 
     st.subheader(f"{year_month_str} 宿舍營運分析 (彙總)")
