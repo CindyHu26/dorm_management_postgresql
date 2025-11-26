@@ -124,7 +124,7 @@ def main():
         if query_page and find_group_by_page(query_page):
             st.session_state.page = query_page
         else:
-            st.session_state.page = "儀表板" # 預設首頁
+            st.session_state.page = "系統總覽儀表板" # 預設首頁
         # 第一次也需要設定 URL
         st.query_params["page"] = st.session_state.page
 
@@ -182,7 +182,8 @@ def main():
     page_to_render = PAGES[current_group][current_page]
     st.title(current_page)
     
-    if current_page == "移工系統爬取" or current_page == "財務爬取與設定": 
+    # 【這裡修正了判斷條件】
+    if current_page == "移工系統同步 (爬蟲)" or current_page == "財務系統同步 (B04)": 
         page_to_render.render(config)
     else:
         page_to_render.render()

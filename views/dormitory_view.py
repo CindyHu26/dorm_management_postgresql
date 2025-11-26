@@ -238,7 +238,14 @@ def render():
                         return dormitory_model.get_rooms_for_editor(dorm_id)
 
                     rooms_df = get_rooms_data_for_editor(dorm_id)
-                    
+
+                    # 【重要技巧】將 Decimal 轉為 float，避免 Streamlit 編輯器報錯或無法排序
+                    if "area_sq_meters" in rooms_df.columns:
+                        rooms_df["area_sq_meters"] = pd.to_numeric(rooms_df["area_sq_meters"], errors='coerce')
+                        
+                        # 順便計算坪數供參考 (1 m² ≈ 0.3025 坪)
+                        rooms_df["坪數(參考)"] = rooms_df["area_sq_meters"].apply(lambda x: round(x * 0.3025, 2) if pd.notna(x) else None)
+
                     # 2. 建立選項
                     gender_options = ["可混住", "僅限男性", "僅限女性"]
                     nationality_options = ["不限", "單一國籍"]
@@ -281,7 +288,21 @@ def render():
                                 ),
                                 "room_notes": st.column_config.TextColumn(
                                     "房間備註"
-                                )
+                                ),
+                                # 平方公尺設定
+                                "area_sq_meters": st.column_config.NumberColumn(
+                                    "面積 (m²)", 
+                                    min_value=0.0, 
+                                    step=0.01,  # 允許小數點後兩位
+                                    format="%.2f",
+                                    help="請輸入平方公尺 (m²)，法規檢核基準。"
+                                ),
+                                # 坪數 (唯讀)
+                                "坪數(參考)": st.column_config.NumberColumn(
+                                    "約幾坪", 
+                                    format="%.2f 坪",
+                                    disabled=True 
+                                ),
                             }
                         )
                         

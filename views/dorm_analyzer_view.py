@@ -4,12 +4,24 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
+import database
 from data_models import dormitory_model, single_dorm_analyzer, analytics_model
 
 def render():
     """渲染「宿舍深度分析」頁面"""
     st.header("宿舍深度分析儀表板")
-
+    with st.sidebar:
+        st.markdown("### ⚙️ 合規設定")
+        # 讀取 config 作為預設值，但允許使用者調整
+        general_config = database.get_general_config()
+        default_standard = float(general_config.get('min_area_per_person', 3.6))
+        
+        min_area_standard = st.number_input(
+            "人均面積標準 (m²)", 
+            value=default_standard, 
+            step=0.1,
+            help="調整此數值可即時更新右側的紅色警告標準"
+        )
     # --- 1. 宿舍選擇 (改為複選) ---
     my_dorms = dormitory_model.get_my_company_dorms_for_selection()
     if not my_dorms:
@@ -147,10 +159,17 @@ def render():
         if 'accommodation_end' in room_view_df.columns:
             room_view_df['accommodation_end'] = pd.to_datetime(room_view_df['accommodation_end'], errors='coerce')
 
+        # 讀取法規標準 (預設 3.6)
+        general_config = database.get_general_config()
+        min_area_standard = float(general_config.get('min_area_per_person', 3.6))
+
         # 依照 (宿舍, 房號) 進行分組
         for (dorm_address, room_number), occupants in room_view_df.groupby(['original_address', 'room_number']):
             
             room_capacity = occupants['capacity'].iloc[0]
+            # 讀取房間面積 (處理可能的空值)
+            room_area = occupants['area_sq_meters'].iloc[0]
+            room_area = float(room_area) if pd.notna(room_area) else 0
             
             # --- 【修正 2】修正「實際佔床」邏輯：排除月底前已離住者 ---
             # 條件 A: 有人名
@@ -176,8 +195,16 @@ def render():
             num_occupants = occupants.apply(check_occupancy, axis=1).sum()
             vacancies = room_capacity - num_occupants
 
+            # --- 人均面積檢核邏輯 ---
+            area_warning = ""
+            avg_area = 0.0
+            if num_occupants > 0 and room_area > 0:
+                avg_area = room_area / num_occupants
+                if avg_area < min_area_standard:
+                    # 顯示紅色警告與實際數值
+                    area_warning = f" ⚠️ 空間不足 ({avg_area:.2f} m²/人)"
             # --- 3. 組合標題字串 ---
-            room_title = f"{dorm_address} - {room_number} (容量: {room_capacity}, 空床: {vacancies})"
+            room_title = f"{dorm_address} - {room_number} (容量: {room_capacity}, 空床: {vacancies}){area_warning}"
             
             if vacancies == 0:
                 room_title = f"🔴 {room_title} (已滿)"
@@ -186,12 +213,11 @@ def render():
             elif vacancies > 0:
                 room_title = f"🟢 {room_title}"
             
-            # 【核心修改】若有掛宿外住，標示在最後面
+            # 若有掛宿外住，標示在最後面
             if num_external > 0:
                 room_title += f"，掛住: {num_external}人"
 
             with st.expander(room_title):
-                
                 has_data = occupants['worker_name'] != ''
                 if not has_data.any():
                     st.text("此房間目前無人居住。")
@@ -199,7 +225,7 @@ def render():
                     # 取出要顯示的資料
                     occupant_details = occupants[has_data][['worker_name', 'employer_name', 'bed_number', 'special_status', 'accommodation_end']].copy()
                     
-                    # --- 【修正 3】在表格中標記已離住者 ---
+                    # --- 在表格中標記已離住者 ---
                     def format_status_display(row):
                         status = str(row['special_status']) if pd.notna(row['special_status']) else ""
                         end_date = row['accommodation_end']
@@ -237,7 +263,6 @@ def render():
                         width="stretch"
                     )
     # --- 房況總覽區塊結束 ---
-
     st.markdown("---")
     st.subheader(f"{year_month_str} 財務分析 (我司視角 - 彙總)")
 

@@ -727,13 +727,14 @@ def get_room_occupancy_view(dorm_ids: list, year_month: str):
 
     params = {"dorm_ids": dorm_ids, "year_month": year_month}
     try:
-        # 1. 取得所有房間 (維持不變)
+        # 1. 取得所有房間
         rooms_query = """
             SELECT 
                 r.id as room_id, 
                 d.original_address, 
                 r.room_number, 
-                r.capacity 
+                r.capacity,
+                r.area_sq_meters
             FROM "Rooms" r
             JOIN "Dormitories" d ON r.dorm_id = d.id
             WHERE r.dorm_id = ANY(%(dorm_ids)s)

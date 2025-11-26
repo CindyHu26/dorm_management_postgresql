@@ -444,7 +444,8 @@ def get_rooms_for_editor(dorm_id: int):
             SELECT 
                 id, room_number, capacity, 
                 gender_policy, nationality_policy, 
-                room_notes
+                room_notes,
+                area_sq_meters
             FROM "Rooms" 
             WHERE dorm_id = %s
             ORDER BY room_number
@@ -507,8 +508,8 @@ def batch_sync_rooms(dorm_id: int, edited_df: pd.DataFrame):
                         raise Exception("新增失敗：『房號』為必填欄位，不可為空。")
                     
                     insert_sql = """
-                        INSERT INTO "Rooms" (dorm_id, room_number, capacity, gender_policy, nationality_policy, room_notes)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                        INSERT INTO "Rooms" (dorm_id, room_number, capacity, gender_policy, nationality_policy, room_notes, area_sq_meters)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """
                     cursor.execute(insert_sql, (
                         dorm_id,
@@ -516,7 +517,8 @@ def batch_sync_rooms(dorm_id: int, edited_df: pd.DataFrame):
                         row.get('capacity'),
                         row.get('gender_policy', '可混住'),
                         row.get('nationality_policy', '不限'),
-                        row.get('room_notes')
+                        row.get('room_notes'),
+                        row.get('area_sq_meters')
                     ))
 
             # --- 動作 C：處理更新 ---
@@ -535,7 +537,7 @@ def batch_sync_rooms(dorm_id: int, edited_df: pd.DataFrame):
                         update_sql = """
                             UPDATE "Rooms" SET 
                                 room_number = %s, capacity = %s, gender_policy = %s, 
-                                nationality_policy = %s, room_notes = %s
+                                nationality_policy = %s, room_notes = %s, area_sq_meters = %s
                             WHERE id = %s
                         """
                         cursor.execute(update_sql, (
@@ -544,6 +546,7 @@ def batch_sync_rooms(dorm_id: int, edited_df: pd.DataFrame):
                             row.get('gender_policy', '可混住'),
                             row.get('nationality_policy', '不限'),
                             row.get('room_notes'),
+                            row.get('area_sq_meters'),
                             room_id_to_update
                         ))
         
