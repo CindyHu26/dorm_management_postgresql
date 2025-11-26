@@ -58,6 +58,74 @@ def render():
                 else:
                     st.error(message)
 
+        st.markdown("---")
+        
+        # === 批次編輯區塊 (改用 Checkbox) ===
+        st.subheader("⚡ 批次編輯攤銷期間 (Data Editor)")
+        
+        # 使用 checkbox 取代 expander，確保篩選後不會自動縮回
+        show_batch_editor = st.checkbox("👉 點此顯示/隱藏 編輯表格", value=False, key="toggle_batch_editor")
+        
+        if show_batch_editor:
+            st.info("💡 提示：可直接在表格中修改「攤提月份」與「金額」，修改完畢請務必點擊下方的「儲存變更」按鈕。")
+            
+            # 1. 費用類型篩選器
+            expense_types = ["全部"] + sorted(list(all_expenses_df['費用類型'].unique()))
+            selected_type_filter = st.selectbox("篩選費用類型", expense_types, key="batch_edit_type_filter")
+            
+            # 2. 準備編輯資料
+            if selected_type_filter != "全部":
+                df_to_edit = all_expenses_df[all_expenses_df['費用類型'] == selected_type_filter].copy()
+            else:
+                df_to_edit = all_expenses_df.copy()
+            
+            # 3. 顯示 Data Editor
+            edited_df = st.data_editor(
+                df_to_edit,
+                key=f"annual_expense_editor_{selected_dorm_id}",
+                hide_index=True,
+                column_config={
+                    "id": st.column_config.NumberColumn("ID", disabled=True),
+                    "費用類型": st.column_config.TextColumn(disabled=True),
+                    "備註": st.column_config.TextColumn("系統摘要 (唯讀)", disabled=True),
+                    "內部備註": st.column_config.TextColumn("內部備註 (可編輯)", help="可在此輸入自訂備註"),
+                    
+                    "費用項目": st.column_config.TextColumn("費用項目", required=True),
+                    "支付日期": st.column_config.DateColumn("支付日期", format="YYYY-MM-DD", required=True),
+                    "總金額": st.column_config.NumberColumn("總金額", format="$%d", required=True),
+                    
+                    "攤提起始月": st.column_config.TextColumn(
+                        "攤提起始月", 
+                        help="格式：YYYY-MM (例如 2025-01)",
+                        required=True,
+                        validate=r"^\d{4}-\d{2}$"
+                    ),
+                    "攤提結束月": st.column_config.TextColumn(
+                        "攤提結束月", 
+                        help="格式：YYYY-MM (例如 2025-12)",
+                        required=True,
+                        validate=r"^\d{4}-\d{2}$"
+                    ),
+                },
+                column_order=[
+                    "id", "費用類型", "費用項目", "支付日期", "總金額", 
+                    "攤提起始月", "攤提結束月", "內部備註", "備註"
+                ],
+                disabled=["id", "費用類型", "備註"]
+            )
+            
+            col_save, col_dummy = st.columns([1, 4])
+            if col_save.button("💾 儲存變更", type="primary", key="btn_save_batch_expenses"):
+                with st.spinner("正在儲存變更..."):
+                    success, message = finance_model.batch_update_annual_expenses(edited_df)
+                
+                if success:
+                    st.success(message)
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error(message)
+
     st.markdown("---")
     st.subheader("✏️ 編輯單筆費用紀錄")
 

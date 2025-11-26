@@ -116,6 +116,56 @@ def add_compliance_record(record_type: str, record_details: dict, expense_detail
     finally:
         if conn: conn.close()
 
+def batch_update_annual_expenses(edited_df: pd.DataFrame):
+    """
+    【v1.0 新增】批次更新年度費用的核心欄位 (攤銷期間、金額、備註)。
+    """
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗。"
+    
+    updated_count = 0
+    try:
+        with conn.cursor() as cursor:
+            for index, row in edited_df.iterrows():
+                # 確保 ID 存在
+                if 'id' not in row or pd.isna(row['id']):
+                    continue
+                
+                # 轉換數值 (確保金額是整數)
+                try:
+                    amount = int(row['總金額'])
+                except:
+                    amount = 0
+                
+                sql = """
+                    UPDATE "AnnualExpenses"
+                    SET "expense_item" = %s,
+                        "payment_date" = %s,
+                        "total_amount" = %s,
+                        "amortization_start_month" = %s,
+                        "amortization_end_month" = %s,
+                        "notes" = %s
+                    WHERE "id" = %s
+                """
+                cursor.execute(sql, (
+                    str(row['費用項目']),
+                    row['支付日期'],
+                    amount,
+                    str(row['攤提起始月']),
+                    str(row['攤提結束月']),
+                    str(row['內部備註']),
+                    int(row['id'])
+                ))
+                updated_count += 1
+                
+        conn.commit()
+        return True, f"成功更新 {updated_count} 筆費用紀錄。"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"批次更新時發生錯誤: {e}"
+    finally:
+        if conn: conn.close()
+
 def batch_delete_annual_expenses(record_ids: list):
     """
     根據提供的 ID 列表，批次刪除多筆年度費用紀錄。
@@ -151,8 +201,8 @@ def batch_delete_annual_expenses(record_ids: list):
 
 def get_all_annual_expenses_for_dorm(dorm_id: int):
     """
-    【v1.2 修正版】查詢指定宿舍的所有年度/長期攤銷費用。
-    新增資料類型轉換，避免 ArrowTypeError。
+    【v1.3 編輯優化版】查詢指定宿舍的所有年度/長期攤銷費用。
+    新增：取出 raw notes 作為 '內部備註' 供編輯使用。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -165,6 +215,7 @@ def get_all_annual_expenses_for_dorm(dorm_id: int):
                 ae.total_amount AS "總金額", 
                 ae.amortization_start_month AS "攤提起始月",
                 ae.amortization_end_month AS "攤提結束月", 
+                ae.notes AS "內部備註", -- 【新增】原始備註欄位，供編輯用
                 CASE 
                     WHEN cr.record_type = '保險' THEN
                         '保險公司: ' || COALESCE(cr.details ->> 'vendor', 'N/A') || 
@@ -188,12 +239,14 @@ def get_all_annual_expenses_for_dorm(dorm_id: int):
         """
         df = _execute_query_to_dataframe(conn, query, (dorm_id,))
         
-        # --- 強制將日期月份欄位轉為字串，並處理空值 ---
+        # 強制將日期月份欄位轉為字串，並處理空值
         if not df.empty:
             if '攤提起始月' in df.columns:
                 df['攤提起始月'] = df['攤提起始月'].astype(str).fillna('')
             if '攤提結束月' in df.columns:
                 df['攤提結束月'] = df['攤提結束月'].astype(str).fillna('')
+            if '內部備註' in df.columns:
+                df['內部備註'] = df['內部備註'].fillna('')
 
         return df
     finally:

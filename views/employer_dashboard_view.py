@@ -7,9 +7,10 @@ from dateutil.relativedelta import relativedelta
 from data_models import employer_dashboard_model, dormitory_model
 from views.report_view import to_excel 
 
-def generate_html_report(title, kpi_data, summary_df, resident_summary_df, details_data):
+def generate_html_report(title, kpi_data, summary_df, resident_summary_df, details_data, custom_cols=None):
     """
     生成適合列印的 HTML 報表 (不含詳細個資，但包含統計表與總計)。
+    新增 custom_cols 參數，以支援動態欄位名稱。
     """
     # 1. CSS 樣式 (A4 列印優化)
     html = f"""
@@ -22,7 +23,6 @@ def generate_html_report(title, kpi_data, summary_df, resident_summary_df, detai
             h1 {{ text-align: center; font-size: 22px; margin-bottom: 5px; }}
             h2 {{ text-align: center; font-size: 14px; color: #555; margin-bottom: 20px; }}
             
-            /* 區塊標題 */
             h3 {{ 
                 border-left: 5px solid #4CAF50; 
                 padding-left: 10px; 
@@ -32,14 +32,12 @@ def generate_html_report(title, kpi_data, summary_df, resident_summary_df, detai
                 page-break-after: avoid;
             }}
             
-            /* 表格樣式 */
             table {{ width: 100%; border-collapse: collapse; margin-bottom: 10px; font-size: 11px; }}
             th, td {{ border: 1px solid #ddd; padding: 6px; text-align: right; }}
             th {{ background-color: #f8f9fa; text-align: center; font-weight: bold; color: #333; }}
             .text-left {{ text-align: left; }}
             .center {{ text-align: center; }}
             
-            /* KPI 區塊 */
             .kpi-container {{ display: flex; justify-content: space-between; margin-bottom: 20px; border: 1px solid #ddd; padding: 10px; border-radius: 4px; background-color: #fff; }}
             .kpi-box {{ text-align: center; flex: 1; border-right: 1px solid #eee; }}
             .kpi-box:last-child {{ border-right: none; }}
@@ -48,10 +46,8 @@ def generate_html_report(title, kpi_data, summary_df, resident_summary_df, detai
             .profit-pos {{ color: #28a745; }}
             .profit-neg {{ color: #dc3545; }}
             
-            /* 總計行樣式 */
             .total-row {{ font-weight: bold; background-color: #e8f5e9 !important; }}
             
-            /* 列印設定 */
             @media print {{
                 @page {{ size: A4; margin: 1cm; }}
                 body {{ padding: 0; }}
@@ -92,17 +88,23 @@ def generate_html_report(title, kpi_data, summary_df, resident_summary_df, detai
     # 3. 損益總表 (含總計)
     html += "<h3>💰 各宿舍損益總表</h3>"
     html += "<table><thead><tr>"
-    cols = ["宿舍地址", "在住人數", "淨損益", "收入(員工月費)", "分攤其他收入", "我司分攤合約費", "我司分攤雜費", "我司分攤攤銷"]
+    
+    # 使用傳入的 custom_cols，若無則使用預設
+    if custom_cols:
+        cols = custom_cols
+    else:
+        cols = ["宿舍地址", "在住人數", "淨損益", "收入(員工月費)", "分攤其他收入", "我司分攤合約費", "我司分攤雜費", "我司分攤攤銷"]
+    
     for c in cols:
         html += f"<th>{c}</th>"
     html += "</tr></thead><tbody>"
     
     for _, row in summary_df.iterrows():
-        is_total = row['宿舍地址'] == '總計'
+        is_total = row.get('宿舍地址') == '總計'
         row_class = "total-row" if is_total else ""
         html += f"<tr class='{row_class}'>"
         for c in cols:
-            val = row[c]
+            val = row.get(c, 0)
             display_val = val
             if isinstance(val, (int, float)):
                 display_val = f"{int(val):,}"
@@ -111,11 +113,10 @@ def generate_html_report(title, kpi_data, summary_df, resident_summary_df, detai
         html += "</tr>"
     html += "</tbody></table>"
 
-    # 4. 住宿人員統計表 (新增此區塊)
+    # 4. 住宿人員統計表
     if resident_summary_df is not None and not resident_summary_df.empty:
         html += "<h3>👥 各宿舍住宿人數統計</h3>"
         html += "<table><thead><tr>"
-        # 排除 '主要管理人' 欄位，避免表格太寬
         res_cols = [c for c in resident_summary_df.columns if c != '主要管理人']
         for c in res_cols:
             html += f"<th>{c}</th>"
@@ -125,13 +126,12 @@ def generate_html_report(title, kpi_data, summary_df, resident_summary_df, detai
             html += "<tr>"
             for c in res_cols:
                 val = row[c]
-                # 文字靠左，數字靠右
                 align = "text-left" if isinstance(val, str) and not val.replace(",","").replace(".","").isnumeric() else ""
                 html += f"<td class='{align}'>{val}</td>"
             html += "</tr>"
         html += "</tbody></table>"
 
-    # 5. 詳細收支 (依宿舍)
+    # 5. 詳細收支
     html += "<h3>📝 各宿舍收支明細 (財務細項)</h3>"
     
     has_details = False
@@ -145,7 +145,6 @@ def generate_html_report(title, kpi_data, summary_df, resident_summary_df, detai
         html += f"<div style='font-weight:bold; font-size:13px; margin-bottom:5px; color:#333;'>🏠 {dorm_name}</div>"
         html += "<table style='width:100%; border:none; margin:0;'><tr>"
         
-        # 左邊：收入
         html += "<td style='vertical-align:top; border:none; width:50%; padding:0 5px 0 0;'>"
         if not inc_df.empty:
             html += "<div style='border-bottom:1px solid #ddd; margin-bottom:3px; color:green;'>收入項目</div>"
@@ -155,7 +154,6 @@ def generate_html_report(title, kpi_data, summary_df, resident_summary_df, detai
             html += "<div style='color:#999;'>無收入明細</div>"
         html += "</td>"
 
-        # 右邊：支出
         html += "<td style='vertical-align:top; border:none; width:50%; padding:0 0 0 5px; border-left:1px solid #eee;'>"
         if not exp_df.empty:
             html += "<div style='border-bottom:1px solid #ddd; margin-bottom:3px; color:red;'>支出項目 (分攤後)</div>"
@@ -211,7 +209,7 @@ def render():
             return {d['original_address']: d['id'] for d in all_dorms}
         dorm_id_map = get_dorm_id_map()
 
-        tab1, tab2 = st.tabs(["📊 按月檢視", "📅 年度總覽"])
+        tab1, tab2, tab3 = st.tabs(["📊 按月檢視 (攤提)", "📅 年度總覽 (攤提)", "💸 現金流分析 (不攤提)"])
 
         # ==============================================================================
         # 頁籤 1: 按月檢視
@@ -265,7 +263,6 @@ def render():
                 display_df['淨損益'] = (display_df['收入(員工月費)'] + display_df['分攤其他收入']) - \
                                     (display_df['我司分攤合約費'] + display_df['我司分攤雜費'] + display_df['我司分攤攤銷'])
                 
-                # 計算在住人數 (加入 display_df)
                 if not report_df_month.empty:
                     dorm_headcounts = report_df_month.groupby('宿舍地址').size().reset_index(name='在住人數')
                     display_df = pd.merge(display_df, dorm_headcounts, on='宿舍地址', how='left')
@@ -275,7 +272,7 @@ def render():
                 
                 total_headcount = display_df['在住人數'].sum()
 
-                # 加入「總計」列
+                # 總計列
                 cols_to_sum = ["在住人數", "淨損益", "收入(員工月費)", "分攤其他收入", "我司分攤合約費", "我司分攤雜費", "我司分攤攤銷"]
                 sum_row = display_df[cols_to_sum].sum()
                 sum_row['宿舍地址'] = '總計'
@@ -288,22 +285,17 @@ def render():
                 cols_to_display = ["宿舍地址", "在住人數", "淨損益", "收入(員工月費)", "分攤其他收入", "我司分攤合約費", "我司分攤雜費", "我司分攤攤銷"]
                 cols_to_display_exist = [col for col in cols_to_display if col in display_df_with_total.columns]
                 
-                # 1. 建立基礎設定 (排除地址和人數)
-                config_dict = {
-                    col: st.column_config.NumberColumn(format="NT$ %d") 
-                    for col in cols_to_display_exist if col not in ["宿舍地址", "在住人數"]
-                }
-                # 2. 單獨設定人數格式
-                config_dict["在住人數"] = st.column_config.NumberColumn(format="%d 人")
-
                 st.dataframe(
                     display_df_with_total[cols_to_display_exist], 
                     width='stretch', 
                     hide_index=True,
-                    column_config=config_dict
+                    column_config={
+                        col: st.column_config.NumberColumn(format="NT$ %d") 
+                        for col in cols_to_display_exist if col not in ["宿舍地址", "在住人數"]
+                    }
                 )
 
-                # --- 2. 住宿人員統計表 (畫面顯示 & 列印用) ---
+                # --- 2. 住宿人員統計表 ---
                 dorm_summary_df = pd.DataFrame()
                 if not report_df_month.empty:
                     grouped = report_df_month.groupby(['宿舍地址', '主要管理人'])
@@ -331,12 +323,11 @@ def render():
                 emp_names_str = "_".join(selected_employers)[:15]
                 title_str = f"{emp_names_str} ({year_month_str})"
 
-                # 準備詳細資料
                 all_details_dict = {} 
                 all_details_list_excel = []
 
                 with st.spinner("正在準備詳細資料..."):
-                    for _, row in display_df.iterrows(): # 不含總計行
+                    for _, row in display_df.iterrows():
                         d_addr = row['宿舍地址']
                         d_id = dorm_id_map.get(d_addr)
                         if d_id:
@@ -349,19 +340,11 @@ def render():
                                 exp['宿舍'] = d_addr; exp['類別'] = '支出'; exp = exp.rename(columns={'費用項目': '細項', '分攤後金額': '金額'})
                                 all_details_list_excel.append(exp[['宿舍', '類別', '細項', '金額']])
 
-                # HTML 按鈕
                 kpi_data = { "headcount": total_headcount, "income": int(total_income), "expense": int(total_expense_by_us), "profit": int(profit_loss) }
-                html_content = generate_html_report(title_str, kpi_data, display_df_with_total, dorm_summary_df, all_details_dict)
+                html_content = generate_html_report(title_str, kpi_data, display_df_with_total, dorm_summary_df, all_details_dict, cols_to_display_exist)
                 
-                col_export_html.download_button(
-                    label="📄 下載一鍵列印報表 (HTML)",
-                    data=html_content,
-                    file_name=f"列印報表_{emp_names_str}_{year_month_str}.html",
-                    mime="text/html",
-                    help="下載後用瀏覽器打開，按下 Ctrl+P 即可列印包含「總表」、「住宿統計」與「詳細收支」的報表。"
-                )
+                col_export_html.download_button("📄 下載列印報表 (HTML)", html_content, file_name=f"Report_{year_month_str}.html", mime="text/html")
 
-                # Excel 按鈕
                 summary_sheet = display_df_with_total[cols_to_display_exist].copy()
                 details_sheet = pd.concat(all_details_list_excel, ignore_index=True) if all_details_list_excel else pd.DataFrame(columns=['宿舍', '類別', '細項', '金額'])
                 excel_data = to_excel({
@@ -369,29 +352,19 @@ def render():
                     "住宿統計": [{"dataframe": dorm_summary_df, "title": "住宿人數統計"}] if not dorm_summary_df.empty else [],
                     "詳細收支": [{"dataframe": details_sheet, "title": "各宿舍收支明細"}]
                 })
-                
-                col_export_excel.download_button(
-                    label="📊 下載 Excel 原始檔",
-                    data=excel_data,
-                    file_name=f"雇主損益_{emp_names_str}_{year_month_str}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+                col_export_excel.download_button("📊 下載 Excel", excel_data, file_name=f"Report_{year_month_str}.xlsx")
 
-                # --- 4. 螢幕上的詳細名單 (保留) ---
                 st.markdown("---")
                 with st.expander("查看員工詳細名單 (螢幕檢視用)"):
                     if not report_df_month.empty:
                         columns_to_show = ["宿舍地址", "房號", "姓名", "性別", "國籍", "入住日", "離住日", "員工月費", "特殊狀況", "雇主"]
                         existing_columns = [col for col in columns_to_show if col in report_df_month.columns]
-                        st.dataframe(
-                            report_df_month[existing_columns], width='stretch', hide_index=True,
-                            column_config={ "員工月費": st.column_config.NumberColumn(format="NT$ %d"), "入住日": st.column_config.DateColumn(format="YYYY-MM-DD"), "離住日": st.column_config.DateColumn(format="YYYY-MM-DD") }
-                        )
+                        st.dataframe(report_df_month[existing_columns], width='stretch', hide_index=True, column_config={ "員工月費": st.column_config.NumberColumn(format="NT$ %d"), "入住日": st.column_config.DateColumn(format="YYYY-MM-DD"), "離住日": st.column_config.DateColumn(format="YYYY-MM-DD") })
                     else:
                         st.info("無詳細名單。")
 
         # ==============================================================================
-        # 頁籤 2: 年度總覽 (邏輯與月檢視類似，也加上總計列)
+        # 頁籤 2: 年度總覽
         # ==============================================================================
         with tab2:
             st.subheader("年度財務總覽")
@@ -417,13 +390,15 @@ def render():
                 fa_col2.metric("年度我司分攤總支出", f"NT$ {total_expense_by_us_annual:,.0f}")
                 fa_col3.metric("年度淨貢獻", f"NT$ {profit_loss_annual:,.0f}", delta=f"{profit_loss_annual:,.0f}")
 
-                st.markdown("##### 各宿舍年度收支詳情 (所選雇主)")
                 display_df_annual = finance_df_annual.copy()
                 display_df_annual['淨損益'] = (display_df_annual['收入(員工月費)'] + display_df_annual['分攤其他收入']) - \
                                             (display_df_annual['我司分攤合約費'] + display_df_annual['我司分攤雜費'] + display_df_annual['我司分攤攤銷'])
                 
+                # 【核心修正】計算總在住人數
+                total_headcount_annual = display_df_annual['在住人數'].sum() if '在住人數' in display_df_annual.columns else 0
+                
                 # 加入總計列
-                cols_to_sum_annual = ["淨損益", "收入(員工月費)", "分攤其他收入", "我司分攤合約費", "我司分攤雜費", "我司分攤攤銷"]
+                cols_to_sum_annual = ["在住人數", "淨損益", "收入(員工月費)", "分攤其他收入", "我司分攤合約費", "我司分攤雜費", "我司分攤攤銷"]
                 sum_row_annual = display_df_annual[cols_to_sum_annual].sum()
                 sum_row_annual['宿舍地址'] = '總計'
                 for col in display_df_annual.columns:
@@ -431,14 +406,17 @@ def render():
                 
                 display_df_annual_with_total = pd.concat([display_df_annual, pd.DataFrame([sum_row_annual])], ignore_index=True)
 
-                cols_to_display_annual = ["宿舍地址", "淨損益", "收入(員工月費)", "分攤其他收入", "我司分攤合約費", "我司分攤雜費", "我司分攤攤銷"]
+                cols_to_display_annual = ["宿舍地址", "在住人數", "淨損益", "收入(員工月費)", "分攤其他收入", "我司分攤合約費", "我司分攤雜費", "我司分攤攤銷"]
                 cols_to_display_annual_exist = [col for col in cols_to_display_annual if col in display_df_annual.columns]
 
                 st.dataframe(
                     display_df_annual_with_total[cols_to_display_annual_exist], 
                     width='stretch', 
                     hide_index=True,
-                    column_config={col: st.column_config.NumberColumn(format="NT$ %d") for col in cols_to_display_annual_exist if col != "宿舍地址"}
+                    column_config={
+                        col: st.column_config.NumberColumn(format="NT$ %d") 
+                        for col in cols_to_display_annual_exist if col not in ["宿舍地址", "在住人數"]
+                    }
                 )
                 
                 st.markdown("---")
@@ -454,3 +432,141 @@ def render():
                              income_details_annual, expense_details_annual = employer_dashboard_model.get_employer_financial_details_for_dorm(selected_employers, selected_dorm_id_annual, str(selected_year_annual))
                         st.markdown(f"**年度收入明細**"); st.dataframe(income_details_annual, width='stretch', hide_index=True) if not income_details_annual.empty else st.info("無資料")
                         st.markdown(f"**年度支出明細 (我司分攤後)**"); st.dataframe(expense_details_annual, width='stretch', hide_index=True) if not expense_details_annual.empty else st.info("無資料")
+
+        # ==============================================================================
+        # 頁籤 3: 現金流分析 (不攤提)
+        # ==============================================================================
+        with tab3:
+            st.subheader("現金流收支分析 (不攤提)")
+            st.info("此模式下，所有費用將依據「實際支付日期」或「帳單截止日」全額計入當月/當年，不進行跨月攤提。")
+
+            mode = st.radio("檢視模式", ["按月檢視", "按年檢視"], horizontal=True)
+            
+            today_cf = datetime.now()
+            
+            if mode == "按月檢視":
+                cf_c1, cf_c2 = st.columns(2)
+                cf_year = cf_c1.selectbox("年份", range(today_cf.year-2, today_cf.year+2), index=2, key="cf_m_y")
+                cf_month = cf_c2.selectbox("月份", range(1, 13), index=today_cf.month-1, key="cf_m_m")
+                cf_period = f"{cf_year}-{cf_month:02d}"
+                
+                @st.cache_data
+                def get_cf_summary(emps, period, only_mc):
+                    return employer_dashboard_model.get_employer_cash_flow_summary(emps, period, only_mc)
+                
+                cf_df = get_cf_summary(selected_employers, cf_period, only_my_company)
+                
+            else: # 按年檢視
+                cf_year = st.selectbox("年份", range(today_cf.year-2, today_cf.year+2), index=2, key="cf_y_y")
+                cf_period = str(cf_year)
+                
+                @st.cache_data
+                def get_cf_summary_annual(emps, year, only_mc):
+                    return employer_dashboard_model.get_employer_cash_flow_summary_annual(emps, year, only_mc)
+                
+                cf_df = get_cf_summary_annual(selected_employers, cf_year, only_my_company)
+
+            if cf_df.empty:
+                st.warning(f"在 {cf_period} 期間，找不到相關的現金流紀錄。")
+            else:
+                # 計算總覽
+                cf_df['總收入'] = cf_df['收入(員工月費)'] + cf_df['分攤其他收入']
+                total_inc = cf_df['總收入'].sum()
+                total_exp = cf_df['我司分攤合約費'].sum() + cf_df['我司分攤雜費'].sum() + cf_df['我司分攤攤銷'].sum()
+                net_pl = total_inc - total_exp
+                
+                # 計算人數 (月檢視才準確)
+                total_headcount_cf = 0
+                if mode == "按月檢視":
+                    report_df_cf = employer_dashboard_model.get_employer_resident_details(selected_employers, cf_period, only_my_company)
+                    if not report_df_cf.empty:
+                        dorm_counts = report_df_cf.groupby('宿舍地址').size().reset_index(name='在住人數')
+                        cf_df = pd.merge(cf_df, dorm_counts, on='宿舍地址', how='left')
+                        cf_df['在住人數'] = cf_df['在住人數'].fillna(0).astype(int)
+                        total_headcount_cf = cf_df['在住人數'].sum()
+                    else:
+                        cf_df['在住人數'] = 0
+                else:
+                    # 按年檢視：使用 SQL 回傳的人數
+                    if '在住人數' not in cf_df.columns:
+                         cf_df['在住人數'] = 0
+                    total_headcount_cf = cf_df['在住人數'].sum()
+
+                # 顯示 KPI
+                cf_k1, cf_k2, cf_k3 = st.columns(3)
+                cf_k1.metric("現金流總收入", f"NT$ {total_inc:,.0f}")
+                cf_k2.metric("現金流總支出", f"NT$ {total_exp:,.0f}")
+                cf_k3.metric("現金流淨利", f"NT$ {net_pl:,.0f}", delta=f"{net_pl:,.0f}")
+
+                # 準備顯示
+                cf_df['淨損益'] = cf_df['總收入'] - (cf_df['我司分攤合約費'] + cf_df['我司分攤雜費'] + cf_df['我司分攤攤銷'])
+                
+                # 總計列
+                cols_sum = ["在住人數", "淨損益", "收入(員工月費)", "分攤其他收入", "我司分攤合約費", "我司分攤雜費", "我司分攤攤銷"]
+                sum_row = cf_df[cols_sum].sum()
+                sum_row['宿舍地址'] = '總計'
+                for c in cf_df.columns:
+                    if c not in sum_row: sum_row[c] = ""
+                cf_df_final = pd.concat([cf_df, pd.DataFrame([sum_row])], ignore_index=True)
+
+                # 顯示表格
+                cols_show = ["宿舍地址", "在住人數", "淨損益", "收入(員工月費)", "分攤其他收入", "我司分攤合約費", "我司分攤雜費", "我司分攤攤銷"]
+                if mode == "按年檢視": cols_show.remove("在住人數")
+                
+                cols_exist = [c for c in cols_show if c in cf_df_final.columns]
+                
+                # 改名欄位 (僅顯示用)
+                cf_df_final = cf_df_final.rename(columns={"我司分攤攤銷": "我司分攤支出(不攤提)"})
+                cols_exist = [c if c != "我司分攤攤銷" else "我司分攤支出(不攤提)" for c in cols_exist]
+
+                st.dataframe(
+                    cf_df_final[cols_exist],
+                    width='stretch',
+                    hide_index=True,
+                    column_config={
+                        c: st.column_config.NumberColumn(format="NT$ %d") 
+                        for c in cols_exist if c not in ["宿舍地址", "在住人數"]
+                    }
+                )
+                
+                # --- 匯出功能 ---
+                st.markdown("---")
+                st.write("🖨️ **報表輸出**")
+                exp_c1, exp_c2 = st.columns(2)
+                
+                emp_str = "_".join(selected_employers)[:10]
+                title_cf = f"{emp_str} 現金流報表 ({cf_period})"
+                
+                # 準備詳細資料
+                cf_details_dict = {}
+                cf_details_list = []
+                
+                with st.spinner("準備詳細資料中..."):
+                    for _, row in cf_df.iterrows(): # 不含總計
+                        d_addr = row['宿舍地址']
+                        d_id = dorm_id_map.get(d_addr)
+                        if d_id:
+                            inc, exp = employer_dashboard_model.get_employer_cash_flow_details_for_dorm(selected_employers, d_id, cf_period)
+                            cf_details_dict[d_addr] = (inc, exp)
+                            if not inc.empty:
+                                inc['宿舍'] = d_addr; inc['類別'] = '收入'; inc = inc.rename(columns={'項目': '細項', '金額': '金額'})
+                                cf_details_list.append(inc[['宿舍', '類別', '細項', '金額']])
+                            if not exp.empty:
+                                exp['宿舍'] = d_addr; exp['類別'] = '支出'; exp = exp.rename(columns={'費用項目': '細項', '分攤後金額': '金額'})
+                                cf_details_list.append(exp[['宿舍', '類別', '細項', '金額']])
+                
+                # HTML (傳入 cols_exist)
+                kpi_cf = { "headcount": total_headcount_cf, "income": int(total_inc), "expense": int(total_exp), "profit": int(net_pl) }
+                # 注意：因為欄位名稱改了，我們需要傳入正確的 cols_exist
+                html_cf = generate_html_report(title_cf, kpi_cf, cf_df_final, None, cf_details_dict, cols_exist)
+                
+                exp_c1.download_button("📄 下載列印報表 (HTML)", html_cf, file_name=f"CashFlow_{cf_period}.html", mime="text/html")
+                
+                # Excel
+                summary_sheet = cf_df_final[cols_exist].copy()
+                details_sheet = pd.concat(cf_details_list, ignore_index=True) if cf_details_list else pd.DataFrame()
+                excel_cf = to_excel({
+                    "現金流總表": [{"dataframe": summary_sheet, "title": title_cf}],
+                    "詳細收支": [{"dataframe": details_sheet, "title": "各宿舍收支明細"}]
+                })
+                exp_c2.download_button("📊 下載 Excel", excel_cf, file_name=f"CashFlow_{cf_period}.xlsx")
