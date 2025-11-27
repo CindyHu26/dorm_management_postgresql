@@ -198,16 +198,26 @@ def render():
             num_occupants = occupants.apply(check_occupancy, axis=1).sum()
             vacancies = room_capacity - num_occupants
 
+            # 讀取房間面積 (SQL 新增的欄位)
+            room_area = occupants['area_sq_meters'].iloc[0] if 'area_sq_meters' in occupants.columns else 0
+            room_area = float(room_area) if pd.notna(room_area) else 0
+
             # --- 人均面積檢核邏輯 ---
-            area_warning = ""
-            avg_area = 0.0
-            if num_occupants > 0 and room_area > 0:
-                avg_area = room_area / num_occupants
-                if avg_area < min_area_standard:
-                    # 顯示紅色警告與實際數值
-                    area_warning = f" ⚠️ 空間不足 ({avg_area:.2f} m²/人)"
+            area_info = ""
+            if room_area > 0:
+                if num_occupants > 0:
+                    avg_area = room_area / num_occupants
+                    area_info = f" | {avg_area:.2f} m²/人"
+                    
+                    # 判斷是否違規 (紅色警告)
+                    if avg_area < min_area_standard:
+                        area_info += " ⚠️ 空間不足"
+                else:
+                    # 若無人居住，只顯示總面積
+                    area_info = f" | 總面積 {room_area} m²"
+
             # --- 3. 組合標題字串 ---
-            room_title = f"{dorm_address} - {room_number} (容量: {room_capacity}, 空床: {vacancies}){area_warning}"
+            room_title = f"{dorm_address} - {room_number} (容量: {room_capacity}, 空床: {vacancies}){area_info}"
             
             if vacancies == 0:
                 room_title = f"🔴 {room_title} (已滿)"
@@ -216,7 +226,6 @@ def render():
             elif vacancies > 0:
                 room_title = f"🟢 {room_title}"
             
-            # 若有掛宿外住，標示在最後面
             if num_external > 0:
                 room_title += f"，掛住: {num_external}人"
 

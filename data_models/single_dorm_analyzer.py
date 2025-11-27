@@ -712,44 +712,27 @@ def get_amortized_expense_details(dorm_ids: list, year_month: str):
 
 def get_room_occupancy_view(dorm_ids: list, year_month: str):
     """
-    【v2.7 離住日修正版】為宿舍深度分析儀表板，查詢房間內的詳細住宿狀況。
-    新增 'special_status' 和 'accommodation_end' (離住日) 欄位，以便前端正確計算佔床。
+    【v3.0 SQL 優化版】為宿舍深度分析儀表板，查詢房間內的詳細住宿狀況。
+    改為單一 SQL 查詢，直接在資料庫層級過濾掉「容量為0且無人居住」的房間。
     """
     conn = database.get_db_connection()
     if not conn or not dorm_ids: return pd.DataFrame()
 
     params = {"dorm_ids": dorm_ids, "year_month": year_month}
     try:
-        # 1. 取得所有房間
-        rooms_query = """
-            SELECT 
-                r.id as room_id, 
-                d.original_address, 
-                r.room_number, 
-                r.capacity,
-                r.area_sq_meters
-            FROM "Rooms" r
-            JOIN "Dormitories" d ON r.dorm_id = d.id
-            WHERE r.dorm_id = ANY(%(dorm_ids)s)
-              AND r.room_number != '[未分配房間]';
-        """
-        rooms_df = _execute_query_to_dataframe(conn, rooms_query, params)
-        if rooms_df.empty:
-            return pd.DataFrame() 
-
-        # 2. 取得所有在住人員 (修正：加入 end_date)
-        residents_query = f"""
+        query = """
             WITH DateParams AS (
                 SELECT
                     TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
                     (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
             ),
+            -- 1. 先找出該月份在住的員工 (與之前邏輯相同)
             ActiveWorkersInMonth AS (
                  SELECT DISTINCT ON (ah.worker_unique_id)
                     ah.worker_unique_id, 
                     ah.room_id,
                     ah.bed_number,
-                    ah.end_date -- 【修正】必須選取此欄位
+                    ah.end_date
                 FROM "AccommodationHistory" ah
                 JOIN "Rooms" r ON ah.room_id = r.id
                 CROSS JOIN DateParams dp
@@ -758,29 +741,36 @@ def get_room_occupancy_view(dorm_ids: list, year_month: str):
                   AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
                 ORDER BY ah.worker_unique_id, ah.start_date DESC, ah.id DESC
             )
+            -- 2. 主查詢：結合房間與住戶，並進行篩選
             SELECT 
-                awm.room_id,
-                w.worker_name,
-                w.employer_name,
-                awm.bed_number,
-                w.special_status,
-                awm.end_date AS accommodation_end -- 【修正】別名輸出為 accommodation_end
-            FROM ActiveWorkersInMonth awm
-            JOIN "Workers" w ON awm.worker_unique_id = w.unique_id
+                r.id as room_id, 
+                d.original_address, 
+                r.room_number, 
+                r.capacity,
+                r.area_sq_meters, -- 【新增】回傳面積欄位
+                
+                -- 使用 COALESCE 處理空值，讓前端拿到乾淨的字串
+                COALESCE(w.worker_name, '') as worker_name,
+                COALESCE(w.employer_name, '') as employer_name,
+                COALESCE(awm.bed_number, '') as bed_number,
+                COALESCE(w.special_status, '') as special_status,
+                awm.end_date AS accommodation_end
+            FROM "Rooms" r
+            JOIN "Dormitories" d ON r.dorm_id = d.id
+            -- LEFT JOIN 確保即使房間沒人也會被選出來 (除非被 WHERE 過濾)
+            LEFT JOIN ActiveWorkersInMonth awm ON r.id = awm.room_id
+            LEFT JOIN "Workers" w ON awm.worker_unique_id = w.unique_id
+            WHERE 
+                r.dorm_id = ANY(%(dorm_ids)s)
+                AND r.room_number != '[未分配房間]'
+                
+                -- 【核心優化】SQL 層級過濾：
+                -- 保留條件：(容量 > 0) 或者 (裡面有人住/掛戶口)
+                AND (r.capacity > 0 OR w.unique_id IS NOT NULL)
+                
+            ORDER BY d.original_address, r.room_number
         """
-        residents_df = _execute_query_to_dataframe(conn, residents_query, params)
-        
-        # 3. 在 Pandas 中合併
-        merged_df = rooms_df.merge(residents_df, on='room_id', how='left')
-        
-        merged_df['worker_name'] = merged_df['worker_name'].fillna('')
-        merged_df['employer_name'] = merged_df['employer_name'].fillna('')
-        merged_df['bed_number'] = merged_df['bed_number'].fillna('')
-        merged_df['special_status'] = merged_df['special_status'].fillna('')
-        # 注意：accommodation_end 是日期物件，我們不使用 fillna('') 轉成空字串，
-        # 因為前端需要保留它是 NaT (Not a Time) 或 Timestamp 的型態來進行日期比較。
-        
-        return merged_df
+        return _execute_query_to_dataframe(conn, query, params)
 
     finally:
         if conn: conn.close()
