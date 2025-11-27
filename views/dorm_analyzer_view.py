@@ -10,6 +10,9 @@ from data_models import dormitory_model, single_dorm_analyzer, analytics_model
 def render():
     """渲染「宿舍深度分析」頁面"""
     st.header("宿舍深度分析儀表板")
+    if st.button("🔄 重新整理數據 (若資料未更新請點此)"):
+        st.cache_data.clear()
+        st.rerun()
     with st.sidebar:
         st.markdown("### ⚙️ 合規設定")
         # 讀取 config 作為預設值，但允許使用者調整
