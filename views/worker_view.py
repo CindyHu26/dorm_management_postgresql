@@ -1,27 +1,36 @@
-# views/worker_view.py (v2.10 - NaN 修正版)
-import utils
-import os
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
 from data_models import worker_model, dormitory_model
+import utils # 記得匯入 utils
+import os
 
 # --- 輔助函式：確保 Session State 只被初始化一次 ---
 def init_state_once(key, value):
-    """如果 key 不在 session_state 中，則設定其初始值。"""
     if key not in st.session_state:
         st.session_state[key] = value
 
 def render():
-    """【v2.10 修改版】渲染「人員管理」頁面，修正 NaN 錯誤"""
+    """渲染「人員管理」頁面"""
     st.header("移工住宿人員管理")
     
-    # --- Session State 初始化 ---
-    if 'worker_active_tab' not in st.session_state:
-        st.session_state.worker_active_tab = "✏️ 編輯核心資料"
+    # --- 1. 定義分頁名稱 (使用變數，避免字串打錯) ---
+    TAB_CORE = "✏️ 編輯/檢視核心資料"
+    TAB_ACCOM = "🏠 住宿歷史管理"
+    TAB_STATUS = "🕒 狀態歷史管理"
+    TAB_FEE = "💰 費用歷史"
     
-    # 初始化篩選器的 State (如果還沒有的話)
-    # 使用獨立的 key 來管理，避免與其他頁面衝突
+    TAB_NAMES = [TAB_CORE, TAB_ACCOM, TAB_STATUS, TAB_FEE]
+
+    # --- 2. Session State 初始化 ---
+    if 'worker_active_tab' not in st.session_state:
+        st.session_state.worker_active_tab = TAB_NAMES[0] # 預設選第一個
+    
+    # 初始化上傳元件的重置金鑰 (解決上傳後卡住的問題)
+    if 'worker_upload_reset_key' not in st.session_state:
+        st.session_state.worker_upload_reset_key = 0
+
+    # 初始化篩選器 State
     init_state_once('w_filter_search', '')
     init_state_once('w_filter_status', '全部')
     init_state_once('w_filter_gender', '全部')
@@ -29,7 +38,6 @@ def render():
     init_state_once('w_filter_room', None)
     init_state_once('w_filter_nationality', '全部')
 
-    # 定義 Callback：當宿舍改變時，重設房號
     def on_dorm_change():
         st.session_state.w_filter_room = None
 
@@ -254,19 +262,34 @@ def render():
             else:
                 st.markdown(f"#### 管理移工: {worker_details.get('worker_name')} ({worker_details.get('employer_name')})")
                 
-                tab_names = ["✏️ 編輯核心資料", "🏠 住宿歷史管理", "🕒 狀態歷史管理", "💰 費用歷史"]
-                selected_tab = st.radio(
-                    "管理選項:",
-                    tab_names,
-                    key="worker_active_tab",
-                    horizontal=True,
-                    label_visibility="collapsed"
-                )
+                # --- 使用變數列表，避免字串打錯 ---
+                selected_tab = st.radio("管理選項:", TAB_NAMES, key="worker_active_tab", horizontal=True, label_visibility="collapsed")
 
-                if selected_tab == "✏️ 編輯核心資料":
+                # ==========================================
+                # 分頁 1: 編輯/檢視核心資料
+                # ==========================================
+                if selected_tab == TAB_CORE: # 使用變數比較
                     with st.form("edit_worker_form"):
                         st.info(f"資料來源: **{worker_details.get('data_source')}**")
                         
+                        # 照片檢視 (唯讀)
+                        st.markdown("##### 📷 最新住宿照片 (唯讀)")
+                        kp1, kp2 = st.columns(2)
+                        with kp1:
+                            st.markdown("**📥 入住時照片**")
+                            latest_in_photos = worker_details.get('checkin_photo_paths') or []
+                            valid_in = [p for p in latest_in_photos if os.path.exists(p)]
+                            if valid_in: st.image(valid_in, width=150, caption=[os.path.basename(p) for p in valid_in])
+                            else: st.caption("(無照片)")
+                        with kp2:
+                            st.markdown("**📤 退宿時照片**")
+                            latest_out_photos = worker_details.get('checkout_photo_paths') or []
+                            valid_out = [p for p in latest_out_photos if os.path.exists(p)]
+                            if valid_out: st.image(valid_out, width=150, caption=[os.path.basename(p) for p in valid_out])
+                            else: st.caption("(無照片)")
+                        st.markdown("---")
+                        
+                        # 基本資料
                         st.markdown("##### 基本資料")
                         ec1, ec2, ec3 = st.columns(3)
                         ec1.text_input("性別", value=worker_details.get('gender'), disabled=True)
@@ -274,92 +297,50 @@ def render():
                         ec3.text_input("護照號碼", value=worker_details.get('passport_number'), disabled=True)
                         
                         st.markdown("##### 住宿資訊")
-                        
-                        # --- 【核心新增】顯示系統地址 ---
-                        sys_addr = worker_details.get('system_dorm_address')
-                        sys_room = worker_details.get('system_room_number')
-                        
-                        if sys_addr:
-                            st.info(f"🔗 **公司系統位址 (僅供參考)**：{sys_addr} / {sys_room}")
-                        else:
-                            st.caption("此員工尚無公司系統位址紀錄。")
-                        
-                        # 實際地址
-                        real_addr = worker_details.get('current_dorm_address') or '未分配'
-                        real_room = worker_details.get('current_room_number') or ''
+                        sys_addr = worker_details.get('system_dorm_address'); sys_room = worker_details.get('system_room_number')
+                        if sys_addr: st.info(f"🔗 **公司系統位址 (僅供參考)**：{sys_addr} / {sys_room}")
+                        else: st.caption("此員工尚無公司系統位址紀錄。")
+                        real_addr = worker_details.get('current_dorm_address') or '未分配'; real_room = worker_details.get('current_room_number') or ''
                         st.text_input("目前實際住宿 (請至「住宿歷史」分頁修改)", value=f"{real_addr} {real_room}", disabled=True)
-                                                
-                        # =========================================================
-                        # 【核心修改】動態費用明細 (唯讀)
-                        # =========================================================
+
+                        # 費用明細 (唯讀)
                         st.markdown("##### 費用明細 (唯讀)")
                         st.info("此處顯示該員工目前生效的各項費用。如需修改或新增項目，請至「💰 費用歷史」頁籤。")
-                        
-                        # 1. 獲取該員工所有的費用歷史
                         fee_hist_df = worker_model.get_fee_history_for_worker(selected_worker_id)
-                        
-                        current_total = 0
                         if fee_hist_df.empty:
                             st.caption("目前無任何費用紀錄。")
                         else:
-                            # 2. 篩選出「目前生效」的最新費用 (日期 <= 今天)
-                            # 注意：Dataframe 欄位名稱是 ['id', '生效日期', '費用類型', '金額']
                             fee_hist_df['eff_date'] = pd.to_datetime(fee_hist_df['生效日期']).dt.date
                             valid_fees = fee_hist_df[fee_hist_df['eff_date'] <= date.today()]
-                            
                             if valid_fees.empty:
-                                st.caption("目前無生效的費用項目 (所有設定皆為未來生效)。")
+                                st.caption("目前無生效的費用項目。")
                             else:
-                                # 3. 取每種費用類型的「最新一筆」
-                                # 排序：先生效日(近->遠)，再ID(大->小)
                                 latest_fees = valid_fees.sort_values(by=['eff_date', 'id'], ascending=[False, False]).drop_duplicates(subset=['費用類型'])
-                                
-                                # 4. 計算總額
                                 current_total = latest_fees['金額'].sum()
                                 st.metric("目前每月應收總額", f"NT$ {current_total:,}")
-                                
-                                # 5. 動態顯示欄位
                                 fee_items = latest_fees.to_dict('records')
-                                # 簡單排序：把「房租」排在最前面，其他隨意
                                 fee_items.sort(key=lambda x: 0 if x['費用類型'] == '房租' else 1)
-                                
-                                # 使用 3 欄佈局動態產生 number_input
                                 cols = st.columns(3)
                                 for i, item in enumerate(fee_items):
                                     with cols[i % 3]:
-                                        st.number_input(
-                                            f"{item['費用類型']}",
-                                            value=int(item['金額']),
-                                            disabled=True,
-                                            key=f"ro_fee_{item['id']}" # 確保 key 唯一
-                                        )
+                                        st.number_input(f"{item['費用類型']}", value=int(item['金額']), disabled=True, key=f"ro_fee_{item['id']}")
                         
                         st.markdown("##### 狀態 (可手動修改)")
                         fcc1, fcc2 = st.columns(2)
-                        payment_method_options = ["", "員工自付", "雇主支付"]
-                        payment_method = fcc1.selectbox("付款方", payment_method_options, index=payment_method_options.index(worker_details.get('payment_method')) if worker_details.get('payment_method') in payment_method_options else 0)
-
+                        pm_opts = ["", "員工自付", "雇主支付"]
+                        payment_method = fcc1.selectbox("付款方", pm_opts, index=pm_opts.index(worker_details.get('payment_method')) if worker_details.get('payment_method') in pm_opts else 0)
                         with fcc2:
                             end_date_value = worker_details.get('accommodation_end_date')
                             accommodation_end_date = st.date_input("最終離住日期", value=end_date_value)
                             clear_end_date = st.checkbox("清除離住日期 (將狀態改回在住)")
-
                         worker_notes = st.text_area("個人備註", value=worker_details.get('worker_notes') or "")
 
                         if st.form_submit_button("儲存核心資料變更"):
                             final_end_date = None if clear_end_date else (str(accommodation_end_date) if accommodation_end_date else None)
-                            
-                            update_data = {
-                                'payment_method': payment_method, 
-                                'accommodation_end_date': final_end_date,
-                                'worker_notes': worker_notes
-                            }
-
+                            update_data = {'payment_method': payment_method, 'accommodation_end_date': final_end_date, 'worker_notes': worker_notes}
                             success, message = worker_model.update_worker_details(selected_worker_id, update_data)
                             if success: st.success(message); st.cache_data.clear(); st.rerun()
                             else: st.error(message)
-
-                    # --- 【更新危險操作區】 ---
                     st.markdown("---")
                     st.markdown("##### 危險操作區")
                     current_data_source = worker_details.get('data_source')
@@ -545,16 +526,22 @@ def render():
                                         final_in = [p for p in in_photos if p not in del_in]
                                         for p in del_in: utils.delete_file(p)
                                         if new_in:
-                                            # 命名：地址_房號_姓名_入住_日期
-                                            # 需先取得相關資訊，這裡簡化用 worker_name
-                                            prefix_in = f"{worker_details.get('worker_name')}_入住_{edit_start_date}"
+                                            # 【修改】命名規則：雇主_姓名_入住_日期
+                                            emp_name = worker_details.get('employer_name', 'Unknown')
+                                            w_name = worker_details.get('worker_name', 'Unknown')
+                                            prefix_in = f"{emp_name}_{w_name}_入住_{edit_start_date}"
+                                            
                                             final_in.extend(utils.save_uploaded_files(new_in, "accommodation", prefix_in))
 
                                         # 處理退宿照片
                                         final_out = [p for p in out_photos if p not in del_out]
                                         for p in del_out: utils.delete_file(p)
                                         if new_out:
-                                            prefix_out = f"{worker_details.get('worker_name')}_退宿_{edit_end_date or date.today()}"
+                                            # 【修改】命名規則：雇主_姓名_退宿_日期
+                                            emp_name = worker_details.get('employer_name', 'Unknown')
+                                            w_name = worker_details.get('worker_name', 'Unknown')
+                                            prefix_out = f"{emp_name}_{w_name}_退宿_{edit_end_date or date.today()}"
+                                            
                                             final_out.extend(utils.save_uploaded_files(new_out, "accommodation", prefix_out))
                                         if not edit_room_id:
                                              st.error("必須選擇一個房間！")

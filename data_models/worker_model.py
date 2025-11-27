@@ -129,31 +129,31 @@ def get_workers_for_view(filters: dict):
 
 def get_single_worker_details(unique_id: str):
     """
-    【v2.4 系統地址修正版】取得單一移工的所有詳細資料。
-    1. 查詢「實際」住宿紀錄 (AccommodationHistory) -> 用於顯示目前住哪
-    2. 查詢「系統」住宿紀錄 (Workers.room_id) -> 用於顯示公司系統掛哪
+    【v2.5 照片支援版】取得單一移工的所有詳細資料。
+    新增：查詢最新住宿歷史的 checkin/checkout 照片路徑。
     """
     conn = database.get_db_connection()
     if not conn: return None
     try:
         with conn.cursor() as cursor:
-            # 修改查詢：同時 JOIN 實際住宿 (ah/r/d) 和 系統紀錄 (sys_r/sys_d)
             query = """
                 SELECT 
                     w.*,
-                    -- 實際住宿 (來自 AccommodationHistory 最新一筆)
                     d_actual.original_address AS current_dorm_address,
                     r_actual.room_number AS current_room_number,
                     
-                    -- 系統紀錄 (來自 Workers.room_id，由爬蟲更新)
                     d_system.original_address AS system_dorm_address,
-                    r_system.room_number AS system_room_number
+                    r_system.room_number AS system_room_number,
+                    
+                    -- 【新增】最新住宿紀錄的照片 (供核心資料頁籤顯示)
+                    ah.checkin_photo_paths,
+                    ah.checkout_photo_paths
 
                 FROM "Workers" w
                 
-                -- 1. 關聯實際住宿
+                -- 1. 關聯實際住宿 (取最新一筆)
                 LEFT JOIN (
-                    SELECT room_id, worker_unique_id
+                    SELECT *
                     FROM "AccommodationHistory"
                     WHERE worker_unique_id = %s
                     ORDER BY start_date DESC, id DESC
@@ -162,7 +162,7 @@ def get_single_worker_details(unique_id: str):
                 LEFT JOIN "Rooms" r_actual ON ah.room_id = r_actual.id
                 LEFT JOIN "Dormitories" d_actual ON r_actual.dorm_id = d_actual.id
                 
-                -- 2. 關聯系統紀錄 (直接用 w.room_id)
+                -- 2. 關聯系統紀錄
                 LEFT JOIN "Rooms" r_system ON w.room_id = r_system.id
                 LEFT JOIN "Dormitories" d_system ON r_system.dorm_id = d_system.id
 
