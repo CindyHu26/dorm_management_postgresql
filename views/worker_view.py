@@ -1,4 +1,6 @@
 # views/worker_view.py (v2.10 - NaN 修正版)
+import utils
+import os
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
@@ -445,7 +447,7 @@ def render():
                                 with st.form(f"edit_history_form_{selected_history_id}"):
                                     st.markdown(f"###### 正在編輯 ID: {history_details['id']} 的紀錄")
 
-                                    # --- [修正開始] 使用 Session State 初始化模式，避免與 index 衝突 ---
+                                    # --- 使用 Session State 初始化模式，避免與 index 衝突 ---
                                     current_room_id = history_details.get('room_id')
                                     current_dorm_id = dormitory_model.get_dorm_id_from_room_id(current_room_id)
 
@@ -501,7 +503,6 @@ def render():
                                         format_func=lambda x: room_options_edit.get(x), 
                                         key=room_select_key
                                     )
-                                    # --- [修正結束] ---
 
                                     ehc1, ehc2, ehc3 = st.columns(3)
                                     edit_start_date = ehc1.date_input("起始日", value=history_details.get('start_date'))
@@ -513,7 +514,48 @@ def render():
                                     edit_bed_number = ehc3.text_input("床位編號", value=history_details.get('bed_number') or "")
                                     edit_notes = st.text_area("備註", value=history_details.get('notes', ''))
 
+                                    # === 入住/退宿照片 ===
+                                    st.markdown("---")
+                                    col_p1, col_p2 = st.columns(2)
+                                    
+                                    # 1. 入住照片
+                                    with col_p1:
+                                        st.markdown("###### 📥 入住時照片 (紀錄床位/房間原貌)")
+                                        in_photos = history_details.get('checkin_photo_paths') or []
+                                        if in_photos:
+                                            st.image(in_photos, width=100)
+                                            del_in = st.multiselect("刪除入住照片", in_photos, format_func=lambda x: os.path.basename(x), key=f"del_in_{selected_history_id}")
+                                        else: del_in = []
+                                        
+                                        new_in = st.file_uploader("上傳入住照片", type=['jpg','png'], key=f"up_in_{selected_history_id}", accept_multiple_files=True)
+
+                                    # 2. 退宿照片
+                                    with col_p2:
+                                        st.markdown("###### 📤 退宿時照片 (紀錄還原狀況)")
+                                        out_photos = history_details.get('checkout_photo_paths') or []
+                                        if out_photos:
+                                            st.image(out_photos, width=100)
+                                            del_out = st.multiselect("刪除退宿照片", out_photos, format_func=lambda x: os.path.basename(x), key=f"del_out_{selected_history_id}")
+                                        else: del_out = []
+                                        
+                                        new_out = st.file_uploader("上傳退宿照片", type=['jpg','png'], key=f"up_out_{selected_history_id}", accept_multiple_files=True)
+
                                     if st.form_submit_button("儲存歷史紀錄變更"):
+                                        # 處理入住照片
+                                        final_in = [p for p in in_photos if p not in del_in]
+                                        for p in del_in: utils.delete_file(p)
+                                        if new_in:
+                                            # 命名：地址_房號_姓名_入住_日期
+                                            # 需先取得相關資訊，這裡簡化用 worker_name
+                                            prefix_in = f"{worker_details.get('worker_name')}_入住_{edit_start_date}"
+                                            final_in.extend(utils.save_uploaded_files(new_in, "accommodation", prefix_in))
+
+                                        # 處理退宿照片
+                                        final_out = [p for p in out_photos if p not in del_out]
+                                        for p in del_out: utils.delete_file(p)
+                                        if new_out:
+                                            prefix_out = f"{worker_details.get('worker_name')}_退宿_{edit_end_date or date.today()}"
+                                            final_out.extend(utils.save_uploaded_files(new_out, "accommodation", prefix_out))
                                         if not edit_room_id:
                                              st.error("必須選擇一個房間！")
                                         else:
@@ -524,7 +566,9 @@ def render():
                                                  "start_date": str(edit_start_date) if edit_start_date else None,
                                                  "end_date": final_end_date, 
                                                  "bed_number": edit_bed_number,
-                                                 "notes": edit_notes
+                                                 "notes": edit_notes,
+                                                 "checkin_photo_paths": final_in,
+                                                "checkout_photo_paths": final_out
                                              }
                                              
                                              success, message = worker_model.update_accommodation_history(selected_history_id, update_data)

@@ -127,14 +127,15 @@ def create_all_tables_and_indexes():
                 "city" VARCHAR(50),
                 "district" VARCHAR(50),
                 "person_in_charge" VARCHAR(50),
-                "landlord_id" INTEGER, -- 【核心修改】新增房東 ID 欄位
+                "landlord_id" INTEGER, 
                 "primary_manager" VARCHAR(50) DEFAULT '雇主', "rent_payer" VARCHAR(50) DEFAULT '雇主',
                 "utilities_payer" VARCHAR(50) DEFAULT '雇主', "insurance_fee" INTEGER,
                 "insurance_start_date" DATE, "insurance_end_date" DATE, "fire_safety_fee" INTEGER,
                 "fire_safety_start_date" DATE, "fire_safety_end_date" DATE,
                 "management_notes" TEXT, "dorm_notes" TEXT, "is_self_owned" BOOLEAN DEFAULT FALSE,
                 "invoice_info" TEXT,
-                FOREIGN KEY ("landlord_id") REFERENCES "Vendors" ("id") ON DELETE SET NULL -- 【核心修改】新增外鍵關聯
+                "photo_paths" TEXT[],
+                FOREIGN KEY ("landlord_id") REFERENCES "Vendors" ("id") ON DELETE SET NULL
             );
             """
 
@@ -178,6 +179,8 @@ def create_all_tables_and_indexes():
                 "end_date" DATE,
                 "bed_number" VARCHAR(20),
                 "notes" TEXT,
+                "checkin_photo_paths" TEXT[], -- 入住照片
+                "checkout_photo_paths" TEXT[], -- 退宿照片
                 FOREIGN KEY ("worker_unique_id") REFERENCES "Workers" ("unique_id") ON DELETE CASCADE,
                 FOREIGN KEY ("room_id") REFERENCES "Rooms" ("id") ON DELETE CASCADE
             );
@@ -225,6 +228,7 @@ def create_all_tables_and_indexes():
                 "lease_start_date" DATE,
                 "lease_end_date" DATE, "monthly_rent" INTEGER, "deposit" INTEGER,
                 "utilities_included" BOOLEAN, "contract_scan_path" VARCHAR(255),
+                "photo_paths" TEXT[],
                 "notes" TEXT,
                 FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE,
                 FOREIGN KEY ("vendor_id") REFERENCES "Vendors" ("id") ON DELETE SET NULL

@@ -220,6 +220,10 @@ def update_dormitory_details(dorm_id: int, details: dict):
             details['district'] = addr_info['district']
 
         with conn.cursor() as cursor:
+            # 處理 photo_paths (PostgreSQL array)
+            if 'photo_paths' in details:
+                # 如果是 list，psycopg2 會自動轉為 PostgreSQL array
+                pass
             fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
             values = list(details.values()) + [dorm_id]
             sql = f'UPDATE "Dormitories" SET {fields} WHERE id = %s'

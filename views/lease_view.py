@@ -1,5 +1,6 @@
 # views/lease_view.py
-
+import utils
+import os
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
@@ -197,7 +198,18 @@ def render():
                     e_utilities_included = ec4.checkbox("費用是否包含水電", value=bool(lease_details.get('utilities_included', False)))
 
                     e_notes = st.text_area("合約備註", value=lease_details.get('notes', ''))
+                    # === 合約照片區塊 ===
+                    st.markdown("##### 合約掃描/照片")
+                    current_photos = lease_details.get('photo_paths') or []
+                    
+                    if current_photos:
+                        # 顯示縮圖，點擊可放大 (Streamlit 預設行為)
+                        st.image(current_photos, width=150, caption=[os.path.basename(p) for p in current_photos])
+                        photos_to_delete = st.multiselect("勾選要刪除的照片", options=current_photos, format_func=lambda x: os.path.basename(x))
+                    else:
+                        photos_to_delete = []
 
+                    new_photos = st.file_uploader("上傳合約照片 (自動命名: 地址_合約日)", type=['jpg', 'png', 'jpeg', 'pdf'], accept_multiple_files=True)
                     edit_submitted = st.form_submit_button("儲存變更")
                     if edit_submitted:
                         final_end_date = None
@@ -206,6 +218,15 @@ def render():
                         
                         e_final_item = e_custom_item if e_selected_item == "其他(手動輸入)" and e_custom_item else e_selected_item
                         
+                        # 處理照片
+                        final_photos = [p for p in current_photos if p not in photos_to_delete]
+                        for p in photos_to_delete: utils.delete_file(p)
+
+                        if new_photos:
+                            # 命名規則：地址_合約起始日
+                            prefix = f"{dorm_options.get(lease_details['dorm_id'])}_合約_{e_lease_start_date}"
+                            saved_paths = utils.save_uploaded_files(new_photos, "lease", prefix)
+                            final_photos.extend(saved_paths)
                         # --- 將新欄位加入 updated_details 字典 ---
                         updated_details = {
                             "vendor_id": e_selected_vendor_id, 
@@ -216,7 +237,8 @@ def render():
                             "monthly_rent": e_monthly_rent,
                             "deposit": e_deposit,
                             "utilities_included": e_utilities_included,
-                            "notes": e_notes 
+                            "notes": e_notes,
+                            "photo_paths": final_photos
                         }
                         success, message = lease_model.update_lease(selected_lease_id, updated_details)
                         if success:

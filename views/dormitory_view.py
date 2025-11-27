@@ -1,8 +1,9 @@
 # views/dormitory_view.py
-
+import utils
+import os
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 from data_models import dormitory_model, vendor_model # 匯入 vendor_model
 from data_processor import normalize_taiwan_address
 
@@ -39,7 +40,8 @@ def render():
         st.session_state.selected_room_id = None
         # st.session_state.dorm_active_tab = "基本資料與編輯"
         st.session_state.last_selected_dorm = st.session_state.selected_dorm_id
-
+    if 'dorm_upload_reset_key' not in st.session_state:
+        st.session_state.dorm_upload_reset_key = 0
     # --- 預載廠商資料 ---
     vendors = vendor_model.get_vendors_for_view()
     # 我們特別為房東建立一個篩選過的選項
@@ -187,8 +189,38 @@ def render():
                         management_notes = st.text_area("管理模式備註", value=dorm_details.get('management_notes', ''))
                         utility_bill_notes_edit = st.text_area("變動費用備註", value=dorm_details.get('utility_bill_notes', ''))
 
+                        # === 【新增】照片管理區塊 ===
+                        st.markdown("##### 宿舍照片紀錄")
+                        current_photos = dorm_details.get('photo_paths') or []
+                        
+                        # 顯示現有照片
+                        if current_photos:
+                            st.image(current_photos, width=150, caption=[os.path.basename(p) for p in current_photos])
+                            photos_to_delete = st.multiselect("勾選要刪除的舊照片", options=current_photos, format_func=lambda x: os.path.basename(x))
+                        else:
+                            photos_to_delete = []
+
+                        # 上傳新照片 使用動態 key
+                        uploader_key = f"dorm_uploader_{st.session_state.dorm_upload_reset_key}"
+                        new_photos = st.file_uploader(
+                            "上傳新照片 (自動命名: 地址_日期)", 
+                            type=['jpg', 'png', 'jpeg'], 
+                            accept_multiple_files=True,
+                            key=uploader_key # 綁定 key
+                        )
                         edit_submitted = st.form_submit_button("儲存變更")
                         if edit_submitted:
+                            # 處理照片邏輯
+                            final_photos = [p for p in current_photos if p not in photos_to_delete]
+                            
+                            if photos_to_delete:
+                                for p in photos_to_delete: utils.delete_file(p)
+                            
+                            if new_photos:
+                                # 命名規則：地址_上傳日
+                                prefix = f"{original_address}_{date.today()}"
+                                saved_paths = utils.save_uploaded_files(new_photos, "dorm", prefix)
+                                final_photos.extend(saved_paths)
                             updated_details = {
                                 'legacy_dorm_code': legacy_code, 'original_address': original_address,
                                 'dorm_name': dorm_name, 'city': city, 'district': district, 'person_in_charge': person_in_charge,
@@ -198,11 +230,13 @@ def render():
                                 'dorm_notes': dorm_notes_edit, 
                                 'management_notes': management_notes,
                                 'utility_bill_notes': utility_bill_notes_edit,
-                                'is_self_owned': edit_is_self_owned
+                                'is_self_owned': edit_is_self_owned,
+                                'photo_paths': final_photos
                             }
                             success, message = dormitory_model.update_dormitory_details(dorm_id, updated_details)
                             if success:
                                 st.success(message)
+                                st.session_state.dorm_upload_reset_key += 1
                                 get_dorms_df.clear()
                                 get_person_options.clear()
                                 st.rerun()
