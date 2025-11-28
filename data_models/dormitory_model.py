@@ -566,3 +566,23 @@ def batch_sync_rooms(dorm_id: int, edited_df: pd.DataFrame):
         return False, f"儲存時發生錯誤: {e}"
     finally:
         if conn: conn.close()
+
+def get_locations_dataframe():
+    """
+    【v2.4 連動版】取得「我司管理」宿舍的地點資料表。
+    回傳 DataFrame 包含 city 與 district 欄位，供前端製作連動選單。
+    """
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        # 查詢不重複的 (縣市, 區域) 組合
+        query = """
+            SELECT DISTINCT city, district 
+            FROM "Dormitories" 
+            WHERE primary_manager = '我司'
+              AND city IS NOT NULL AND city != ''
+            ORDER BY city, district
+        """
+        return _execute_query_to_dataframe(conn, query)
+    finally:
+        if conn: conn.close()
