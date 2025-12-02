@@ -305,25 +305,54 @@ def render():
 
                         # 費用明細 (唯讀)
                         st.markdown("##### 費用明細 (唯讀)")
-                        st.info("此處顯示該員工目前生效的各項費用。如需修改或新增項目，請至「💰 費用歷史」頁籤。")
+                        
+                        from datetime import timedelta
+                        
+                        today = date.today()
+                        # 取得本月1號
+                        this_month_first = today.replace(day=1)
+                        # 減一天得到上個月最後一天 (例如 2025-12-01 -> 2025-11-30)
+                        last_month_end = this_month_first - timedelta(days=1)
+                        # 再取得上個月1號 (例如 2025-11-01)
+                        last_month_start = last_month_end.replace(day=1)
+                        
+                        last_month_str = last_month_end.strftime('%Y-%m')
+                        
+                        st.info(f"此處顯示該員工於 **{last_month_str} 月份** 產生的費用帳款 (作為上月參考)。如需修改，請至「💰 費用歷史」頁籤。")
+                        
                         fee_hist_df = worker_model.get_fee_history_for_worker(selected_worker_id)
+                        
                         if fee_hist_df.empty:
                             st.caption("目前無任何費用紀錄。")
                         else:
                             fee_hist_df['eff_date'] = pd.to_datetime(fee_hist_df['生效日期']).dt.date
-                            valid_fees = fee_hist_df[fee_hist_df['eff_date'] <= date.today()]
+                            
+                            # 【關鍵修正】：只篩選生效日在 [上月1號 ~ 上月月底] 之間的資料
+                            valid_fees = fee_hist_df[
+                                (fee_hist_df['eff_date'] >= last_month_start) & 
+                                (fee_hist_df['eff_date'] <= last_month_end)
+                            ]
+                            
                             if valid_fees.empty:
-                                st.caption("目前無生效的費用項目。")
+                                st.caption(f"在 {last_month_str} 月份無任何費用紀錄。")
                             else:
-                                latest_fees = valid_fees.sort_values(by=['eff_date', 'id'], ascending=[False, False]).drop_duplicates(subset=['費用類型'])
-                                current_total = latest_fees['金額'].sum()
-                                st.metric("目前每月應收總額", f"NT$ {current_total:,}")
-                                fee_items = latest_fees.to_dict('records')
+                                # 針對同一費用類型，若當月有多筆(例如補扣)，將其金額加總顯示
+                                grouped_fees = valid_fees.groupby('費用類型')['金額'].sum().reset_index()
+                                
+                                current_total = grouped_fees['金額'].sum()
+                                
+                                # 顯示標題
+                                st.metric(f"上月應收總額參考 ({last_month_str})", f"NT$ {current_total:,}")
+                                
+                                fee_items = grouped_fees.to_dict('records')
+                                # 排序：房租優先，其他依字首
                                 fee_items.sort(key=lambda x: 0 if x['費用類型'] == '房租' else 1)
+                                
                                 cols = st.columns(3)
                                 for i, item in enumerate(fee_items):
                                     with cols[i % 3]:
-                                        st.number_input(f"{item['費用類型']}", value=int(item['金額']), disabled=True, key=f"ro_fee_{item['id']}")
+                                        # 注意：這裡 key 使用 index，因為 groupby 後沒有 id 了
+                                        st.number_input(f"{item['費用類型']}", value=int(item['金額']), disabled=True, key=f"ro_fee_view_{i}")
                         
                         st.markdown("##### 狀態 (可手動修改)")
                         fcc1, fcc2 = st.columns(2)
