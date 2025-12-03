@@ -325,10 +325,23 @@ def parse_and_process_reports(
         name = str(row.get('worker_name', '')).strip()
         passport = str(row.get('passport_number', '')).strip()
         
-        if passport:
-            return f"{employer}_{name}_{passport}"
+        # --- 【核心修改】優先使用居留證號作為唯一識別 ---
+        arc_number = str(row.get('arc_number', '')).strip()
+        
+        # 移除 ID 命名中可能導致問題的特殊字元
+        safe_employer = employer.replace('_', '-').replace('/', '-')
+        safe_name = name.replace('_', '-').replace('/', '-')
+        
+        # 邏輯：ARC > PASS > NOID
+        if arc_number:
+            # 居留證號存在：ID 使用 ARC (最穩定)
+            return f"{safe_employer}_{safe_name}_ARC{arc_number}"
+        elif passport:
+            # 居留證號不存在，但有護照：ID 使用護照 (臨時)
+            return f"{safe_employer}_{safe_name}_PASS{passport}"
         else:
-            return f"{employer}_{name}"
+            # 居留證號和護照都不存在
+            return f"{safe_employer}_{safe_name}_NOID"
 
     master_df['unique_id'] = master_df.apply(generate_unique_id, axis=1)
 
