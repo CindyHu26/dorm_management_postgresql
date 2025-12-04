@@ -96,7 +96,11 @@ def render():
     resident_data = single_dorm_analyzer.get_resident_summary(selected_dorm_ids, year_month_str)
     
     st.markdown(f"#### {year_month_str} 住宿人員分析 (彙總)")
-    st.metric("總在住人數 (彙總)", f"{resident_data['total_residents']} 人")
+    
+    # --- 【修改】 顯示總人數並包含掛宿外住資訊 ---
+    total_res = resident_data['total_residents']
+    ext_res = resident_data.get('external_count', 0)
+    st.metric("總在住人數 (彙總)", f"{total_res} 人 (掛宿外住: {ext_res} 人)")
 
     res_c1, res_c2, res_c3 = st.columns(3)
     with res_c1:
@@ -108,6 +112,10 @@ def render():
     with res_c3:
         st.markdown("**該月總收租簡表 (彙總)**")
         st.dataframe(resident_data['rent_summary'],  width="stretch", hide_index=True)
+
+    # --- 【新增】 性別/國籍/收租 交叉分析表 (顯示在下方) ---
+    st.markdown("##### 性別/國籍/收租 (彙總)")
+    st.dataframe(resident_data['combined_summary'], width="stretch", hide_index=True)
 
     st.subheader(f"{year_month_str} 宿舍營運分析 (彙總)")
     analysis_data = single_dorm_analyzer.get_dorm_analysis_data(selected_dorm_ids, year_month_str)

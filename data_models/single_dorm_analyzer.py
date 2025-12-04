@@ -1,5 +1,3 @@
-# 檔案路徑: data_models/single_dorm_analyzer.py (複選版)
-
 import pandas as pd
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
@@ -21,15 +19,11 @@ def _execute_query_to_dataframe(conn, query, params=None):
 def get_dorm_basic_info(dorm_id: int):
     """
     獲取單一宿舍的基本管理資訊。
-    【注意】此函式維持不變，僅在前端選擇單一宿舍時被呼叫。
     """
     conn = database.get_db_connection()
     if not conn: return None
     try:
         with conn.cursor() as cursor:
-            # 將 l.payer 改為 COALESCE(l.payer, d.rent_payer) AS rent_payer
-            # 這樣既修正了欄位名稱不符的問題 (rent_payer vs payer)，
-            # 也確保了即使沒有租約，也能顯示宿舍預設的支付方。
             query = """
                 SELECT 
                     d.primary_manager, 
@@ -73,14 +67,15 @@ def get_dorm_meters(dorm_ids: list):
 
 def get_resident_summary(dorm_ids: list, year_month: str):
     """
-    【v2.1 歷史費用修正版】計算指定月份、所選宿舍的在住人員統計數據。
-    查詢 FeeHistory 取得該月份的房租。
+    【v2.2 交叉分析版】計算指定月份、所選宿舍的在住人員統計數據。
+    新增：掛宿外住人數統計、性別/國籍/租金交叉分析。
     """
     conn = database.get_db_connection()
     if not conn:
         return {
-            "total_residents": 0, "gender_counts": pd.DataFrame(),
-            "nationality_counts": pd.DataFrame(), "rent_summary": pd.DataFrame()
+            "total_residents": 0, "external_count": 0, 
+            "gender_counts": pd.DataFrame(), "nationality_counts": pd.DataFrame(), 
+            "rent_summary": pd.DataFrame(), "combined_summary": pd.DataFrame()
         }
 
     try:
@@ -93,7 +88,7 @@ def get_resident_summary(dorm_ids: list, year_month: str):
             ),
             ActiveWorkersInMonth AS (
                  SELECT DISTINCT ON (ah.worker_unique_id)
-                    ah.worker_unique_id, w.gender, w.nationality
+                    ah.worker_unique_id, w.gender, w.nationality, w.special_status
                 FROM "AccommodationHistory" ah
                 JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
                 JOIN "Rooms" r ON ah.room_id = r.id
@@ -102,7 +97,7 @@ def get_resident_summary(dorm_ids: list, year_month: str):
                   AND ah.start_date <= dp.last_day_of_month
                   AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
             ),
-            -- 1. 找出該月份生效的費用總額 (不需找最新，因為已經指定月份)
+            -- 1. 找出該月份生效的費用總額
             MonthlyFeeSum AS (
                 SELECT
                     fh.worker_unique_id,
@@ -113,7 +108,7 @@ def get_resident_summary(dorm_ids: list, year_month: str):
                 GROUP BY fh.worker_unique_id
             )
             SELECT
-                awm.gender, awm.nationality,
+                awm.gender, awm.nationality, awm.special_status,
                 COALESCE(mfs.total_fee, 0) AS monthly_fee
             FROM ActiveWorkersInMonth awm
             LEFT JOIN MonthlyFeeSum mfs ON awm.worker_unique_id = mfs.worker_unique_id;
@@ -124,9 +119,15 @@ def get_resident_summary(dorm_ids: list, year_month: str):
 
     if df.empty:
         return {
-            "total_residents": 0, "gender_counts": pd.DataFrame(columns=['性別', '人數']),
-            "nationality_counts": pd.DataFrame(columns=['國籍', '人數']), "rent_summary": pd.DataFrame(columns=['該月總收租', '人數'])
+            "total_residents": 0, "external_count": 0, 
+            "gender_counts": pd.DataFrame(columns=['性別', '人數']),
+            "nationality_counts": pd.DataFrame(columns=['國籍', '人數']), 
+            "rent_summary": pd.DataFrame(columns=['該月總收租', '人數']),
+            "combined_summary": pd.DataFrame(columns=['性別', '國籍', '月租金', '人數'])
         }
+
+    # 計算掛宿外住人數
+    external_count = df['special_status'].fillna('').str.contains('掛宿外住').sum()
 
     gender_counts = df['gender'].value_counts().reset_index()
     gender_counts.columns = ['性別', '人數']
@@ -134,21 +135,30 @@ def get_resident_summary(dorm_ids: list, year_month: str):
     nationality_counts = df['nationality'].value_counts().reset_index()
     nationality_counts.columns = ['國籍', '人數']
 
-    # 房租統計使用從 FeeHistory 查詢到的 monthly_fee
     rent_summary = df['monthly_fee'].fillna(0).astype(int).value_counts().reset_index()
-    rent_summary.columns = ['該月總收租', '人數'] # 修改這裡：從 '房租金額' 改為 '該月總收租'
+    rent_summary.columns = ['該月總收租', '人數']
+    rent_summary = rent_summary.sort_values(by='該月總收租')
+
+    # 新增：性別/國籍/收租 交叉分析
+    combined_df = df.copy()
+    combined_df['monthly_fee'] = combined_df['monthly_fee'].fillna(0).astype(int)
+    combined_summary = combined_df.groupby(['gender', 'nationality', 'monthly_fee']).size().reset_index(name='人數')
+    combined_summary.columns = ['性別', '國籍', '月租金', '人數']
+    # 排序讓表格好看一點
+    combined_summary = combined_summary.sort_values(by=['性別', '國籍', '月租金'])
 
     return {
         "total_residents": len(df),
+        "external_count": external_count,
         "gender_counts": gender_counts,
         "nationality_counts": nationality_counts,
-        "rent_summary": rent_summary.sort_values(by='該月總收租')
+        "rent_summary": rent_summary,
+        "combined_summary": combined_summary
     }
 
 def get_expense_summary(dorm_ids: list, year_month: str):
     """
     【v1.4 修正版】計算指定月份、所選宿舍的總支出細項。
-    修正：代收代付項目將顯示為「(代收代付)」，避免被計入「我司支付」的總支出中。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -217,7 +227,6 @@ def get_expense_summary(dorm_ids: list, year_month: str):
 def get_income_summary(dorm_ids: list, year_month: str):
     """
     【v3.0 B04帳務版】計算總收入 (工人月費 + 其他收入)。
-    工人月費：直接 SUM(FeeHistory.amount)。
     """
     conn = database.get_db_connection()
     if not conn: return 0
@@ -227,7 +236,7 @@ def get_income_summary(dorm_ids: list, year_month: str):
 
     try:
         with conn.cursor() as cursor:
-            # 1. 計算工人月費收入 (核心修改)
+            # 1. 計算工人月費收入
             worker_income_query = """
                 WITH DateParams AS (
                     SELECT
@@ -242,7 +251,6 @@ def get_income_summary(dorm_ids: list, year_month: str):
                 WHERE 
                     r.dorm_id = ANY(%(dorm_ids)s)
                     AND fh.effective_date BETWEEN dp.first_day_of_month AND dp.last_day_of_month
-                    -- 確保費用歸屬到該宿舍
                     AND ah.start_date <= fh.effective_date
                     AND (ah.end_date IS NULL OR ah.end_date >= fh.effective_date)
             """
@@ -252,7 +260,7 @@ def get_income_summary(dorm_ids: list, year_month: str):
             if worker_income_result and worker_income_result.get('total_worker_income') is not None:
                  total_income_decimal += worker_income_result['total_worker_income']
 
-            # 2. 計算其他收入 (維持不變)
+            # 2. 計算其他收入
             other_income_query = """
                 SELECT SUM(amount)::decimal as total_other_income
                 FROM "OtherIncome"
@@ -275,7 +283,6 @@ def get_income_summary(dorm_ids: list, year_month: str):
 def get_resident_details_as_df(dorm_ids: list, year_month: str):
     """
     【v3.0 同月計算修正版】
-    修正：明細表中的各項費用，嚴格限制為「該月份」生效的費用。
     """
     if not dorm_ids: return pd.DataFrame()
     conn = database.get_db_connection()
@@ -302,7 +309,6 @@ def get_resident_details_as_df(dorm_ids: list, year_month: str):
                   AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
                 ORDER BY ah.worker_unique_id, ah.start_date DESC, ah.id DESC
             ),
-            -- 找出「該月份」生效的費用 (可能有多筆同類型，例如調薪，這裡取該月最新一筆)
             MonthFeeHistory AS (
                 SELECT
                     worker_unique_id, fee_type, amount,
@@ -323,7 +329,6 @@ def get_resident_details_as_df(dorm_ids: list, year_month: str):
                 w.work_permit_expiry_date AS "工作期限",
                 awm.bed_number AS "床位編號",
                 
-                -- 只抓取該月份有的費用
                 COALESCE(rent.amount, 0) AS "房租",
                 COALESCE(util.amount, 0) AS "水電費",
                 COALESCE(clean.amount, 0) AS "清潔費",
@@ -336,7 +341,6 @@ def get_resident_details_as_df(dorm_ids: list, year_month: str):
             JOIN "Workers" w ON awm.worker_unique_id = w.unique_id
             JOIN "Dormitories" d ON awm.dorm_id = d.id
             
-            -- JOIN 條件加上 rn=1
             LEFT JOIN (SELECT worker_unique_id, amount FROM MonthFeeHistory WHERE fee_type = '房租' AND rn = 1) rent ON awm.worker_unique_id = rent.worker_unique_id
             LEFT JOIN (SELECT worker_unique_id, amount FROM MonthFeeHistory WHERE fee_type = '水電費' AND rn = 1) util ON awm.worker_unique_id = util.worker_unique_id
             LEFT JOIN (SELECT worker_unique_id, amount FROM MonthFeeHistory WHERE fee_type = '清潔費' AND rn = 1) clean ON awm.worker_unique_id = clean.worker_unique_id
@@ -373,7 +377,7 @@ def get_dorm_analysis_data(dorm_ids: list, year_month: str):
             JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
             JOIN "Rooms" r ON ah.room_id = r.id
             CROSS JOIN DateParams dp
-            WHERE r.dorm_id = ANY(%(dorm_ids)s) -- 【核心修改】
+            WHERE r.dorm_id = ANY(%(dorm_ids)s)
               AND ah.start_date <= dp.last_day_of_month
               AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
         """
@@ -397,8 +401,11 @@ def get_dorm_analysis_data(dorm_ids: list, year_month: str):
         if not special_rooms_df.empty:
             special_room_occupancy = actual_residents_df[actual_residents_df['room_id'].isin(special_rooms_df['id'])]\
                                      .groupby('room_id').size().rename('目前住的人數')
-            special_rooms_df = special_rooms_df.merge(special_room_occupancy, left_on='id', right_index=True, how='left').fillna(0)
-            special_rooms_df['目前住的人數'] = special_rooms_df['目前住的人數'].astype(int)
+            # 1. 先合併 (不對整個表 fillna)
+            special_rooms_df = special_rooms_df.merge(special_room_occupancy, left_on='id', right_index=True, how='left')
+
+            # 2. 只針對人數欄位填補 0 並轉為整數
+            special_rooms_df['目前住的人數'] = special_rooms_df['目前住的人數'].fillna(0).astype(int)
             special_rooms_df['獨立空床數'] = special_rooms_df['capacity'] - special_rooms_df['目前住的人數']
             
         total_special_empty_beds = int(special_rooms_df['獨立空床數'].sum()) if not special_rooms_df.empty else 0
@@ -416,17 +423,12 @@ def get_dorm_analysis_data(dorm_ids: list, year_month: str):
 
 def get_monthly_financial_trend(dorm_ids: list, end_date_str: str = None):
     """
-    【v2.4 截止日修正版】為指定的宿舍列表，計算過去24個月的彙總收入、支出與損益。
-    新增：支援指定 end_date_str (YYYY-MM-DD)，若未指定則預設為今日。
+    【v2.4 截止日修正版】
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
 
-    # 1. 決定截止日期
     if end_date_str:
-        # 確保是 YYYY-MM-DD 格式，若傳入的是 YYYY-MM，補上 -01 (雖然這裡預期傳入月底或月初皆可，generate_series 會處理)
-        # 為了精確，我們假設傳入的是「該月份的最後一天」或「該月份的第一天」
-        # 在這裡我們只需要一個基準日，SQL 會生成該日期往前推 23 個月
         target_date = f"'{end_date_str}'::date"
     else:
         target_date = "NOW()::date"
@@ -448,7 +450,6 @@ def get_monthly_financial_trend(dorm_ids: list, end_date_str: str = None):
                     EXTRACT(DAY FROM (ms.month_start + interval '1 month - 1 day')::date)::decimal as days_in_cal_month
                 FROM MonthSeries ms
             ),
-             -- (以下 WorkerActiveDaysInMonth, LatestFeeHistory, WorkerMonthlyFees, MonthlyIncome 等 CTE 維持不變)
             WorkerActiveDaysInMonth AS (
                  SELECT DISTINCT ON (ah.worker_unique_id, dp.month_start)
                     ah.worker_unique_id,
@@ -567,15 +568,12 @@ def get_monthly_financial_trend(dorm_ids: list, end_date_str: str = None):
 def calculate_financial_summary_for_period(dorm_ids: list, start_date: date, end_date: date):
     """
     【v1.5 修正版】計算自訂區間平均損益。
-    呼叫 get_monthly_financial_trend 時傳入 end_date 確保區間正確。
     """
     try:
-        # 呼叫修改後的趨勢函數，傳入 end_date
         monthly_df = get_monthly_financial_trend(dorm_ids, end_date.strftime('%Y-%m-%d'))
         if monthly_df.empty:
             return {}
 
-        # 後續計算邏輯維持不變
         monthly_df['月份'] = pd.to_datetime(monthly_df['月份'] + '-01')
         start_date_dt = pd.to_datetime(start_date)
         end_date_dt = pd.to_datetime(end_date)
@@ -712,8 +710,7 @@ def get_amortized_expense_details(dorm_ids: list, year_month: str):
 
 def get_room_occupancy_view(dorm_ids: list, year_month: str):
     """
-    【v3.0 SQL 優化版】為宿舍深度分析儀表板，查詢房間內的詳細住宿狀況。
-    改為單一 SQL 查詢，直接在資料庫層級過濾掉「容量為0且無人居住」的房間。
+    【v3.0 SQL 優化版】
     """
     conn = database.get_db_connection()
     if not conn or not dorm_ids: return pd.DataFrame()
@@ -726,7 +723,6 @@ def get_room_occupancy_view(dorm_ids: list, year_month: str):
                     TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
                     (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
             ),
-            -- 1. 先找出該月份在住的員工 (與之前邏輯相同)
             ActiveWorkersInMonth AS (
                  SELECT DISTINCT ON (ah.worker_unique_id)
                     ah.worker_unique_id, 
@@ -741,15 +737,13 @@ def get_room_occupancy_view(dorm_ids: list, year_month: str):
                   AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
                 ORDER BY ah.worker_unique_id, ah.start_date DESC, ah.id DESC
             )
-            -- 2. 主查詢：結合房間與住戶，並進行篩選
             SELECT 
                 r.id as room_id, 
                 d.original_address, 
                 r.room_number, 
                 r.capacity,
-                r.area_sq_meters, -- 【新增】回傳面積欄位
+                r.area_sq_meters,
                 
-                -- 使用 COALESCE 處理空值，讓前端拿到乾淨的字串
                 COALESCE(w.worker_name, '') as worker_name,
                 COALESCE(w.employer_name, '') as employer_name,
                 COALESCE(awm.bed_number, '') as bed_number,
@@ -757,15 +751,11 @@ def get_room_occupancy_view(dorm_ids: list, year_month: str):
                 awm.end_date AS accommodation_end
             FROM "Rooms" r
             JOIN "Dormitories" d ON r.dorm_id = d.id
-            -- LEFT JOIN 確保即使房間沒人也會被選出來 (除非被 WHERE 過濾)
             LEFT JOIN ActiveWorkersInMonth awm ON r.id = awm.room_id
             LEFT JOIN "Workers" w ON awm.worker_unique_id = w.unique_id
             WHERE 
                 r.dorm_id = ANY(%(dorm_ids)s)
                 AND r.room_number != '[未分配房間]'
-                
-                -- 【核心優化】SQL 層級過濾：
-                -- 保留條件：(容量 > 0) 或者 (裡面有人住/掛戶口)
                 AND (r.capacity > 0 OR w.unique_id IS NOT NULL)
                 
             ORDER BY d.original_address, r.room_number
