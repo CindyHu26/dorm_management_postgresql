@@ -171,7 +171,7 @@ def render():
 
     # Row 1
     f_row1_c1.text_input(
-        "搜尋姓名、雇主或地址", 
+        "搜尋姓名、雇主、地址、護照或居留證", 
         key="w_filter_search"
     )
     f_row1_c2.selectbox(
@@ -290,11 +290,34 @@ def render():
                         st.markdown("---")
                         
                         # 基本資料
-                        st.markdown("##### 基本資料")
-                        ec1, ec2, ec3 = st.columns(3)
-                        ec1.text_input("性別", value=worker_details.get('gender'), disabled=True)
-                        ec2.text_input("國籍", value=worker_details.get('nationality'), disabled=True)
-                        ec3.text_input("護照號碼", value=worker_details.get('passport_number'), disabled=True)
+                        st.markdown("##### 基本資料 (可編輯)")
+                        
+                        # 準備國籍選項
+                        nationality_options = ["", "越南", "印尼", "泰國", "菲律賓", "其他"]
+                        current_nat = worker_details.get('nationality', '')
+                        # 如果目前的國籍不在預設選項中，且不為空，則加入選項
+                        if current_nat and current_nat not in nationality_options:
+                            nationality_options.append(current_nat)
+                        
+                        ec1, ec2, ec3, ec4 = st.columns(4) # 改為 4 欄以容納居留證
+                        
+                        # 1. 性別
+                        gender_opts = ["", "男", "女"]
+                        curr_gender = worker_details.get('gender', '')
+                        e_gender = ec1.selectbox("性別", gender_opts, index=gender_opts.index(curr_gender) if curr_gender in gender_opts else 0)
+                        
+                        # 2. 國籍
+                        try:
+                            nat_index = nationality_options.index(current_nat)
+                        except ValueError:
+                            nat_index = 0
+                        e_nationality = ec2.selectbox("國籍", options=nationality_options, index=nat_index)
+                        
+                        # 3. 護照
+                        e_passport = ec3.text_input("護照號碼", value=worker_details.get('passport_number', ''))
+                        
+                        # 4. 居留證 (新增)
+                        e_arc = ec4.text_input("居留證號碼", value=worker_details.get('arc_number', ''))
                         
                         st.markdown("##### 住宿資訊")
                         sys_addr = worker_details.get('system_dorm_address'); sys_room = worker_details.get('system_room_number')
@@ -366,7 +389,20 @@ def render():
 
                         if st.form_submit_button("儲存核心資料變更"):
                             final_end_date = None if clear_end_date else (str(accommodation_end_date) if accommodation_end_date else None)
-                            update_data = {'payment_method': payment_method, 'accommodation_end_date': final_end_date, 'worker_notes': worker_notes}
+                            update_data = {
+                                # 【本次新增】將付款方與備註也加入空值轉換邏輯
+                                'payment_method': payment_method if payment_method else None, 
+                                'worker_notes': worker_notes if worker_notes else None,
+                                
+                                # 日期欄位保持原樣 (因為 final_end_date 本身就已經處理好 None 了)
+                                'accommodation_end_date': final_end_date, 
+                                
+                                # 之前的修改
+                                'gender': e_gender if e_gender else None,
+                                'nationality': e_nationality if e_nationality else None,
+                                'passport_number': e_passport if e_passport else None,
+                                'arc_number': e_arc if e_arc else None
+                            }
                             success, message = worker_model.update_worker_details(selected_worker_id, update_data)
                             if success: st.success(message); st.cache_data.clear(); st.rerun()
                             else: st.error(message)

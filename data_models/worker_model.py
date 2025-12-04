@@ -91,9 +91,17 @@ def get_workers_for_view(filters: dict):
 
         if filters.get('name_search'):
             term = f"%{filters['name_search']}%"
-            # 搜尋範圍也包含系統地址，方便查找
-            where_clauses.append('(w.worker_name ILIKE %s OR w.employer_name ILIKE %s OR d_actual.original_address ILIKE %s OR d_sys.original_address ILIKE %s)')
-            params.extend([term, term, term, term])
+            # 搜尋範圍增加 passport_number 與 arc_number
+            where_clauses.append("""(
+                w.worker_name ILIKE %s OR 
+                w.employer_name ILIKE %s OR 
+                d_actual.original_address ILIKE %s OR 
+                d_sys.original_address ILIKE %s OR 
+                w.passport_number ILIKE %s OR 
+                w.arc_number ILIKE %s
+            )""")
+            # 參數也要增加兩個 term 對應新增的欄位
+            params.extend([term, term, term, term, term, term])
 
         if filters.get('dorm_id'):
             # 這裡維持篩選「實際地址」，因為管理上通常是看人實際上在哪
