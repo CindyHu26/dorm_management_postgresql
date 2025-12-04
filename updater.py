@@ -1,3 +1,5 @@
+# updater.py (v2.38 簡化匹配版)
+
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import Callable
@@ -18,11 +20,14 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], None]):
     """
-    【v2.35 雇主變更分流版】執行核心的資料庫更新流程。
-    修正重點：在 fallback (ARC/Passport) 比對時，強制檢查雇主是否相同。
-    若雇主不同，則視為新進人員 (Insert)，而非更新舊紀錄 (Update)，以保留不同雇主下的工作歷程。
+    【v2.38 簡化匹配版】執行核心的資料庫更新流程。
+    邏輯簡化：
+    1. ID 相同 -> 更新
+    2. 雇主相同 + (ARC或護照相同) -> 更新
+    3. 雇主相同 + 姓名相同 (且該雇主下無重名) -> 更新
+    解決「舊ID(護照)」與「新ID(居留證)」被視為不同人的問題。
     """
-    log_callback("\n===== 開始執行核心資料庫更新程序 (v2.35 雇主變更分流版) =====")
+    log_callback("\n===== 開始執行核心資料庫更新程序 (v2.38 簡化匹配版) =====")
     today = datetime.now().date()
     yesterday = today - timedelta(days=1)
     
@@ -35,7 +40,7 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
         
     try:
         with conn.cursor() as cursor:
-            # --- 步驟 1, 2, 3 (地址同步與房間映射維持不變) ---
+            # --- 步驟 1, 2, 3 (地址同步與房間映射) ---
             log_callback("INFO: 步驟 1/5 - 同步宿舍地址...")
             db_dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, normalized_address, original_address FROM "Dormitories"')
             db_addresses_norm = set(db_dorms_df['normalized_address']) if not db_dorms_df.empty else set()
@@ -53,19 +58,16 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                     dorm_id = cursor.fetchone()['id']
                     cursor.execute('INSERT INTO "Rooms" (dorm_id, room_number) VALUES (%s, %s)', (dorm_id, "[未分配房間]"))
             
-            log_callback("INFO: 步驟 2/5 - 正在檢查並修復缺少 [未分配房間] 的現有宿舍...")
+            # 修復缺少未分配房間的宿舍
             cursor.execute("SELECT d.id, d.original_address FROM \"Dormitories\" d LEFT JOIN \"Rooms\" r ON d.id = r.dorm_id AND r.room_number = '[未分配房間]' WHERE r.id IS NULL;")
             dorms_to_repair = cursor.fetchall()
             if dorms_to_repair:
-                log_callback(f"WARNING: 發現 {len(dorms_to_repair)} 間宿舍缺少 [未分配房間] 紀錄，正在自動修復...")
                 for dorm in dorms_to_repair:
                     try:
                         cursor.execute('INSERT INTO "Rooms" (dorm_id, room_number) VALUES (%s, %s)', (dorm['id'], "[未分配房間]"))
-                        log_callback(f"SUCCESS: 已為宿舍「{dorm['original_address']}」(ID: {dorm['id']}) 補上 [未分配房間] 紀錄。")
-                    except Exception as repair_e:
-                        log_callback(f"ERROR: 修復宿舍 ID {dorm['id']} 時失敗: {repair_e}")
+                    except Exception: pass
             
-            log_callback("INFO: 步驟 3/5 - 準備資料與映射...")
+            # 準備地址映射
             address_room_df = _execute_query_to_dataframe(conn, 'SELECT d.normalized_address, r.id as room_id FROM "Rooms" r JOIN "Dormitories" d ON r.dorm_id = d.id WHERE r.room_number = %s', ("[未分配房間]",))
             address_room_map = pd.Series(address_room_df.room_id.values, index=address_room_df.normalized_address).to_dict()
             original_addr_map = pd.Series(db_dorms_df.id.values, index=db_dorms_df.original_address).to_dict()
@@ -101,11 +103,19 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
             """
             all_workers_info_df = _execute_query_to_dataframe(conn, all_workers_info_query)
 
-            # 建立 ARC/Passport 到 ID 的反向映射 (用於 Stage 2/3 比對)
+            # 建立各種反向映射
             arc_to_id_map = {str(row['arc_number']).strip(): row['unique_id'] for _, row in all_workers_info_df.iterrows() if row['arc_number']}
             passport_to_id_map = {str(row['passport_number']).strip(): row['unique_id'] for _, row in all_workers_info_df.iterrows() if row['passport_number']}
+            
+            # 建立 (雇主, 姓名) -> ID 列表 的映射
+            name_employer_to_id_map = {}
+            for _, row in all_workers_info_df.iterrows():
+                # 標準化 key
+                key = (str(row['employer_name']).strip(), str(row['worker_name']).strip())
+                if key not in name_employer_to_id_map:
+                    name_employer_to_id_map[key] = []
+                name_employer_to_id_map[key].append(row['unique_id'])
 
-            # 建立核心資料快取
             worker_info_cache = {row['unique_id']: row for _, row in all_workers_info_df.iterrows()}
             
             # --- 步驟 5/5：逐筆比對 ---
@@ -118,52 +128,64 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
 
             for index, fresh_worker in fresh_df.iterrows():
                 # ----------------------------------------------------
-                # A. 識別邏輯 (決定使用哪一個 ID 來更新/新增)
+                # A. 識別邏輯 (簡化版：ID > 證件 > 姓名)
                 # ----------------------------------------------------
                 fresh_arc = str(fresh_worker.get('arc_number', '')).strip()
                 fresh_passport = str(fresh_worker.get('passport_number', '')).strip()
                 fresh_employer = str(fresh_worker.get('employer_name', '')).strip()
+                fresh_name = str(fresh_worker.get('worker_name', '')).strip()
                 
-                # Stage 1: Primary Match (新爬蟲 ID - 已經包含雇主名稱)
+                # 1. ID Match (完全命中)
                 worker_id = fresh_worker['unique_id']
                 is_worker_matched = (worker_id in worker_info_cache)
 
                 if not is_worker_matched:
-                    # Stage 2: Fallback Match (ARC 或 Passport)
-                    # 目標：找出「同一人」且「雇主相同」的舊紀錄 (例如：換了護照/居留證，但仍在同一雇主下)
                     matched_id = None
                     match_reason = ""
                     
-                    # 1. 優先匹配新的 ARC 號碼
-                    if fresh_arc:
+                    # 2. Fallback Match (ARC 或 Passport)
+                    if not matched_id and fresh_arc:
                         matched_id = arc_to_id_map.get(fresh_arc)
                         if matched_id: match_reason = "ARC匹配"
                     
-                    # 2. 如果 ARC 匹配不到，再匹配新的 Passport 號碼
                     if not matched_id and fresh_passport:
                         matched_id = passport_to_id_map.get(fresh_passport)
                         if matched_id: match_reason = "Passport匹配"
 
+                    # 3. Name + Employer Match (最後防線)
+                    if not matched_id:
+                        key = (fresh_employer, fresh_name)
+                        potential_ids = name_employer_to_id_map.get(key, [])
+                        
+                        # 規則：只在該雇主下「只有一位」同名員工時，才敢自動匹配
+                        # 如果有多位同名同姓，為避免錯誤合併，視為無法自動識別 (這部分請用 SQL 檢查)
+                        if len(potential_ids) == 1:
+                            matched_id = potential_ids[0]
+                            match_reason = "姓名+雇主匹配"
+
+                    # --- 確認匹配結果 ---
                     if matched_id:
-                        # 【核心修正】檢查雇主是否相同
-                        # 如果雇主不同，表示是「換雇主」，應視為新工人 (Insert)，而不是更新 (Update)
+                        # 再次檢查：雇主是否相同？
                         db_employer = str(worker_info_cache[matched_id].get('employer_name', '')).strip()
                         
                         if db_employer == fresh_employer:
-                            # 雇主相同 -> 是同一筆資料的更新 (例如更新證件號碼)
+                            # 雇主相同 -> 是同一人 (更新舊資料)
                             worker_id = matched_id 
                             is_worker_matched = True
-                            log_callback(f"INFO: [{match_reason}] 發現證件變動但雇主相同 ('{db_employer}')，將更新舊 ID '{matched_id}'。")
+                            
+                            # 顯示日誌
+                            if match_reason == "姓名+雇主匹配":
+                                log_callback(f"INFO: [自動關聯] 證件不符但姓名雇主相同 ('{fresh_name}'), 判定為同一人 (ID: {matched_id})。")
+                            else:
+                                log_callback(f"INFO: [{match_reason}] 發現證件變動但雇主相同，更新舊 ID '{matched_id}'。")
                         else:
-                            # 雇主不同 -> 視為新資料，不使用 matched_id
-                            # 這裡不做任何事，讓 is_worker_matched 保持 False，就會進入下方 "C. 新增工人" 流程
-                            log_callback(f"INFO: [雇主變更] 證件相同但雇主不同 ('{db_employer}' -> '{fresh_employer}')，將建立新資料 (ID: {worker_id})。")
+                            # 雇主不同 -> 視為新資料 (新增)
+                            log_callback(f"INFO: [雇主變更] 識別特徵相同但雇主不同 ('{db_employer}' -> '{fresh_employer}')，視為新入職。")
                             matched_id = None 
 
                 # ----------------------------------------------------
-                # B. 資料操作
+                # B. 資料操作 (維持不變)
                 # ----------------------------------------------------
-                
                 db_info = worker_info_cache.get(worker_id, {})
                 data_source = db_info.get('data_source')
                 
@@ -189,36 +211,27 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                 is_new_worker = not is_worker_matched
 
                 if not is_new_worker:
-                    # --- A. 更新現有工人 ---
+                    # --- 更新 ---
                     update_cols = ['native_name', 'gender', 'nationality', 'passport_number', 'arc_number', 'work_permit_expiry_date', 'employer_name', 'worker_name']
                     update_details = {col: fresh_worker.get(col) for col in update_cols if col in fresh_worker}
                     
-                    # 處理空值覆蓋：如果爬蟲提供的是空值，但資料庫已有值，則不覆蓋
                     for key in ['arc_number', 'passport_number', 'employer_name', 'worker_name']:
                         if key in update_details and (pd.isna(update_details[key]) or not str(update_details[key]).strip()):
                             update_details.pop(key)
                     
-                    # 保持 data_source 狀態
                     update_details['data_source'] = data_source 
-
-                    if new_room_id is not None:
-                        update_details['room_id'] = new_room_id 
-                    
+                    if new_room_id is not None: update_details['room_id'] = new_room_id 
                     update_details['accommodation_end_date'] = final_departure_date
-                    
-                    log_prefix = f"INFO: [{data_source}] "
                     
                     fields = ', '.join([f'"{key}" = %s' for key in update_details.keys()])
                     values = list(update_details.values()) + [worker_id]
-                    
                     cursor.execute(f'UPDATE "Workers" SET {fields} WHERE unique_id = %s', tuple(values))
                     updated_count += 1 
                     
-                    # --- B. 住宿歷史更新 (AccommodationHistory) ---
+                    # 住宿歷史更新
                     if new_room_id is not None:
                         new_dorm_id = room_to_dorm_map.get(new_room_id)
                         current_dorm_id = room_to_dorm_map.get(current_room_id)
-                        
                         is_dorm_change = (new_dorm_id != current_dorm_id)
                         
                         is_long_term_rehire = False
@@ -228,117 +241,74 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                                 is_long_term_rehire = True
                         
                         if data_source != '手動調整' and (is_dorm_change or is_long_term_rehire):
-                            # --- 情況 B1: 執行換宿 ---
                             if current_history_end_date is None:
                                 cursor.execute('UPDATE "AccommodationHistory" SET end_date = %s WHERE worker_unique_id = %s AND end_date IS NULL', (yesterday, worker_id))
-                            
                             cursor.execute('INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, end_date) VALUES (%s, %s, %s, %s)', (worker_id, new_room_id, today, final_departure_date))
                             moved_count += 1
-                            log_callback(f"{log_prefix}偵測到住宿異動(換宿/長期重入職)！工人 '{worker_id}' 已移至房間 {new_room_id}。")
-                        
                         elif final_departure_date != current_history_end_date:
-                            # --- 情況 B2: 僅更新 end_date ---
                             is_valid_update = False
                             if final_departure_date is None: is_valid_update = True 
                             elif current_history_start_date and final_departure_date >= current_history_start_date: is_valid_update = True 
-                            
                             if is_valid_update:
                                 cursor.execute(
-                                    """
-                                    SELECT id FROM "AccommodationHistory" 
-                                    WHERE worker_unique_id = %s 
-                                    ORDER BY start_date DESC, id DESC 
-                                    LIMIT 1
-                                    """,
+                                    """SELECT id FROM "AccommodationHistory" WHERE worker_unique_id = %s ORDER BY start_date DESC, id DESC LIMIT 1""",
                                     (worker_id,)
                                 )
                                 latest_history_record = cursor.fetchone()
-
                                 if latest_history_record:
-                                    latest_history_id = latest_history_record['id']
-                                    cursor.execute(
-                                        'UPDATE "AccommodationHistory" SET end_date = %s WHERE id = %s',
-                                        (final_departure_date, latest_history_id)
-                                    )
-                                    if cursor.rowcount > 0:
-                                        log_callback(f"{log_prefix}工人 '{worker_id}' 更新住宿歷史 end_date 為 {final_departure_date or 'NULL'}。")
-                                else:
-                                    log_callback(f"WARNING: 工人 '{worker_id}' 存在，但在 AccommodationHistory 中找不到紀錄可供更新 end_date。")
-                            else:
-                                log_callback(f"WARNING: [資料異常] 工人 '{worker_id}'。爬蟲離住日 {final_departure_date} 早於最新入住日 {current_history_start_date}。已跳過更新。")
-                    
+                                    cursor.execute('UPDATE "AccommodationHistory" SET end_date = %s WHERE id = %s', (final_departure_date, latest_history_record['id']))
                 else:
-                    # --- C. 新增工人 ---
-                    
+                    # --- 新增 ---
                     new_worker_details = fresh_worker.to_dict()
                     new_worker_details['data_source'] = '系統自動更新'
                     new_worker_details['special_status'] = None
-                    
                     final_details = {k: v for k, v in new_worker_details.items() if k in worker_columns}
                     
-                    if new_room_id is not None:
-                        final_details['room_id'] = new_room_id
-                    else:
-                        final_details['room_id'] = None 
-                        
+                    if new_room_id is not None: final_details['room_id'] = new_room_id
+                    else: final_details['room_id'] = None 
                     final_details['accommodation_end_date'] = final_departure_date
                     
                     columns = ', '.join(f'"{k}"' for k in final_details.keys())
                     placeholders = ', '.join(['%s'] * len(final_details))
-                    
                     try:
                         cursor.execute(f'INSERT INTO "Workers" ({columns}) VALUES ({placeholders})', tuple(final_details.values()))
                         added_count += 1
                         
                         if new_room_id is not None:
-                            # 這裡使用 'accommodation_start_date'，也就是來源資料的「交工日」
                             start_date_str = new_worker_details.get('accommodation_start_date')
                             start_date = today 
                             if pd.notna(start_date_str) and start_date_str:
-                                try:
-                                    start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
-                                except ValueError:
-                                    start_date = today
-                            
+                                try: start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+                                except ValueError: start_date = today
                             cursor.execute('INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, bed_number, end_date) VALUES (%s, %s, %s, %s, %s)', 
                                         (worker_id, new_room_id, start_date, None, final_departure_date))
                             moved_count += 1 
                         else:
                             log_callback(f"WARNING: 新增工人 {worker_id} 成功，但因地址無效，未建立住宿歷史。")
                     except Exception as insert_e:
-                        log_callback(f"ERROR: 新增工人 {worker_id} 失敗 (可能 ID 重複但判定邏輯有誤): {insert_e}")
+                        log_callback(f"ERROR: 新增工人 {worker_id} 失敗: {insert_e}")
                 
                 processed_ids.add(worker_id)
             
-            # --- "工人消失" 邏輯 ---
-            # 只有當我們使用了該 ID 進行更新或新增時，它才會在 processed_ids 中。
-            # 如果是換雇主的情況，舊 ID 不在 processed_ids 中，因此會被視為「消失」。
-            # 這會正確地將舊雇主名下的紀錄標記為「離職」(設定 accommodation_end_date)。
-            
+            # --- 處理消失的工人 (離職) ---
             cursor.execute('SELECT unique_id, data_source FROM "Workers" WHERE data_source != %s', ('手動管理(他仲)',))
             db_syncable_workers = {rec['unique_id']: rec['data_source'] for rec in cursor.fetchall()}
-            
             ids_to_check_for_departure = set(db_syncable_workers.keys()) - processed_ids
             
             if ids_to_check_for_departure:
                 for uid in ids_to_check_for_departure:
                     cursor.execute('SELECT accommodation_end_date FROM "Workers" WHERE unique_id = %s', (uid,))
                     worker_status = cursor.fetchone()
-                    
                     if db_syncable_workers.get(uid) == '手動調整' and worker_status and worker_status['accommodation_end_date'] is not None:
-                        log_callback(f"INFO: [保護] 移工 '{uid}' (手動調整) 已不在名單，但已有手動離住日，跳過自動更新。")
-                        continue
-
-                    # 如果工人不在新名單中，更新離住日為今天 (視為今天離職)
+                        continue # 手動調整且已離職者，不重複更新
                     cursor.execute('UPDATE "Workers" SET accommodation_end_date = %s WHERE unique_id = %s AND accommodation_end_date IS NULL', (today, uid))
-                    
                     if cursor.rowcount > 0: 
                         marked_as_left_count += 1
                         cursor.execute('UPDATE "AccommodationHistory" SET end_date = %s WHERE worker_unique_id = %s AND end_date IS NULL', (today, uid))
-                        log_callback(f"INFO: [自動] 移工 '{uid}' (資料來源: {db_syncable_workers.get(uid)}) 已不在最新名單，已同步更新 Workers 表與 AccommodationHistory 表的結束日。")
+                        log_callback(f"INFO: [自動] 移工 '{uid}' 已不在名單，同步標記為今日離職。")
 
         conn.commit()
-        log_callback(f"SUCCESS: 資料庫更新完成！新增: {added_count}, 更新: {updated_count}, 標記離職: {marked_as_left_count}, 住宿異動: {moved_count}。")
+        log_callback(f"SUCCESS: 資料庫更新完成！新增: {added_count}, 更新: {updated_count}, 標記離職: {marked_as_left_count}。")
 
     except Exception as e:
         log_callback(f"CRITICAL: 更新資料庫時發生嚴重錯誤，所有操作已復原: {e}")

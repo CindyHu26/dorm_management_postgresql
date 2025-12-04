@@ -292,6 +292,12 @@ def render():
                         # 基本資料
                         st.markdown("##### 基本資料 (可編輯)")
                         
+                        # --- 新增姓名與雇主編輯框 ---
+                        c_name, c_emp = st.columns(2)
+                        e_worker_name = c_name.text_input("移工姓名", value=worker_details.get('worker_name', ''))
+                        e_employer_name = c_emp.text_input("雇主名稱", value=worker_details.get('employer_name', ''))
+                        # ----------------------------------------
+
                         # 準備國籍選項
                         nationality_options = ["", "越南", "印尼", "泰國", "菲律賓", "其他"]
                         current_nat = worker_details.get('nationality', '')
@@ -390,14 +396,18 @@ def render():
                         if st.form_submit_button("儲存核心資料變更"):
                             final_end_date = None if clear_end_date else (str(accommodation_end_date) if accommodation_end_date else None)
                             update_data = {
-                                # 【本次新增】將付款方與備註也加入空值轉換邏輯
+                                # 【本次新增】將姓名與雇主加入更新
+                                'worker_name': e_worker_name if e_worker_name else None,
+                                'employer_name': e_employer_name if e_employer_name else None,
+
+                                # 付款方與備註
                                 'payment_method': payment_method if payment_method else None, 
                                 'worker_notes': worker_notes if worker_notes else None,
                                 
-                                # 日期欄位保持原樣 (因為 final_end_date 本身就已經處理好 None 了)
+                                # 日期欄位
                                 'accommodation_end_date': final_end_date, 
                                 
-                                # 之前的修改
+                                # 證件與國籍
                                 'gender': e_gender if e_gender else None,
                                 'nationality': e_nationality if e_nationality else None,
                                 'passport_number': e_passport if e_passport else None,
