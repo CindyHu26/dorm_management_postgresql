@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
+from dateutil.relativedelta import relativedelta
 from data_models import worker_model, dormitory_model
 import utils # 記得匯入 utils
 import os
@@ -13,7 +14,11 @@ def init_state_once(key, value):
 def render():
     """渲染「人員管理」頁面"""
     st.header("移工住宿人員管理")
-    
+
+    # 建議在 render 函式開頭定義寬鬆的日期範圍 (例如前後 60 年)
+    today = date.today()
+    min_date = today - relativedelta(years=20)
+    max_date = today + relativedelta(years=20)    
     # --- 1. 定義分頁名稱 (使用變數，避免字串打錯) ---
     TAB_CORE = "✏️ 編輯/檢視核心資料"
     TAB_ACCOM = "🏠 住宿歷史管理"
@@ -561,10 +566,22 @@ def render():
                                     )
 
                                     ehc1, ehc2, ehc3 = st.columns(3)
-                                    edit_start_date = ehc1.date_input("起始日", value=history_details.get('start_date'))
+                                    # 起始日：加入 min_value 與 max_value
+                                    edit_start_date = ehc1.date_input(
+                                        "起始日", 
+                                        value=history_details.get('start_date'),
+                                        min_value=min_date,
+                                        max_value=max_date
+                                    )
                                     
                                     with ehc2:
-                                        edit_end_date = st.date_input("結束日 (留空表示仍在住)", value=history_details.get('end_date'))
+                                        # 【修改點 2】結束日：加入 min_value 與 max_value
+                                        edit_end_date = st.date_input(
+                                            "結束日 (留空表示仍在住)", 
+                                            value=history_details.get('end_date'),
+                                            min_value=min_date,
+                                            max_value=max_date
+                                        )
                                         clear_end_date_history = st.checkbox("清除結束日 (設為仍在住)", key=f"clear_end_hist_{selected_history_id}")
                                     
                                     edit_bed_number = ehc3.text_input("床位編號", value=history_details.get('bed_number') or "")
