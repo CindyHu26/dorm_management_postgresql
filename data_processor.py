@@ -367,7 +367,7 @@ def parse_and_process_reports(
 def parse_b04_xml(file_path_or_buffer, fee_mapping: dict) -> pd.DataFrame:
     """
     解析 B04 應收帳款 XML 報表 (Excel 2003 XML 格式)。
-    【v2.1 索引修正版】修復空儲存格導致欄位位移的問題。
+    【v2.2 括號保留版】移除對姓名的括號過濾，保留原始雇主名稱（如 901廠）。
     """
     try:
         if hasattr(file_path_or_buffer, 'read'):
@@ -396,11 +396,9 @@ def parse_b04_xml(file_path_or_buffer, fee_mapping: dict) -> pd.DataFrame:
             cells = row.findall('ss:Cell', ns)
             cell_texts = {}
             
-            # --- 【核心修正】使用獨立變數追蹤欄位索引 ---
             next_col_idx = 0 
             
             for cell in cells:
-                # 檢查是否有指定 Index (Excel XML 跳過空值時會用這個屬性)
                 idx_attr = cell.get(f"{{{ns['ss']}}}Index")
                 if idx_attr:
                     next_col_idx = int(idx_attr) - 1
@@ -411,9 +409,7 @@ def parse_b04_xml(file_path_or_buffer, fee_mapping: dict) -> pd.DataFrame:
                 if data is not None and data.text:
                     cell_texts[current_idx] = data.text.strip()
                 
-                # 準備下一個欄位索引 (預設+1)
                 next_col_idx += 1
-            # -------------------------------------------
 
             # 檢查是否為數據列
             seq_no = cell_texts.get(0)
@@ -447,10 +443,13 @@ def parse_b04_xml(file_path_or_buffer, fee_mapping: dict) -> pd.DataFrame:
 
             # 姓名清理
             raw_worker_name = cell_texts.get(IDX_WORKER, "")
-            clean_worker_name = re.sub(r'\s*[（\(].*?[）\)]', '', raw_worker_name).strip()
+            # 【核心修改 1】移除 re.sub(r'\s*[（\(].*?[）\)]', ...) 的過濾
+            # 只保留基本 strip()，確保 "張氏巒" 等正確讀取
+            clean_worker_name = raw_worker_name.strip()
             
             raw_emp_name = cell_texts.get(IDX_EMPLOYER, "")
-            clean_emp_name = re.sub(r'\s*[（\(].*?[）\)]', '', raw_emp_name).strip()
+            # 【核心修改 2】移除 re.sub，保留 "揚恩（901廠）" 完整名稱
+            clean_emp_name = raw_emp_name.strip()
 
             # 護照號碼 (若沒抓到就是 None)
             passport = cell_texts.get(IDX_PASSPORT)
