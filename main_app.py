@@ -18,6 +18,7 @@ from views import (
     placement_view,  
     room_assignment_view,
     worker_view, 
+    photo_upload_view,
     rent_view,
     batch_operations_view,
     batch_history_editor_view,
@@ -64,6 +65,7 @@ PAGES = {
 
     "🏠 宿舍與人員營運": {
         "人員管理": worker_view,                # 增刪修人員
+        "住宿照片批次上傳": photo_upload_view,
         "地址與房間管理": dormitory_view,        # 增刪修宿舍
         "空床位查詢": placement_view,            # 找空床
         "房間分配 (入住/換宿)": room_assignment_view, # 派房

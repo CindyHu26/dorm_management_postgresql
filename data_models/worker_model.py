@@ -1556,3 +1556,67 @@ def batch_update_worker_status(updates: list):
         return 0, len(updates), f"批次更新發生錯誤 (已復原): {e}"
     finally:
         if conn: conn.close()
+
+def get_accommodation_history_for_photo_upload(filters: dict):
+    """
+    【新功能】為「照片上傳頁面」查詢住宿紀錄。
+    回傳：紀錄ID、姓名、雇主、宿舍、房號、日期、現有照片路徑。
+    """
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    
+    try:
+        # 基礎查詢
+        query = """
+            SELECT 
+                ah.id, 
+                ah.worker_unique_id,
+                w.employer_name AS "雇主", 
+                w.worker_name AS "姓名",
+                d.original_address AS "宿舍地址", 
+                r.room_number AS "房號",
+                ah.start_date AS "入住日", 
+                ah.end_date AS "離住日",
+                ah.checkin_photo_paths,
+                ah.checkout_photo_paths
+            FROM "AccommodationHistory" ah
+            JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+            JOIN "Rooms" r ON ah.room_id = r.id
+            JOIN "Dormitories" d ON r.dorm_id = d.id
+            WHERE 1=1
+        """
+        
+        params = []
+        
+        # 1. 雇主篩選
+        if filters.get('employer_names'):
+            query += " AND w.employer_name = ANY(%s)"
+            params.append(list(filters['employer_names']))
+            
+        # 2. 宿舍篩選
+        if filters.get('dorm_ids'):
+            query += " AND d.id = ANY(%s)"
+            params.append(list(filters['dorm_ids']))
+
+        # 3. 日期篩選 (核心邏輯)
+        # 根據使用者選的模式 (依入住日 或 依離住日) 來過濾
+        date_type = filters.get('date_type', '入住日')
+        start_date = filters.get('start_date')
+        end_date = filters.get('end_date')
+        
+        if start_date and end_date:
+            if date_type == '入住日':
+                query += " AND ah.start_date BETWEEN %s AND %s"
+                query += " ORDER BY ah.start_date DESC, w.employer_name"
+            else: # 離住日
+                query += " AND ah.end_date BETWEEN %s AND %s"
+                query += " ORDER BY ah.end_date DESC, w.employer_name"
+                
+            params.extend([start_date, end_date])
+        else:
+            # 預設排序
+            query += " ORDER BY ah.start_date DESC"
+
+        return _execute_query_to_dataframe(conn, query, tuple(params))
+    finally:
+        if conn: conn.close()
