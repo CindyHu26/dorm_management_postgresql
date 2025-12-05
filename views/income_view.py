@@ -405,7 +405,7 @@ def render():
                 
                 gc3.write("") 
                 gc3.write("")
-                if gc3.button("執行單月生成", type="primary", use_container_width=True):
+                if gc3.button("執行單月生成", type="primary", width='stretch'):
                     with st.spinner("正在生成收入紀錄..."):
                         success, msg = income_model.generate_monthly_recurring_income(gen_year, gen_month)
                     
@@ -425,7 +425,7 @@ def render():
                 
                 bc3.write("") 
                 bc3.write("")
-                if bc3.button("執行區間批次生成", type="primary", use_container_width=True):
+                if bc3.button("執行區間批次生成", type="primary", width='stretch'):
                     if batch_start_date > batch_end_date:
                         st.error("起始日期不能晚於結束日期！")
                     else:
