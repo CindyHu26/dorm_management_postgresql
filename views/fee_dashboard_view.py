@@ -1,6 +1,3 @@
-# type: uploaded file
-# fileName: cindyhu26/dorm_management_postgresql/dorm_management_postgresql-2c01e357f2dcd360107bbd52dca35c9af17b5156/views/fee_dashboard_view.py
-
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta
@@ -29,7 +26,7 @@ def render():
     # 第二列篩選
     col3, col4, col5 = st.columns(3)
     manager_options = ["全部", "我司", "雇主"]
-    selected_manager = col3.selectbox("篩選主要管理人", options=manager_options, index=0)
+    selected_manager = col3.selectbox("篩選主要管理人", options=manager_options, index=1)
     data_month_start = col4.date_input("資料月份(起)", value=None, help="篩選「資料月份」的起始範圍")
     data_month_end = col5.date_input("資料月份(迄)", value=None, help="篩選「資料月份」的結束範圍")
 
@@ -92,15 +89,11 @@ def render():
         st.info("目前資料庫中沒有任何費用項目的紀錄。")
         fee_cols = [] 
 
-    # 【核心新增】預先計算「宿舍層級」的標準 (Fallback 機制)
-    # 邏輯：針對每個 (宿舍, 特殊狀況, 費用類型)，找出非零的眾數
-    # 這樣當某個雇主的標準是 0 時，可以參考同宿舍其他人的標準
+    # 預先計算「宿舍層級」的標準 (Fallback 機制)
     dorm_level_standards = {}
     for col in fee_cols:
-        # 只看金額 > 0 的資料來計算標準
         valid_fees = analysis_df[analysis_df[col] > 0]
         if not valid_fees.empty:
-            # 計算每個宿舍的眾數
             dorm_modes = valid_fees.groupby(['宿舍地址', '特殊狀況'])[col].apply(lambda x: x.mode().iloc[0] if not x.mode().empty else 0)
             dorm_level_standards[col] = dorm_modes.to_dict()
 
@@ -117,13 +110,17 @@ def render():
             
             effective_standard = local_standard
             
-            # 2. 【核心修正】如果雇主標準是 0，嘗試參考宿舍標準 (Global Standard)
+            # 2. 如果雇主標準是 0，嘗試參考宿舍標準
             if local_standard == 0:
                 dorm_standard = dorm_level_standards.get(col, {}).get((dorm, status), 0)
                 if dorm_standard > 0:
                     effective_standard = dorm_standard
-                    # (選擇性) 可以在這裡標記該群組是使用參照標準，但為了簡化先直接套用
             
+            # 【核心修正】針對 "掛宿外住(不收費)"，強制標準為 0
+            # 這樣金額為 0 的人就不會被視為異常，也不會因為同宿舍其他人有標準而被誤判
+            if status == "掛宿外住(不收費)":
+                effective_standard = 0
+
             group_stats[f"標準{col}"] = effective_standard
             
             # 3. 比對異常
