@@ -20,11 +20,11 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], None]):
     """
-    【v2.40 日期指紋識別版】
+    【v2.41 換宿日誌增強版】
     解決同雇主、同姓名、甚至同宿舍但不同人的問題。
     新增邏輯：利用「交工日 (accommodation_start_date)」作為區分同名人員的關鍵指紋。
     """
-    log_callback("\n===== 開始執行核心資料庫更新程序 (v2.40 日期指紋識別版) =====")
+    log_callback("\n===== 開始執行核心資料庫更新程序 (v2.41 換宿日誌增強版) =====")
     today = datetime.now().date()
     yesterday = today - timedelta(days=1)
     
@@ -248,7 +248,6 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                     try:
                         cursor.execute(f'INSERT INTO "Workers" ({columns}) VALUES ({placeholders})', tuple(final_details.values()))
                         added_count += 1
-                        # 【修改點 2：加入新增人員 Log】
                         log_callback(f"INFO: [新增人員] {final_details.get('worker_name')} ({final_details.get('employer_name')})")
                         
                         if new_room_id is not None:
@@ -296,13 +295,28 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                                 is_long_term_rehire = True
                         
                         if data_source != '手動調整' and (is_dorm_change or is_long_term_rehire):
+                            # 宿舍變動時，起始日應以 TODAY 為優先 (避免檔案中的舊日期造成資料衝突/回溯複雜度)
+                            
+                            # 確定新住宿的起始日：優先使用 TODAY
+                            new_hist_start = today 
+                            
                             # 結束舊的
                             if current_history_end_date is None:
-                                cursor.execute('UPDATE "AccommodationHistory" SET end_date = %s WHERE worker_unique_id = %s AND end_date IS NULL', (yesterday, worker_id))
+                                # 將舊紀錄的 end_date 設為新紀錄開始日【同一天】(維持連續性)
+                                end_date_for_old_record = new_hist_start
+                                
+                                cursor.execute(
+                                    'UPDATE "AccommodationHistory" SET end_date = %s WHERE worker_unique_id = %s AND end_date IS NULL', 
+                                    (end_date_for_old_record, worker_id)
+                                )
                             # 建立新的
-                            new_hist_start = fresh_start_date_obj if fresh_start_date_obj else today
+                            # 注意: new_hist_start 已經是 today
                             cursor.execute('INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, end_date) VALUES (%s, %s, %s, %s)', (worker_id, new_room_id, new_hist_start, final_departure_date))
                             moved_count += 1
+                            
+                            # 【新增日誌】
+                            log_callback(f"INFO: [換宿] 偵測到 '{fresh_name}' 地址變更 ({current_dorm_id} -> {new_dorm_id})，執行換宿作業。")
+                            
                         elif final_departure_date != current_history_end_date:
                             # 僅更新離住日
                             is_valid_update = False
@@ -337,7 +351,7 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                         log_callback(f"INFO: [自動] 移工 '{uid}' 已不在名單，同步標記為今日離職。")
 
         conn.commit()
-        log_callback(f"SUCCESS: 資料庫更新完成！新增: {added_count}, 更新: {updated_count}, 標記離職: {marked_as_left_count}。")
+        log_callback(f"SUCCESS: 資料庫更新完成！新增: {added_count}, 更新: {updated_count}, 換宿: {moved_count}, 標記離職: {marked_as_left_count}。")
 
     except Exception as e:
         log_callback(f"CRITICAL: 更新資料庫時發生嚴重錯誤，所有操作已復原: {e}")
