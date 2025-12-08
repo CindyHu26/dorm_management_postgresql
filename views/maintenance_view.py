@@ -231,7 +231,7 @@ def render():
     # --- 編輯與刪除 ---
     st.markdown("---")
     st.subheader("編輯 / 刪除單筆維修紀錄")
-# 取得所有紀錄
+    # 取得所有紀錄
     all_logs_df = get_all_logs_for_selection()
 
     if all_logs_df.empty:
@@ -240,7 +240,7 @@ def render():
     
     # 搜尋功能
     search_key = st.text_input(
-        "輸入關鍵字搜尋紀錄 (ID, 地址, 說明, 狀態, 提報人, 維修廠商)", 
+        "輸入關鍵字搜尋紀錄 (ID, 地址, 說明, 狀態, 提報人, 維修廠商, **項目類型**) - **多條件請用空格隔開**", 
         key="maint_log_search_key"
     )
 
@@ -248,34 +248,44 @@ def render():
 
     # 執行搜尋過濾
     if search_key:
-        search_key_lower = search_key.lower()
+        # 多關鍵字 AND 搜尋邏輯
+        keywords = search_key.lower().split()
         
-        # 篩選邏輯：在 ID, 宿舍地址, 細項說明, 狀態, 提報人, 維修廠商中尋找
-        search_mask = (
-            filtered_search_df['id'].astype(str).str.contains(search_key_lower, case=False, na=False) |
-            filtered_search_df['宿舍地址'].str.contains(search_key_lower, case=False, na=False) |
-            filtered_search_df['細項說明'].str.contains(search_key_lower, case=False, na=False) |
-            filtered_search_df['狀態'].str.contains(search_key_lower, case=False, na=False) |
-            filtered_search_df['內部提報人'].str.contains(search_key_lower, case=False, na=False) |
-            # 【核心修改】新增 維修廠商
-            filtered_search_df['維修廠商'].str.contains(search_key_lower, case=False, na=False) 
-        )
+        # 建立一個包含所有可搜尋欄位的合併字串欄位
+        filtered_search_df['searchable_text'] = (
+            filtered_search_df['id'].astype(str) + " " +
+            filtered_search_df['宿舍地址'] + " " +
+            filtered_search_df['細項說明'] + " " +
+            filtered_search_df['狀態'] + " " +
+            filtered_search_df['內部提報人'].fillna('') + " " +
+            filtered_search_df['維修廠商'].fillna('') + " " +
+            filtered_search_df['項目類型'].fillna('') 
+        ).str.lower()
         
-        filtered_search_df = filtered_search_df[search_mask]
+        # 檢查合併字串欄位是否包含所有關鍵字
+        mask = filtered_search_df['searchable_text'].apply(lambda x: all(k in x for k in keywords))
+        
+        filtered_search_df = filtered_search_df[mask].copy() # 使用 .copy() 確保修改不會觸發警告
+        
+        # 移除輔助欄位
+        filtered_search_df.drop(columns=['searchable_text'], inplace=True)
     
     # 建立下拉選單的選項
     if filtered_search_df.empty:
          st.warning(f"找不到符合「{search_key}」的維修紀錄。")
          selected_log_id = None
     else:
-        # 排序：讓最新通報的紀錄排在前面
+        # 排序：讓最新的通報日期排在前面
+        filtered_search_df['通報日期'] = pd.to_datetime(filtered_search_df['通報日期'])
+
+        # 排序：讓最新的通報日期排在前面
         filtered_search_df = filtered_search_df.sort_values(by=['通報日期', 'id'], ascending=[False, False])
         
         options_dict = {
             row['id']: (
                 f"[ID:{row['id']}] {row['狀態']} / "
                 f"{row['宿舍地址']} {row['細項說明']} / "
-                f"通報:{row['通報日期']}"
+                f"通報:{row['通報日期'].strftime('%Y-%m-%d')}"
             )
             for _, row in filtered_search_df.iterrows()
         }
@@ -502,3 +512,5 @@ def render():
                         st.rerun()
                     else:
                         st.error(message)
+    else:
+        st.info("目前沒有可供操作的紀錄。")
