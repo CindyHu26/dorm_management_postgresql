@@ -14,32 +14,26 @@ from datetime import datetime, timedelta # 引入 timedelta 來計算日期
 
 def generate_code_ranges() -> List[Tuple[str, str]]:
     """
-    自動產生所有雇主編號的查詢區間 (v2 - 更細分的版本)。
-    將數字和字母範圍都拆分得更小，以應對大量資料查詢。
+    自動產生所有雇主編號的查詢區間 (單編號 CODE ~ CODE-S)。
     """
     ranges = []
     letters = string.ascii_uppercase
 
     # 1. 處理數字範圍 (A01~H99)
-    # 原本: 每 10 個一組 (A01-A10, A11-A20...)
-    # 新版: 改為每 2 個一組 (A01-A02, A03-A04...)，大幅增加請求次數
-    numeric_chunk_size = 2
+    # 針對每一個編號，產生 CODE 到 CODE-S 的範圍
     for prefix in 'ABCDEFGH':
-        for start in range(1, 100, numeric_chunk_size):
-            end_num = min(start + numeric_chunk_size - 1, 99)
-            ranges.append((f"{prefix}{start:02d}", f"{prefix}{end_num:02d}"))
+        for start in range(1, 100): # 遍歷 01 到 99
+            start_code = f"{prefix}{start:02d}"
+            # 查詢範圍： CODE 到 CODE-S
+            ranges.append((start_code, f"{start_code}-S"))
     
     # 2. 處理字母範圍 (AA~ZZ)
-    all_letter_codes = [a + b for a in letters for b in letters] # 總共 676 個
-    
-    # 原本: 每 26 個一組 (AA-AZ, BA-BZ...)
-    # 新版: 改為每 5 個一組 (AA-AE, AF-AJ, ...)
-    letter_chunk_size = 2 
-    for i in range(0, len(all_letter_codes), letter_chunk_size):
-        start_code = all_letter_codes[i]
-        end_code_index = min(i + letter_chunk_size - 1, len(all_letter_codes) - 1)
-        end_code = all_letter_codes[end_code_index]
-        ranges.append((start_code, end_code))
+    # 針對每一個編號，產生 CODE 到 CODE-S 的範圍
+    for a in letters:
+        for b in letters:
+            start_code = f"{a}{b}"
+            # 查詢範圍： CODE 到 CODE-S
+            ranges.append((start_code, f"{start_code}-S"))
     
     return ranges
 

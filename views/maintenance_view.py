@@ -474,7 +474,7 @@ def render():
             
             if details.get('status') == '待付款':
                 st.info("確認款項支付後，請點擊下方按鈕將案件結案。")
-                if st.button("✓ 標示為已付款並結案", type="primary"):
+                if st.button("✓ 標示為已付款並結案", type="primary", key="btn_complete_log"):
                     success, message = maintenance_model.mark_as_paid_and_complete(selected_log_id)
                     if success:
                         st.success(message)
@@ -490,7 +490,7 @@ def render():
             if details.get('is_archived_as_expense'):
                 st.success("✔️ 此筆維修費用已轉入年度費用。")
             elif (details.get('status') in ['待付款', '已完成']) and (details.get('cost') or 0) > 0 and (details.get('payer') == '我司'):
-                if st.button("💰 轉入年度費用進行攤銷", help="點擊後，系統會自動建立一筆對應的年度費用紀錄，預設攤銷12個月。"):
+                if st.button("💰 轉入年度費用進行攤銷", help="點擊後，系統會自動建立一筆對應的年度費用紀錄，預設攤銷12個月。", key="btn_archive_expense"):
                     success, message = maintenance_model.archive_log_as_annual_expense(selected_log_id)
                     if success:
                         st.success(message)
@@ -503,8 +503,8 @@ def render():
 
             st.markdown("---")
             st.markdown("##### 危險操作區")
-            if st.checkbox(f"我確認要刪除 ID:{selected_log_id} 這筆維修紀錄"):
-                if st.button("🗑️ 刪除此筆紀錄", type="primary"):
+            if st.checkbox(f"我確認要刪除 ID:{selected_log_id} 這筆維修紀錄", key="confirm_delete_log"):
+                if st.button("🗑️ 刪除此筆紀錄", type="primary", key="btn_delete_log"):
                     success, message = maintenance_model.delete_log(selected_log_id)
                     if success:
                         st.success(message)
