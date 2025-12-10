@@ -1,9 +1,9 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
-from datetime import datetime
+from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
-from data_models import report_model, dormitory_model, export_model, employer_dashboard_model
+from data_models import report_model, dormitory_model, export_model, employer_dashboard_model, single_dorm_analyzer
 
 def to_excel(sheet_data: dict):
     """
@@ -39,32 +39,32 @@ def render():
     """渲染「匯出報表」頁面的所有 Streamlit UI 元件。"""
     st.header("各式報表匯出")
 
-    with st.container(border=True):
-        st.subheader("更新至雲端儀表板 (Google Sheet)")
-        gsheet_name_to_update = "宿舍外部儀表板數據"
-        st.info(f"點擊下方按鈕，系統將會查詢最新的「人員清冊」與「設備清單」，並將其上傳至 Google Sheet: **{gsheet_name_to_update}**。")
-        if st.button("🚀 開始上傳", type="primary"):
-            with st.spinner("正在查詢並上傳最新數據至雲端..."):
-                worker_data = export_model.get_data_for_export()
-                equipment_data = export_model.get_equipment_for_export()
+    # with st.container(border=True):
+    #     st.subheader("更新至雲端儀表板 (Google Sheet)")
+    #     gsheet_name_to_update = "宿舍外部儀表板數據"
+    #     st.info(f"點擊下方按鈕，系統將會查詢最新的「人員清冊」與「設備清單」，並將其上傳至 Google Sheet: **{gsheet_name_to_update}**。")
+    #     if st.button("🚀 開始上傳", type="primary"):
+    #         with st.spinner("正在查詢並上傳最新數據至雲端..."):
+    #             worker_data = export_model.get_data_for_export()
+    #             equipment_data = export_model.get_equipment_for_export()
                 
-                data_package = {}
-                if not worker_data.empty:
-                    data_package["人員清冊"] = worker_data
-                if not equipment_data.empty:
-                    data_package["設備清冊"] = equipment_data
+    #             data_package = {}
+    #             if not worker_data.empty:
+    #                 data_package["人員清冊"] = worker_data
+    #             if not equipment_data.empty:
+    #                 data_package["設備清冊"] = equipment_data
 
-                if not data_package:
-                    st.warning("目前沒有任何人員或設備資料可供上傳。")
-                else:
-                    # 將 gsheet_name_to_update 作為參數傳遞
-                    success, message = export_model.update_google_sheet(gsheet_name_to_update, data_package)
-                    if success:
-                        st.success(message)
-                    else:
-                        st.error(message)
+    #             if not data_package:
+    #                 st.warning("目前沒有任何人員或設備資料可供上傳。")
+    #             else:
+    #                 # 將 gsheet_name_to_update 作為參數傳遞
+    #                 success, message = export_model.update_google_sheet(gsheet_name_to_update, data_package)
+    #                 if success:
+    #                     st.success(message)
+    #                 else:
+    #                     st.error(message)
+    
     st.markdown("---")
-
     with st.container(border=True):
         st.subheader("年度宿舍財務總覽報表")
         st.info("選擇一個年份，系統將匯出該年度從 1月1日 至今日的各宿舍實際收支彙總表。")
@@ -403,4 +403,57 @@ def render():
                             label="📥 點此下載 Excel 報表",
                             data=excel_file,
                             file_name=f"{selected_employer_cf}_水電費報表_{bill_range_end}.xlsx"
+                        )
+
+    st.markdown("---")
+    with st.container(border=True):
+        st.subheader("🛏️ 房間床位佔用總覽報表")
+        st.info("匯出指定宿舍的床位矩陣報表，可直觀查看哪個床位（或潛在床位）目前住著誰，哪些是空床。")
+        
+        # 載入我司管理宿舍列表
+        my_dorms = dormitory_model.get_my_company_dorms_for_selection()
+        if not my_dorms:
+            st.warning("目前沒有「我司管理」的宿舍可供選擇。")
+        else:
+            dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in my_dorms}
+            
+            # 宿舍選擇
+            selected_dorm_id_bed = st.selectbox(
+                "選擇要分析的宿舍", 
+                options=list(dorm_options.keys()), 
+                format_func=lambda x: dorm_options.get(x),
+                key="bed_occupancy_dorm_select"
+            )
+
+            if st.button("🚀 產生床位佔用報表", key="generate_bed_occupancy_report"):
+                if not selected_dorm_id_bed:
+                    st.error("請先選擇一個宿舍。")
+                else:
+                    with st.spinner(f"正在產生床位佔用矩陣..."):
+                        # 呼叫新的後端函式
+                        from data_models import single_dorm_analyzer
+                        dorm_address, occupancy_df = single_dorm_analyzer.get_bed_occupancy_report(selected_dorm_id_bed)
+                    
+                    if dorm_address is None:
+                         st.error("找不到該宿舍紀錄或資料庫連線失敗。")
+                    elif occupancy_df.empty:
+                         st.warning(f"宿舍 {dorm_address} 目前沒有任何房間或在住人員紀錄。")
+                    else:
+                        st.success(f"床位佔用報表已產生！請點擊下方按鈕下載。")
+                        
+                        # 準備 Excel 數據
+                        excel_title = f"{dorm_address} 床位佔用總覽"
+                        
+                        excel_file_data = {
+                            "床位佔用報表": [
+                                {"dataframe": occupancy_df, "title": excel_title}
+                            ]
+                        }
+                        excel_file = to_excel(excel_file_data)
+                        
+                        dorm_name_for_file = dorm_address.replace(" ", "_").replace("/", "_")
+                        st.download_button(
+                            label="📥 點此下載 Excel 床位佔用報表",
+                            data=excel_file,
+                            file_name=f"床位佔用報表_{dorm_name_for_file}_{date.today().strftime('%Y%m%d')}.xlsx"
                         )

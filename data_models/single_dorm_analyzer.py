@@ -3,6 +3,8 @@ from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 import database
 from decimal import Decimal, InvalidOperation
+import locale
+import re # 引入正則表達式
 
 def _execute_query_to_dataframe(conn, query, params=None):
     """一個輔助函式，用來手動執行查詢並回傳 DataFrame。"""
@@ -762,5 +764,139 @@ def get_room_occupancy_view(dorm_ids: list, year_month: str):
         """
         return _execute_query_to_dataframe(conn, query, params)
 
+    finally:
+        if conn: conn.close()
+
+def get_bed_occupancy_report(dorm_id: int):
+    """
+    查詢指定宿舍的房間床位佔用情況，並返回適用於 Excel 格式的數據。
+    
+    排序邏輯：
+    1. 有床位編號 (bed_number)：按 bed_number 進行字母/數字混合排序。
+    2. 無床位編號：按 worker_name 進行筆畫（正序）排序。
+    
+    【修正點】：
+    - 確保填充至房間容量 (capacity)。
+    - 將空位填充為 '(空)'。
+    - 統一 Excel 的高度為最大房間容量。
+    """
+    if not dorm_id: return None, pd.DataFrame()
+    conn = database.get_db_connection()
+    if not conn: return None, pd.DataFrame()
+
+    # --- 內部輔助函數 (為確保排序在任何系統都可用) ---
+    import locale
+    import re
+    try:
+        # 嘗試設置中文環境以啟用筆畫排序
+        locale.setlocale(locale.LC_COLLATE, 'zh_TW.UTF-8')
+        def chinese_sort_key(s):
+            return locale.strxfrm(str(s))
+    except:
+        # 如果系統不支援中文環境，退而求其次使用字典序
+        def chinese_sort_key(s):
+            return str(s)
+            
+    def natural_sort_key(s):
+        # 處理數字和字母混合排序，並回傳元組 (可雜湊)
+        return tuple(int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s)))
+    # -------------------------------------------------------------------
+
+    try:
+        # 1. SQL 查詢：抓取所有房間資訊和目前在住人員
+        query = """
+            WITH ActiveWorkers AS (
+                 SELECT DISTINCT ON (ah.worker_unique_id)
+                    ah.worker_unique_id, ah.room_id, ah.bed_number, 
+                    w.worker_name, w.special_status
+                FROM "AccommodationHistory" ah
+                JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+                WHERE ah.start_date <= CURRENT_DATE
+                  AND (ah.end_date IS NULL OR ah.end_date > CURRENT_DATE)
+                  AND (w.special_status IS NULL OR w.special_status NOT ILIKE '%%掛宿外住%%')
+                ORDER BY ah.worker_unique_id, ah.start_date DESC, ah.id DESC
+            )
+            SELECT 
+                d.original_address, 
+                r.room_number, 
+                r.capacity, 
+                aw.worker_name,
+                COALESCE(aw.bed_number, '') AS bed_number
+            FROM "Rooms" r
+            JOIN "Dormitories" d ON r.dorm_id = d.id
+            LEFT JOIN ActiveWorkers aw ON r.id = aw.room_id
+            WHERE 
+                r.dorm_id = %s
+                AND r.room_number != '[未分配房間]'
+                AND r.capacity > 0
+            ORDER BY r.room_number;
+        """
+        raw_df = _execute_query_to_dataframe(conn, query, (dorm_id,))
+        
+        if raw_df.empty:
+            dorm_info_query = 'SELECT original_address FROM "Dormitories" WHERE id = %s'
+            dorm_info = _execute_query_to_dataframe(conn, dorm_info_query, (dorm_id,))
+            if not dorm_info.empty:
+                return dorm_info.iloc[0]['original_address'], pd.DataFrame()
+            return None, pd.DataFrame()
+
+        # 2. 數據處理與排序
+        final_data = {}
+        dorm_address = raw_df.iloc[0]['original_address']
+        
+        # 【修正 1.1】計算最大容量作為 Excel 的高度
+        max_rows = raw_df['capacity'].max()
+        
+        for room_number, room_group in raw_df.groupby('room_number'):
+            capacity = room_group.iloc[0]['capacity']
+            
+            # 1. 提取實際居住人員名單 (排除空值)
+            occupants = room_group[room_group['worker_name'].notna()].copy()
+            
+            # 2. 執行複雜排序邏輯
+            # 排序鍵：元組 (True/False:是否有床位編號, 床位編號自然序, 姓名筆畫序)
+            occupants['sort_key'] = occupants.apply(
+                lambda row: (
+                    False if row['bed_number'] else True, # True=沒有 bed_number (排後面)
+                    natural_sort_key(row['bed_number']) if row['bed_number'] else None,
+                    chinese_sort_key(row['worker_name'])
+                ), axis=1
+            )
+
+            # 根據 sort_key 排序
+            occupants = occupants.sort_values(by=['sort_key'], na_position='last')
+            
+            # 提取排序後的姓名
+            sorted_names = occupants['worker_name'].tolist()
+            
+            # 3. 填充至最大容量 (max_rows)
+            room_list = sorted_names
+            
+            # 如果人數少於房間最大容量 (capacity)，補足 (空) 到 capacity
+            if len(room_list) < capacity:
+                room_list.extend(['(空)'] * (capacity - len(room_list))) # <-- 這裡填入 '(空)'
+            
+            # 【修正 1.2】如果房間列表長度 (已包含空) 小於最大容量 (max_rows), 補足到 max_rows
+            if len(room_list) < max_rows:
+                # 補足純空白字串，以保持 Excel 儲存格的邊界
+                room_list.extend([''] * (max_rows - len(room_list)))
+                
+            # 4. 建立房間/床位對應
+            room_key_with_capacity = f"{room_number} (容量:{capacity})"
+            final_data[room_key_with_capacity] = room_list[:max_rows]
+
+
+        # 5. 將結果轉換為 DataFrame
+        occupancy_df = pd.DataFrame(final_data)
+
+        # 6. 新增床位編號列 (作為最左邊的參考欄)
+        occupancy_df.insert(0, '床位序號', [f'{i+1}' for i in range(max_rows)])
+
+        return dorm_address, occupancy_df
+
+    except Exception as e:
+        # 為了除錯，這裡可以列印詳細錯誤
+        print(f"查詢床位佔用報表時發生錯誤: {e}")
+        return None, pd.DataFrame()
     finally:
         if conn: conn.close()
