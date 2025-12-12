@@ -199,25 +199,35 @@ def get_monthly_exception_report(year_month: str):
         if conn: 
             conn.close()
 
-def get_utility_bills_for_selection(dorm_id: int, start_date: date, end_date: date):
+def get_utility_bills_for_selection(dorm_ids: list, start_date, end_date):
     """
-    【v1.1 修改版】查詢指定宿舍和「日期範圍」內的所有水費與電費帳單。
+    獲取指定宿舍列表和日期範圍內的水費和電費帳單。
     """
+    if not dorm_ids: return []
     conn = database.get_db_connection()
     if not conn: return []
+    
     try:
+        # 【修正 1】將列表轉換為安全的 tuple
+        safe_dorm_ids = tuple(int(i) for i in dorm_ids)
+        
         query = """
-            SELECT id, bill_type, bill_start_date, bill_end_date, amount
+            SELECT
+                id, dorm_id, bill_type, bill_start_date, bill_end_date, amount
             FROM "UtilityBills"
-            WHERE dorm_id = %s 
-              AND (bill_type = '水費' OR bill_type = '電費')
-              AND bill_end_date BETWEEN %s AND %s
-            ORDER BY bill_type, bill_start_date;
+            WHERE 
+                dorm_id = ANY(%s) 
+                AND (bill_type = '水費' OR bill_type = '電費')
+                AND bill_end_date >= %s
+                AND bill_start_date <= %s
+            ORDER BY dorm_id, bill_type, bill_end_date DESC;
         """
-        records = _execute_query_to_dataframe(conn, query, (dorm_id, start_date, end_date))
-        if records.empty:
-            return []
-        return records.to_dict('records')
+        df = _execute_query_to_dataframe(conn, query, (safe_dorm_ids, start_date, end_date))
+        return df.to_dict('records')
+        
+    except Exception as e:
+        print(f"Error getting utility bills for selection: {e}")
+        return []
     finally:
         if conn: conn.close()
 
@@ -525,3 +535,159 @@ def get_employer_profit_loss_report(employer_names: list, year_month: str):
         return pd.DataFrame()
     finally:
         if conn: conn.close()
+
+def get_excess_utility_report_data(dorm_ids: list, employer_names: list, bill_ids: list, fixed_subsidy: int, include_external_workers: bool):
+    """
+    【新制】產生超額水電費分攤報表 (支援多宿舍、多雇主)。
+    """
+    if not dorm_ids or not employer_names or not bill_ids:
+        return None, None, None, None
+
+    conn = database.get_db_connection()
+    if not conn: return None, None, None, None
+
+    try:
+        # 【修正 3.1】將 ID 列表轉換為安全的 tuple
+        safe_dorm_ids = tuple(int(i) for i in dorm_ids)
+        safe_bill_ids = tuple(int(i) for i in bill_ids)
+        safe_employer_names = tuple(employer_names)
+
+        # 1. 獲取宿舍基本信息
+        dorm_query = 'SELECT original_address FROM "Dormitories" WHERE id = ANY(%s)'
+        dorm_details_df = _execute_query_to_dataframe(conn, dorm_query, (safe_dorm_ids,))
+        dorm_address_list = dorm_details_df['original_address'].tolist()
+        
+        # 2. 獲取所選帳單的總額和日期範圍
+        bills_query = """
+            SELECT id as bill_id, bill_type, bill_start_date, bill_end_date, amount
+            FROM "UtilityBills"
+            WHERE id = ANY(%s) AND (bill_type = '水費' OR bill_type = '電費')
+            ORDER BY bill_type, bill_start_date;
+        """
+        bills_df = _execute_query_to_dataframe(conn, bills_query, (safe_bill_ids,))
+        
+        if bills_df.empty:
+            return dorm_address_list, pd.DataFrame(), pd.DataFrame(), None
+
+        min_bill_start = bills_df['bill_start_date'].min()
+        max_bill_end = bills_df['bill_end_date'].max()
+        
+        # 修正 3.2：動態 SQL 條件
+        external_filter_sql = ""
+        if not include_external_workers:
+            external_filter_sql = " AND (w.special_status IS NULL OR w.special_status NOT ILIKE '%%掛宿外住%%')" 
+            
+        # 3. 獲取在該期間內所有工人的居住天數 (Worker Days)
+        worker_days_query = f"""
+            WITH DateRange AS (
+                SELECT %s::date as start_date, %s::date as end_date
+            )
+            SELECT
+                w.unique_id, w.worker_name, w.employer_name, w.native_name, 
+                w.passport_number, w.nationality, w.gender,
+                r.dorm_id, ah.start_date, ah.end_date,
+                (LEAST(COALESCE(ah.end_date, dr.end_date), dr.end_date) - GREATEST(ah.start_date, dr.start_date) + 1) AS lived_days
+            FROM "AccommodationHistory" ah
+            JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+            JOIN "Rooms" r ON ah.room_id = r.id
+            CROSS JOIN DateRange dr
+            WHERE r.dorm_id = ANY(%s)
+              AND ah.start_date <= dr.end_date
+              AND (ah.end_date IS NULL OR ah.end_date >= dr.start_date)
+              {external_filter_sql} -- 【關鍵】動態篩選
+        """
+        worker_days_df = _execute_query_to_dataframe(conn, worker_days_query, (min_bill_start, max_bill_end, safe_dorm_ids))
+        
+        if worker_days_df.empty:
+            return dorm_address_list, bills_df, pd.DataFrame(), 0.0
+
+        # 4. 核心計算 (省略)
+        total_dorm_days = worker_days_df['lived_days'].sum()
+        total_utility_cost = bills_df['amount'].sum()
+        avg_days_per_month = 30.4375 
+        expected_total_subsidy = total_dorm_days * (fixed_subsidy / avg_days_per_month)
+        total_excess_cost = total_utility_cost - expected_total_subsidy
+
+        charge_per_day = 0.0
+        
+        if total_dorm_days > 0:
+            if total_excess_cost > 0:
+                excess_charge_per_day = total_excess_cost / total_dorm_days
+                charge_per_day = (fixed_subsidy / avg_days_per_month) + excess_charge_per_day
+            else:
+                actual_charge_per_day = total_utility_cost / total_dorm_days
+                charge_per_day = min(fixed_subsidy / avg_days_per_month, actual_charge_per_day)
+
+        # 5. 應用到每位員工
+        worker_days_df['daily_charge'] = charge_per_day
+        worker_days_df['final_bill_amount'] = (worker_days_df['lived_days'] * worker_days_df['daily_charge']).round().astype(int)
+        
+        # 6. 彙總目標雇主的請款金額
+        target_employer_df = worker_days_df[worker_days_df['employer_name'].isin(safe_employer_names)].copy()
+        
+        if target_employer_df.empty:
+            return dorm_address_list, bills_df, pd.DataFrame(), 0.0
+
+        # 7. 整理輸出
+        report_df = target_employer_df[[
+            'employer_name', 'worker_name', 'native_name', 
+            'passport_number', 'nationality', 'gender',
+            'start_date', 'end_date', 'lived_days', 'final_bill_amount'
+        ]].rename(columns={
+            'employer_name': '雇主',
+            'worker_name': '姓名',
+            'native_name': '英文姓名',
+            'passport_number': '護照號碼',
+            'nationality': '國籍',
+            'gender': '性別',
+            'start_date': '入住日期',
+            'end_date': '離住日期',
+            'lived_days': '居住天數',
+            'final_bill_amount': '應收水電費'
+        })
+        
+        total_charge = report_df['應收水電費'].sum()
+        
+        return dorm_address_list, bills_df, report_df, total_charge
+    
+    except Exception as e:
+        print(f"Error in get_excess_utility_report_data: {e}")
+        return None, None, None, None
+    
+    finally:
+        if conn: conn.close()
+
+def get_employers_in_dorms_for_period(dorm_ids: list, start_date, end_date) -> list:
+    """
+    獲取在指定宿舍列表和日期範圍內有住宿紀錄的雇主名稱。
+    """
+    if not dorm_ids or not start_date or not end_date:
+        return []
+    conn = database.get_db_connection()
+    if not conn: return []
+    
+    try:
+        # 【修正 2】將列表轉換為安全的 tuple
+        safe_dorm_ids = tuple(int(i) for i in dorm_ids)
+        
+        query = """
+            SELECT DISTINCT
+                w.employer_name
+            FROM "AccommodationHistory" ah
+            JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+            JOIN "Rooms" r ON ah.room_id = r.id
+            WHERE 
+                r.dorm_id = ANY(%s)
+                AND ah.start_date <= %s
+                AND (ah.end_date IS NULL OR ah.end_date >= %s)
+                AND (w.special_status IS NULL OR w.special_status NOT ILIKE '%%掛宿外住%%')
+            ORDER BY w.employer_name;
+        """
+        df = _execute_query_to_dataframe(conn, query, (safe_dorm_ids, end_date, start_date))
+        return df['employer_name'].tolist()
+        
+    except Exception as e:
+        print(f"Error getting employers in dorms for period: {e}")
+        return []
+    finally:
+        if conn: conn.close() 

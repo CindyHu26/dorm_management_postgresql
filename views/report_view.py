@@ -406,6 +406,212 @@ def render():
                         )
 
     st.markdown("---")
+    # --- 區塊 7: 超額水電費分攤報表 (新制) ---
+    if 'selected_employer_names_ex' not in st.session_state:
+         st.session_state.selected_employer_names_ex = []
+         
+    with st.container(border=True):
+        st.subheader("💧 超額水電費分攤報表 (新制)")
+        st.info("此報表計算：每人先收固定費用，若總帳單超額，則超額部分由所有在住者按居住天數平均分攤，並彙總給指定雇主請款。支援多宿舍、多雇主請款。")
+
+        all_dorms = dormitory_model.get_dorms_for_selection()
+        
+        if not all_dorms:
+            st.warning("缺少宿舍資料，無法產生報表。")
+        else:
+            dorm_options = {d['id']: d['original_address'] for d in all_dorms}
+            all_dorm_ids = list(dorm_options.keys())
+            
+            # --- 步驟 1: 選擇基本條件 ---
+            col_dorm, col_subsidy = st.columns([0.7, 0.3])
+            
+            # 宿舍地址多選
+            selected_dorm_ids_ex = col_dorm.multiselect(
+                "選擇宿舍地址 (可多選)*", 
+                options=all_dorm_ids, 
+                format_func=lambda x: dorm_options.get(x),
+                default=None, 
+                key="ex_dorm_select"
+            )
+            
+            # 固定補助金額輸入
+            fixed_subsidy_amount = col_subsidy.number_input(
+                "每人每月補助金額 (元/月)", 
+                min_value=0, 
+                value=300, 
+                step=10, 
+                help="此金額為收費基準，超額部分將被平均分攤。",
+                key="ex_subsidy_input"
+            )
+
+            # --- 日期範圍選擇器 ---
+            st.markdown("##### 請選擇要搜尋的帳單迄日範圍")
+            range_c1, range_c2 = st.columns(2)
+            today = datetime.now().date()
+            one_year_ago = today - relativedelta(years=1)
+            
+            bill_range_start_ex = range_c1.date_input("起始日期", value=one_year_ago, key="ex_bill_start")
+            bill_range_end_ex = range_c2.date_input("結束日期", value=today, key="ex_bill_end")
+            
+            # 額外新增勾選框
+            include_external_workers = st.checkbox(
+                "✅ 將「掛宿外住」人員納入水電費分攤計算",
+                value=False,
+                help="如果勾選，在分攤超額水電費時，特殊狀況為『掛宿外住』的人員也會被計算在總人天數內。"
+            )
+
+            # 初始化變數
+            available_bills_ex = []
+            relevant_employers = []
+            
+            # --- 修正 1: 動態獲取雇主列表 ---
+            if selected_dorm_ids_ex and bill_range_start_ex and bill_range_end_ex:
+                if bill_range_start_ex <= bill_range_end_ex:
+                    relevant_employers = report_model.get_employers_in_dorms_for_period(
+                        selected_dorm_ids_ex, 
+                        bill_range_start_ex, 
+                        bill_range_end_ex
+                    )
+
+            # --- 步驟 2: 選擇目標雇主 ---
+            if relevant_employers:
+                # 修正 2: 這裡使用 Session State 來儲存 selected_employer_names_ex
+                st.session_state.selected_employer_names_ex = st.multiselect(
+                    f"選擇目標雇主 (共 {len(relevant_employers)} 位)", 
+                    options=relevant_employers, 
+                    default=relevant_employers, # 預設全選
+                    key="ex_employer_select_multi" 
+                )
+            elif selected_dorm_ids_ex:
+                 st.info("在所選宿舍與日期範圍內，沒有找到任何有居住者的雇主資料。")
+            else:
+                 st.info("請先從上方選擇「宿舍地址」與「帳單日期範圍」，以載入相關雇主。")
+
+
+            # --- 步驟 3: 勾選要納入計算的帳單 (只有在有選雇主時才顯示) ---
+            # 從 Session State 獲取最終的雇主勾選結果
+            final_selected_employers = st.session_state.get("ex_employer_select_multi", []) 
+
+            if final_selected_employers and selected_dorm_ids_ex and bill_range_start_ex and bill_range_end_ex:
+                
+                # 獲取可選帳單
+                available_bills_ex = report_model.get_utility_bills_for_selection(selected_dorm_ids_ex, bill_range_start_ex, bill_range_end_ex)
+
+                water_bills_ex = [b for b in available_bills_ex if b['bill_type'] == '水費']
+                elec_bills_ex = [b for b in available_bills_ex if b['bill_type'] == '電費']
+                
+                selected_water_bill_ids_ex = [] # 初始化
+                selected_elec_bill_ids_ex = [] # 初始化
+                
+                if available_bills_ex:
+                    st.markdown("##### 選擇要納入計算的帳單")
+                    bill_c1, bill_c2 = st.columns(2)
+                    
+                    with bill_c1:
+                        if water_bills_ex:
+                            default_water_ids = [b['id'] for b in water_bills_ex]
+                            selected_water_bill_ids_ex = st.multiselect(
+                                "請勾選水費帳單：",
+                                options=default_water_ids,
+                                # 顯示宿舍地址在帳單名稱中
+                                format_func=lambda x: f"{dorm_options.get([b['dorm_id'] for b in available_bills_ex if b['id'] == x][0])} 迄日:{[b['bill_end_date'] for b in water_bills_ex if b['id'] == x][0]}, 金額:{[b['amount'] for b in water_bills_ex if b['id'] == x][0]:,}",
+                                default=default_water_ids,
+                                key="ex_water_bills"
+                            )
+                        else: pass
+
+                    with bill_c2:
+                        if elec_bills_ex:
+                            default_elec_ids = [b['id'] for b in elec_bills_ex]
+                            selected_elec_bill_ids_ex = st.multiselect(
+                                "請勾選電費帳單：",
+                                options=default_elec_ids,
+                                # 顯示宿舍地址在帳單名稱中
+                                format_func=lambda x: f"{dorm_options.get([b['dorm_id'] for b in available_bills_ex if b['id'] == x][0])} 迄日:{[b['bill_end_date'] for b in elec_bills_ex if b['id'] == x][0]}, 金額:{[b['amount'] for b in elec_bills_ex if b['id'] == x][0]:,}",
+                                default=default_elec_ids,
+                                key="ex_elec_bills"
+                            )
+                        else: pass
+                else:
+                    st.warning("在所選條件下沒有找到任何水費或電費帳單。")
+            else:
+                 selected_water_bill_ids_ex = []
+                 selected_elec_bill_ids_ex = []
+
+
+            selected_bill_ids_ex = selected_water_bill_ids_ex + selected_elec_bill_ids_ex
+
+            # --- 步驟 4: 產生報表 ---
+            if st.button("🚀 產生超額水電費分攤報表", type="primary", key="generate_ex_report"):
+                if not selected_dorm_ids_ex:
+                    st.error("請至少選擇一間宿舍！")
+                elif not final_selected_employers:
+                    st.error("請至少選擇一個雇主！")
+                elif not selected_bill_ids_ex:
+                    st.error("請至少勾選一筆水費或電費帳單！")
+                else:
+                    with st.spinner(f"正在為 {len(final_selected_employers)} 個雇主產生報表..."):
+                        # 傳入 ID 列表和雇主名稱列表
+                        dorm_address_list, bills_df, details_df, total_charge = report_model.get_excess_utility_report_data(
+                            selected_dorm_ids_ex, 
+                            final_selected_employers, 
+                            selected_bill_ids_ex,
+                            fixed_subsidy_amount,
+                            include_external_workers # 傳遞勾選狀態
+                        )
+
+                    if dorm_address_list is None or details_df is None:
+                        st.error("產生報表時發生錯誤，請檢查後台日誌。")
+                    elif bills_df.empty:
+                        st.warning("在您勾選的帳單中，找不到資料可供計算。")
+                    elif details_df.empty:
+                        st.warning("在您勾選的帳單期間內，找不到目標雇主的任何在住人員。")
+                    else:
+                        
+                        # 報表標題調整為多地址/多雇主
+                        dorm_title = " / ".join(dorm_address_list) 
+                        employer_title = " / ".join(final_selected_employers)
+                        
+                        # 準備 Excel 數據
+                        summary_header_df = pd.DataFrame({
+                            "宿舍地址": [dorm_title],
+                            "目標雇主": [employer_title],
+                            "總請款金額": [f"NT$ {int(total_charge):,}"],
+                            "計算基準 (元/月)": [fixed_subsidy_amount],
+                            "總人數": [details_df.shape[0]],
+                        })
+
+                        bill_summary_df = bills_df.copy()
+                        bill_summary_df.rename(columns={
+                            'bill_type': '帳單', 'bill_start_date': '起日', 'bill_end_date': '迄日', 'amount': '費用'
+                        }, inplace=True)
+                        bill_summary_df['天數'] = (pd.to_datetime(bill_summary_df['迄日']) - pd.to_datetime(bill_summary_df['起日'])).dt.days + 1
+                        
+                        
+                        final_details_df = details_df[['雇主', '姓名', '英文姓名', '護照號碼', '國籍', '性別', '入住日期', '離住日期', '居住天數', '應收水電費']].copy()
+                        
+                        final_details_df['應收水電費'] = final_details_df['應收水電費'].round().astype(int)
+
+                        excel_file_data = {
+                            "超額水電費報表": [
+                                {"dataframe": summary_header_df, "title": "【超額水電費請款單】"},
+                                {"dataframe": bill_summary_df[['帳單', '起日', '迄日', '天數', '費用']], "title": "帳單摘要"},
+                                {"dataframe": final_details_df, "title": "應收費用明細"}
+                            ]
+                        }
+
+                        excel_file = to_excel(excel_file_data)
+                        
+                        st.success(f"報表已成功產生！總請款金額為 NT$ {int(total_charge):,}")
+                        
+                        file_name_prefix = employer_title.replace(" ", "_").replace("/", "_")
+                        st.download_button(
+                            label="📥 點此下載 Excel 報表",
+                            data=excel_file,
+                            file_name=f"{file_name_prefix}_超額水電費報表_{bill_range_end_ex}.xlsx"
+                        )
+
+    st.markdown("---")
     with st.container(border=True):
         st.subheader("🛏️ 房間床位佔用總覽報表")
         st.info("匯出指定宿舍的床位矩陣報表，可直觀查看哪個床位（或潛在床位）目前住著誰，哪些是空床。")
