@@ -452,12 +452,26 @@ def add_bill_record(details: dict):
             details['amount'] = safe_int(details.get('amount'))
             
             # 檢查重複
-            query = 'SELECT id FROM "UtilityBills" WHERE dorm_id = %s AND bill_type = %s AND bill_start_date = %s AND amount = %s'
-            params = (details['dorm_id'], details['bill_type'], details['bill_start_date'], details['amount'])
-            cursor.execute(query, params)
+            query = """
+                SELECT id FROM "UtilityBills" 
+                WHERE dorm_id = %s 
+                  AND bill_type = %s 
+                  AND bill_start_date = %s 
+                  AND amount = %s
+            """
+            params = [details['dorm_id'], details['bill_type'], details['bill_start_date'], details['amount']]
+            
+            # 如果細節中有包含 meter_id，則加入查詢條件；否則檢查 meter_id 是否為 NULL
+            if details.get('meter_id'):
+                query += " AND meter_id = %s"
+                params.append(details['meter_id'])
+            else:
+                query += " AND meter_id IS NULL"
+                
+            cursor.execute(query, tuple(params))
             if cursor.fetchone():
-                return False, f"新增失敗：已存在完全相同的費用紀錄。", None
-
+                return False, f"新增失敗：此錶號在該日期已存在相同的費用紀錄。", None
+            
             # 確保 keys 包含新欄位 (如果前端沒傳，預設為 None)
             # 這邊不需要特別改 code，只要前端傳進來的 details 字典包含 'peak_usage' 即可
             # 但為了保險，可以在這裡做個處理：

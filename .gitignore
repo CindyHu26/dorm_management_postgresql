@@ -32,6 +32,7 @@ tmp/
 .cache/
 .nyc_output/
 coverage/
+log/
 
 
 # === Python ===

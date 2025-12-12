@@ -655,21 +655,22 @@ def get_excess_utility_report_data(
         total_dorm_days = worker_days_df['lived_days'].sum()
         avg_days_per_month = 30.4375 
         
-        # 應收基本費
+        # 計算總補助額度池 (總人天數 x 每日平均補助)
         expected_total_subsidy = total_dorm_days * (fixed_subsidy / avg_days_per_month)
         
-        # 總超額
+        # 計算總超額金額 (水電單總和 - 總補助額度)
         total_excess_cost = total_utility_cost - expected_total_subsidy
 
+        # 計算每人每日應負擔的「超額」金額
         charge_per_day = 0.0
         
         if total_dorm_days > 0:
             if total_excess_cost > 0:
-                excess_charge_per_day = total_excess_cost / total_dorm_days
-                charge_per_day = (fixed_subsidy / avg_days_per_month) + excess_charge_per_day
+                # 僅平攤「超額」的部分到所有人天中
+                charge_per_day = total_excess_cost / total_dorm_days
             else:
-                actual_charge_per_day = total_utility_cost / total_dorm_days
-                charge_per_day = min(fixed_subsidy / avg_days_per_month, actual_charge_per_day)
+                # 若總帳單未超過補助總額，則員工應付費用為 0
+                charge_per_day = 0.0
 
         # 5. 應用到每位員工
         worker_days_df['daily_charge'] = charge_per_day
