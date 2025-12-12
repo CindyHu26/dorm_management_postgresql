@@ -362,12 +362,19 @@ def render():
                         
                         bill_summary_df['天數'] = (pd.to_datetime(bill_summary_df['迄日']) - pd.to_datetime(bill_summary_df['起日'])).dt.days + 1
                         
-                        final_details_df = details_df[['離住日期', '姓名', '入住日期', '母語姓名']].copy()
-                        
+                        # 1. 取得基礎欄位
+                        final_details_df_base = details_df[['離住日期', '姓名', '入住日期', '母語姓名']].copy()
+
+                        # 2. 初始化列表以收集所有新欄位
+                        new_cols_to_add = []
+                        # 初始化費用欄位清單 (用於最後的總電費計算)
                         water_bill_cols, elec_bill_cols = [], []
                         water_bill_counter = 1
                         elec_bill_counter = 1
-                        
+
+                        # 建立一個臨時 DataFrame，用於儲存所有費用 Series
+                        intermediate_fees_days = []
+
                         for _, bill in bills_df.iterrows():
                             bill_col_name = f"{bill['bill_type']}_{bill['bill_id']}"
                             
@@ -382,8 +389,39 @@ def render():
                                 elec_bill_cols.append(fee_col_name)
                                 elec_bill_counter += 1
                             
-                            final_details_df[days_col_name] = details_df[f"{bill_col_name}_days"]
-                            final_details_df[fee_col_name] = details_df[f"{bill_col_name}_fee"].round(2)
+                            # 3. 命名新的 Series 並將其加入列表
+                            
+                            # 居住天數 (Days column)
+                            days_series = details_df[f"{bill_col_name}_days"].rename(days_col_name)
+                            intermediate_fees_days.append(days_series)
+                            
+                            # 費用金額 (Fee column)
+                            fee_series = details_df[f"{bill_col_name}_fee"].round(2).rename(fee_col_name)
+                            intermediate_fees_days.append(fee_series)
+
+
+                        # 4. 計算總電費 (Series)
+                        if intermediate_fees_days:
+                            # 暫時合併所有中間欄位，以便計算總和
+                            intermediate_df = pd.concat(intermediate_fees_days, axis=1)
+                            
+                            if elec_bill_cols:
+                                # 計算總和，並將其作為一個 Series 加入列表
+                                total_elec_fee_series = intermediate_df[elec_bill_cols].sum(axis=1).round(2).rename('總電費')
+                                intermediate_fees_days.append(total_elec_fee_series)
+                                
+                            # 5. 一次性合併所有欄位
+                            final_details_df = pd.concat([final_details_df_base] + intermediate_fees_days, axis=1)
+
+                        else:
+                            final_details_df = final_details_df_base.copy()
+                            # 如果沒有任何費用，也要初始化總電費欄位 (避免後續代碼錯誤)
+                            if elec_bill_cols:
+                                final_details_df['總電費'] = 0.0
+
+                        # 5. 最後的總電費計算 (保持不變，但作用在新的 final_details_df 上)
+                        if elec_bill_cols:
+                            final_details_df['總電費'] = final_details_df[elec_bill_cols].sum(axis=1).round(2)
                         
                         if elec_bill_cols:
                             final_details_df['總電費'] = final_details_df[elec_bill_cols].sum(axis=1).round(2)
