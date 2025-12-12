@@ -214,3 +214,74 @@ def get_dorm_id_from_meter_id(meter_id: int):
             return result['dorm_id'] if result else None
     finally:
         if conn: conn.close()
+
+def get_all_meters_with_details_as_df(search_term: str = None):
+    """
+    【新增】查詢所有電水錶的詳細資料 (包含宿舍地址)，用於全域搜尋。
+    """
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        query = """
+            SELECT
+                m.id,
+                d.original_address AS "宿舍地址",
+                m.meter_type AS "類型",
+                m.meter_number AS "錶號",
+                m.area_covered AS "對應區域/房號",
+                m.notes AS "備註"
+            FROM "Meters" m
+            JOIN "Dormitories" d ON m.dorm_id = d.id
+            WHERE d.primary_manager = '我司' -- 僅顯示我司管理的
+        """
+        params = []
+        if search_term:
+            query += """
+                AND (
+                    d.original_address ILIKE %s OR 
+                    m.meter_number ILIKE %s OR 
+                    m.meter_type ILIKE %s OR
+                    m.area_covered ILIKE %s
+                )
+            """
+            term = f"%{search_term}%"
+            params.extend([term, term, term, term])
+            
+        query += " ORDER BY d.original_address, m.meter_type, m.meter_number"
+        
+        return _execute_query_to_dataframe(conn, query, tuple(params))
+    finally:
+        if conn: conn.close()
+
+def get_meters_for_dorms_as_df(dorm_ids: list):
+    """
+    【v2.1 新增】查詢「多個」宿舍下的所有電水錶，包含宿舍地址欄位。
+    """
+    if not dorm_ids:
+        return pd.DataFrame()
+        
+    conn = database.get_db_connection()
+    if not conn:
+        return pd.DataFrame()
+    try:
+        # 確保傳入的是 list 且內容為整數
+        safe_ids = list(int(i) for i in dorm_ids)
+        
+        query = """
+            SELECT
+                m.id,
+                d.original_address AS "宿舍地址", -- 新增此欄位以便區分
+                m.meter_type AS "類型",
+                m.meter_number AS "錶號",
+                m.area_covered AS "對應區域/房號",
+                m.notes AS "備註"
+            FROM "Meters" m
+            JOIN "Dormitories" d ON m.dorm_id = d.id
+            WHERE m.dorm_id = ANY(%s)
+            ORDER BY d.original_address, m.meter_type, m.meter_number
+        """
+        # 傳遞參數必須是 tuple，且 ANY 需要 list
+        return _execute_query_to_dataframe(conn, query, (safe_ids,))
+    finally:
+        if conn:
+            conn.close()
