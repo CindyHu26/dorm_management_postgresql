@@ -458,6 +458,12 @@ def add_bill_record(details: dict):
             if cursor.fetchone():
                 return False, f"新增失敗：已存在完全相同的費用紀錄。", None
 
+            # 確保 keys 包含新欄位 (如果前端沒傳，預設為 None)
+            # 這邊不需要特別改 code，只要前端傳進來的 details 字典包含 'peak_usage' 即可
+            # 但為了保險，可以在這裡做個處理：
+            if 'peak_usage' not in details: details['peak_usage'] = None
+            if 'off_peak_usage' not in details: details['off_peak_usage'] = None
+
             columns = ', '.join(f'"{k}"' for k in details.keys())
             placeholders = ', '.join(['%s'] * len(details))
             sql = f'INSERT INTO "UtilityBills" ({columns}) VALUES ({placeholders}) RETURNING id'
@@ -723,17 +729,17 @@ def get_expense_details_by_compliance_id(compliance_id: int):
 
 def get_bills_for_editor(meter_id: int):
     """
-    【v2.7 新增】為 data_editor 查詢指定錶號的所有獨立帳單紀錄。
+    【v2.9 新增】為 data_editor 查詢指定錶號的所有獨立帳單紀錄。
     查詢原始欄位名稱以便編輯。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
-        # 查詢原始欄位名稱
+        # 【修改】加入 peak_usage 和 off_peak_usage
         query = """
             SELECT 
                 id, bill_type, amount,
-                usage_amount,
+                usage_amount, peak_usage, off_peak_usage, -- 新增欄位
                 bill_start_date, bill_end_date,
                 payer, 
                 is_pass_through,
@@ -747,10 +753,9 @@ def get_bills_for_editor(meter_id: int):
     finally:
         if conn: conn.close()
 
-
 def batch_sync_bills(meter_id: int, dorm_id: int, edited_df: pd.DataFrame):
     """
-    【v2.7 新增】【v2.8 日期修復】在單一交易中，批次同步 (新增、更新、刪除) 指定錶號的帳單。
+    【v2.9 新增】在單一交易中，批次同步 (新增、更新、刪除) 指定錶號的帳單。
     """
     conn = database.get_db_connection()
     if not conn: 
@@ -770,7 +775,6 @@ def batch_sync_bills(meter_id: int, dorm_id: int, edited_df: pd.DataFrame):
         new_rows_df = edited_df[edited_df['id'].isnull()]
         updated_rows_df = edited_df[edited_df['id'].isin(original_ids)]
         
-        # 準備 bill_type 選項，用於驗證
         bill_type_options = ["電費", "水費", "天然氣", "網路費", "子母車", "清潔", "瓦斯費"]
 
         with conn.cursor() as cursor:
@@ -788,33 +792,31 @@ def batch_sync_bills(meter_id: int, dorm_id: int, edited_df: pd.DataFrame):
                     raw_start_date = row['bill_start_date']
                     raw_end_date = row['bill_end_date']
 
-                    # 驗證必填欄位
                     if not row['bill_type'] or pd.isna(raw_start_date) or pd.isna(raw_end_date) or pd.isna(row['amount']):
                         raise Exception("新增失敗：『費用類型』、『帳單金額』、『起始日』、『結束日』不可為空。")
                     
-                    # --- 【核心修改 (V4)】 ---
                     start_date_obj = pd.to_datetime(raw_start_date).date()
                     end_date_obj = pd.to_datetime(raw_end_date).date()
                     if start_date_obj > end_date_obj:
                         raise Exception(f"新增失敗 (類型 {row['bill_type']})：『起始日』不可晚於『結束日』。")
-                    # --- 【修改結束】 ---
                     
                     final_bill_type = row['bill_type']
-                    if final_bill_type not in bill_type_options:
-                        pass # 允許自訂
                     
+                    # 【修改】加入 peak_usage 和 off_peak_usage
                     insert_sql = """
                         INSERT INTO "UtilityBills" (
                             dorm_id, meter_id, bill_type, amount, usage_amount, 
+                            peak_usage, off_peak_usage, -- 新增
                             bill_start_date, bill_end_date, payer, 
                             is_pass_through, is_invoiced, notes
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """
                     cursor.execute(insert_sql, (
                         dorm_id, meter_id, final_bill_type,
                         row['amount'], row.get('usage_amount'),
-                        start_date_obj, # 使用轉換後的物件
-                        end_date_obj,   # 使用轉換後的物件
+                        row.get('peak_usage'), row.get('off_peak_usage'), # 傳入新欄位
+                        start_date_obj,
+                        end_date_obj,
                         row.get('payer', '我司'),
                         bool(row.get('is_pass_through')),
                         bool(row.get('is_invoiced')),
@@ -828,30 +830,32 @@ def batch_sync_bills(meter_id: int, dorm_id: int, edited_df: pd.DataFrame):
                     bill_id_to_update = row['id']
                     original_row = original_indexed.loc[bill_id_to_update]
                     
-                    # 比較是否有變更
                     if not row.equals(original_row):
                         raw_start_date_upd = row['bill_start_date']
                         raw_end_date_upd = row['bill_end_date']
                         
                         if not row['bill_type'] or pd.isna(raw_start_date_upd) or pd.isna(raw_end_date_upd) or pd.isna(row['amount']):
-                            raise Exception(f"更新失敗 (ID: {bill_id_to_update})：『費用類型』、『帳單金額』、『起始日』、『結束日』不可為空。")
+                            raise Exception(f"更新失敗 (ID: {bill_id_to_update})：必填欄位不可為空。")
                         
                         start_date_obj_upd = pd.to_datetime(raw_start_date_upd).date()
                         end_date_obj_upd = pd.to_datetime(raw_end_date_upd).date()
                         if start_date_obj_upd > end_date_obj_upd:
                              raise Exception(f"更新失敗 (ID: {bill_id_to_update})：『起始日』不可晚於『結束日』。")
 
+                        # 【修改】更新 SQL
                         update_sql = """
                             UPDATE "UtilityBills" SET 
                                 bill_type = %s, amount = %s, usage_amount = %s,
+                                peak_usage = %s, off_peak_usage = %s, -- 新增
                                 bill_start_date = %s, bill_end_date = %s, payer = %s,
                                 is_pass_through = %s, is_invoiced = %s, notes = %s
                             WHERE id = %s
                         """
                         cursor.execute(update_sql, (
                             row['bill_type'], row['amount'], row.get('usage_amount'),
-                            start_date_obj_upd, # 使用轉換後的物件
-                            end_date_obj_upd,   # 使用轉換後的物件
+                            row.get('peak_usage'), row.get('off_peak_usage'), # 傳入新欄位
+                            start_date_obj_upd,
+                            end_date_obj_upd,
                             row.get('payer', '我司'),
                             bool(row.get('is_pass_through')),
                             bool(row.get('is_invoiced')),
@@ -868,7 +872,6 @@ def batch_sync_bills(meter_id: int, dorm_id: int, edited_df: pd.DataFrame):
     finally:
         if conn: conn.close()
 
-
 def get_bills_for_dorm_editor(dorm_id: int):
     """
     【v2.8 新增】為 data_editor 查詢指定 *宿舍* 的所有獨立帳單紀錄。
@@ -880,6 +883,7 @@ def get_bills_for_dorm_editor(dorm_id: int):
         query = """
             SELECT 
                 id, meter_id, bill_type, amount, usage_amount,
+                peak_usage, off_peak_usage,
                 bill_start_date, bill_end_date, payer, 
                 is_pass_through, is_invoiced, notes
             FROM "UtilityBills"
@@ -949,19 +953,17 @@ def batch_sync_dorm_bills(dorm_id: int, edited_df: pd.DataFrame):
                     insert_sql = """
                         INSERT INTO "UtilityBills" (
                             dorm_id, meter_id, bill_type, amount, usage_amount, 
+                            peak_usage, off_peak_usage, -- 新增
                             bill_start_date, bill_end_date, payer, 
                             is_pass_through, is_invoiced, notes
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """
                     cursor.execute(insert_sql, (
                         dorm_id, row.get('meter_id'), row['bill_type'],
                         row['amount'], row.get('usage_amount'),
-                        start_date_obj, # 使用轉換後的物件
-                        end_date_obj,   # 使用轉換後的物件
-                        row.get('payer', '我司'),
-                        bool(row.get('is_pass_through')),
-                        bool(row.get('is_invoiced')),
-                        row.get('notes')
+                        row.get('peak_usage'), row.get('off_peak_usage'), # 新增參數
+                        start_date_obj, end_date_obj,
+                        row.get('payer', '我司'), bool(row.get('is_pass_through')), bool(row.get('is_invoiced')), row.get('notes')
                     ))
 
             # --- 動作 C：處理更新 ---
@@ -985,6 +987,8 @@ def batch_sync_dorm_bills(dorm_id: int, edited_df: pd.DataFrame):
                         try:
                             amount_val_upd = int(row['amount'])
                             usage_val_upd = float(row['usage_amount']) if pd.notna(row.get('usage_amount')) else None
+                            peak_val = float(row['peak_usage']) if pd.notna(row.get('peak_usage')) else None
+                            off_peak_val = float(row['off_peak_usage']) if pd.notna(row.get('off_peak_usage')) else None
                             meter_id_val_upd = int(row['meter_id']) if pd.notna(row.get('meter_id')) else None
                             
                             # 除錯訊息：如果金額很大，印出來看看
@@ -996,24 +1000,20 @@ def batch_sync_dorm_bills(dorm_id: int, edited_df: pd.DataFrame):
 
                         update_sql = """
                             UPDATE "UtilityBills" SET 
-                                meter_id = %s, bill_type = %s, amount = %s, usage_amount = %s,
+                                meter_id = %s, bill_type = %s, amount = %s, 
+                                usage_amount = %s, peak_usage = %s, off_peak_usage = %s, -- 新增
                                 bill_start_date = %s, bill_end_date = %s, payer = %s,
                                 is_pass_through = %s, is_invoiced = %s, notes = %s
                             WHERE id = %s
                         """
-                        
                         try:
                             cursor.execute(update_sql, (
-                                meter_id_val_upd,
-                                row['bill_type'], amount_val_upd, usage_val_upd,
-                                start_date_obj_upd,
-                                end_date_obj_upd,
-                                row.get('payer', '我司'),
-                                bool(row.get('is_pass_through')),
-                                bool(row.get('is_invoiced')),
-                                row.get('notes'),
-                                bill_id_to_update
-                            ))
+                            meter_id_val_upd, row['bill_type'], amount_val_upd, 
+                            usage_val_upd, peak_val, off_peak_val, # 新增參數
+                            start_date_obj_upd, end_date_obj_upd,
+                            row.get('payer', '我司'), bool(row.get('is_pass_through')), bool(row.get('is_invoiced')), row.get('notes'),
+                            bill_id_to_update
+                        ))
                         except Exception as sql_err:
                             # 捕捉 SQL 執行錯誤並提供詳細資訊
                             raise Exception(f"SQL執行失敗 (ID: {bill_id_to_update}): {sql_err} | 嘗試寫入數值: Amount={amount_val_upd}, MeterID={meter_id_val_upd}")

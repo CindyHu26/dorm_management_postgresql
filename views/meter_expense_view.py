@@ -1,9 +1,12 @@
 # views/meter_expense_view.py
+# (v5.0 - 版面調整：總覽在上、新增在下；度數改為整數)
 
 import streamlit as st
 import pandas as pd
 from datetime import date
 from data_models import finance_model, dormitory_model, meter_model
+import numpy as np
+from dateutil.relativedelta import relativedelta
 
 def render():
     """渲染「錶號費用管理」頁面 (DataEditor 模式)"""
@@ -39,13 +42,12 @@ def render():
     def get_context_details(meter_id):
         dorm_id = meter_model.get_dorm_id_from_meter_id(meter_id)
         if not dorm_id:
-            return None, None
+            return None, None, None
         dorm_details = dormitory_model.get_dorm_details_by_id(dorm_id)
-        # --- 在這裡同時獲取錶號的詳細資料 ---
         meter_details = meter_model.get_single_meter_details(meter_id)
         return dorm_id, dorm_details, meter_details
 
-    dorm_id, dorm_details, meter_details = get_context_details(selected_meter_id) # <--- 取得 meter_details
+    dorm_id, dorm_details, meter_details = get_context_details(selected_meter_id)
     
     if not dorm_id or not dorm_details or not meter_details:
         st.error("發生錯誤：找不到此錶號關聯的宿舍或錶號本身資料。")
@@ -60,7 +62,7 @@ def render():
 
     st.markdown("---")
     
-    # 準備選項
+    # --- 選項準備 ---
     bill_type_options_add = ["電費", "水費", "天然氣", "網路費", "子母車", "清潔", "瓦斯費"]
     payer_options_add = ["我司", "雇主", "工人"]
     default_payer = dorm_details.get('utilities_payer', '我司')
@@ -69,7 +71,7 @@ def render():
     except ValueError:
         default_payer_index = 0
 
-    # --- 根據錶號類型決定預設費用類型 ---
+    # 根據錶號類型決定預設費用類型
     meter_type_to_bill_type_map = {
         "電錶": "電費",
         "水錶": "水費",
@@ -77,125 +79,29 @@ def render():
         "電信": "網路費"
     }
     current_meter_type = meter_details.get("meter_type")
-    default_bill_type = meter_type_to_bill_type_map.get(current_meter_type, bill_type_options_add[0]) # 預設電費
-    
+    default_bill_type = meter_type_to_bill_type_map.get(current_meter_type, bill_type_options_add[0])
     try:
-        default_bill_type_index = bill_type_options_add.index(default_bill_type)
+        default_bill_type_idx = bill_type_options_add.index(default_bill_type)
     except ValueError:
-        default_bill_type_index = 0 # 預設電費
+        default_bill_type_idx = 0
 
-    with st.expander("➕ 快速新增最新一筆帳單 (推薦)"):
-        with st.form("new_bill_form_v3", clear_on_submit=False):
-
-            # 準備一個只有一行的 DataFrame
-            new_bill_template = pd.DataFrame(
-                [
-                    {
-                        "bill_type": bill_type_options_add[default_bill_type_index],
-                        "amount": None,
-                        "usage_amount": None,
-                        "bill_start_date": None,
-                        "bill_end_date": date.today(),
-                        "payer": payer_options_add[default_payer_index],
-                        "is_pass_through": False,
-                        "notes": ""
-                    }
-                ]
-            )
-
-            # 使用 st.data_editor 顯示這一行
-            new_bill_editor_data = st.data_editor(
-                new_bill_template,
-                key=f"new_bill_editor_{selected_meter_id}",
-                hide_index=True,
-                num_rows="fixed", # 固定只有一行
-                column_config={
-                    "bill_type": st.column_config.SelectboxColumn(
-                        "費用類型*", options=bill_type_options_add, required=True
-                    ),
-                    "amount": st.column_config.NumberColumn(
-                        "帳單金額*", min_value=0, step=100, format="%d", required=True
-                    ),
-                    "usage_amount": st.column_config.NumberColumn(
-                        "用量(度/噸)", min_value=0.0, format="%.2f"
-                    ),
-                    "bill_start_date": st.column_config.DateColumn(
-                        "帳單起始日*", format="YYYY-MM-DD", required=True
-                    ),
-                    "bill_end_date": st.column_config.DateColumn(
-                        "帳單結束日*", format="YYYY-MM-DD", required=True
-                    ),
-                    "payer": st.column_config.SelectboxColumn(
-                        "支付方*", options=payer_options_add, required=True
-                    ),
-                    "is_pass_through": st.column_config.CheckboxColumn("代收代付?"),
-                    "notes": st.column_config.TextColumn("備註")
-                }
-            )
-
-            new_submitted = st.form_submit_button("儲存新帳單")
-            if new_submitted:
-                new_row = new_bill_editor_data.iloc[0]
-                
-                raw_start_date = new_row["bill_start_date"]
-                raw_end_date = new_row["bill_end_date"]
-
-                if pd.isna(new_row["bill_type"]) or pd.isna(new_row["amount"]) or pd.isna(raw_start_date) or pd.isna(raw_end_date):
-                    st.error("「費用類型」、「帳單金額」、「起始日」、「結束日」為必填欄位！")
-                else:
-                    try:
-                        start_date_obj = pd.to_datetime(raw_start_date).date()
-                        end_date_obj = pd.to_datetime(raw_end_date).date()
-                        
-                        if start_date_obj > end_date_obj:
-                            st.error("「起始日」不能晚於「結束日」！")
-                        else:
-                            details = {
-                                "dorm_id": dorm_id,
-                                "meter_id": selected_meter_id,
-                                "bill_type": new_row["bill_type"],
-                                "amount": int(new_row["amount"]),
-                                "usage_amount": float(new_row["usage_amount"]) if pd.notna(new_row["usage_amount"]) else None,
-                                "bill_start_date": start_date_obj,
-                                "bill_end_date": end_date_obj,
-                                "payer": new_row["payer"],
-                                "is_pass_through": bool(new_row["is_pass_through"]),
-                                "is_invoiced": False, 
-                                "notes": new_row["notes"]
-                            }
-                            
-                            with st.spinner("正在新增..."):
-                                success, message, _ = finance_model.add_bill_record(details) 
-                            
-                            if success:
-                                st.success(message)
-                                st.cache_data.clear() 
-                                st.rerun()
-                            else:
-                                st.error(message)
-                    except Exception as e:
-                        st.error(f"日期格式錯誤或轉換失敗：{e}")
-
-    st.markdown("---")
-    
-    # --- 3. 帳單總覽 (維持不變) ---
+    # ==========================================
+    # 3. 帳單總覽與批次編輯 (移至上方)
+    # ==========================================
     st.subheader("帳單總覽 (可批次編輯/刪除)")
     st.info(
         """
         - **編輯**：直接在表格中修改資料。
-        - **新增**：點擊表格底部的 `+` 按鈕新增一列。
         - **刪除**：點擊該列最左側的 `▢` 並於右上角選擇 `🗑`。
         """
     ) 
 
     @st.cache_data
     def get_bills_for_editor(meter_id):
+        # 呼叫後端函式
         return finance_model.get_bills_for_editor(meter_id)
 
     bills_df = get_bills_for_editor(selected_meter_id)
-
-    bill_type_options = ["電費", "水費", "天然氣", "網路費", "子母車", "清潔", "瓦斯費"]
-    payer_options = ["我司", "雇主", "工人"]
 
     with st.form("bill_editor_form"):
         edited_df = st.data_editor(
@@ -205,59 +111,30 @@ def render():
             hide_index=True,
             num_rows="dynamic", 
             column_config={
-                "id": st.column_config.NumberColumn(
-                    "ID", 
-                    disabled=True
-                ),
-                "bill_type": st.column_config.SelectboxColumn(
-                    "費用類型",
-                    options=bill_type_options,
-                    required=True,
-                    help="若為 '其他'，請直接輸入文字"
-                ),
-                "amount": st.column_config.NumberColumn(
-                    "帳單金額",
-                    min_value=0,
-                    step=100,
-                    format="%d",
-                    required=True
-                ),
-                "usage_amount": st.column_config.NumberColumn(
-                    "用量(度/噸)",
-                    min_value=0.0,
-                    format="%.2f"
-                ),
-                "bill_start_date": st.column_config.DateColumn(
-                    "帳單起始日",
-                    format="YYYY-MM-DD",
-                    required=True
-                ),
-                "bill_end_date": st.column_config.DateColumn(
-                    "帳單結束日",
-                    format="YYYY-MM-DD",
-                    required=True
-                ),
-                "payer": st.column_config.SelectboxColumn(
-                    "支付方",
-                    options=payer_options,
-                    default="我司",
-                    required=True
-                ),
-                "is_pass_through": st.column_config.CheckboxColumn(
-                    "代收代付?",
-                    default=False
-                ),
-                "is_invoiced": st.column_config.CheckboxColumn(
-                    "已請款?",
-                    default=False
-                ),
-                "notes": st.column_config.TextColumn(
-                    "備註"
-                )
-            }
+                "id": st.column_config.NumberColumn("ID", disabled=True),
+                "bill_type": st.column_config.SelectboxColumn("費用類型", options=bill_type_options_add, required=True),
+                "amount": st.column_config.NumberColumn("帳單金額", min_value=0, step=100, format="%d", required=True),
+                
+                "peak_usage": st.column_config.NumberColumn("尖峰", min_value=0.0, format="%.2f"),
+                "off_peak_usage": st.column_config.NumberColumn("離峰", min_value=0.0, format="%.2f"),
+                "usage_amount": st.column_config.NumberColumn("總用量", min_value=0.0, format="%.2f"),
+                
+                "bill_start_date": st.column_config.DateColumn("帳單起始日", format="YYYY-MM-DD", required=True),
+                "bill_end_date": st.column_config.DateColumn("帳單結束日", format="YYYY-MM-DD", required=True),
+                "payer": st.column_config.SelectboxColumn("支付方", options=payer_options_add, default="我司", required=True),
+                "is_pass_through": st.column_config.CheckboxColumn("代收代付?", default=False),
+                "is_invoiced": st.column_config.CheckboxColumn("已請款?", default=False),
+                "notes": st.column_config.TextColumn("備註")
+            },
+            column_order=[
+                "id", "bill_type", "amount", 
+                "peak_usage", "off_peak_usage", "usage_amount", 
+                "bill_start_date", "bill_end_date", 
+                "payer", "is_pass_through", "is_invoiced", "notes"
+            ]
         )
         
-        submitted = st.form_submit_button("🚀 儲存下方表格的所有變更") 
+        submitted = st.form_submit_button("🚀 儲存表格變更") 
         if submitted:
             with st.spinner("正在同步帳單資料..."):
                 success, message = finance_model.batch_sync_bills(
@@ -269,6 +146,105 @@ def render():
             if success:
                 st.success(message)
                 st.cache_data.clear() 
+                st.rerun()
+            else:
+                st.error(message)
+
+    st.markdown("---")
+
+    # ==========================================
+    # 4. 快速新增區塊 (移至下方，並改為整數)
+    # ==========================================
+    st.subheader("➕ 快速新增最新一筆帳單")
+
+    # --- Callback: 自動計算結束日 ---
+    def update_end_date_meter():
+        start_date = st.session_state.get('add_meter_start_v4')
+        bill_type = st.session_state.get('add_meter_type_v4')
+        if start_date and bill_type in ["電費", "水費"]:
+            try:
+                st.session_state.add_meter_end_v4 = start_date + relativedelta(months=2)
+            except Exception:
+                st.session_state.add_meter_end_v4 = date.today()
+
+    # --- Callback: 自動加總度數 (整數版) ---
+    def auto_sum_usage_meter():
+        # 使用 get 並給定預設值 0 (整數)
+        p = st.session_state.get('add_meter_peak_v4') or 0
+        op = st.session_state.get('add_meter_off_v4') or 0
+        if p > 0 or op > 0:
+            st.session_state.add_meter_usage_v4 = int(p + op)
+
+    # --- Session State 初始化 (使用整數 0) ---
+    if 'add_meter_type_v4' not in st.session_state: st.session_state.add_meter_type_v4 = bill_type_options_add[default_bill_type_idx]
+    if 'add_meter_start_v4' not in st.session_state: st.session_state.add_meter_start_v4 = None
+    if 'add_meter_end_v4' not in st.session_state: st.session_state.add_meter_end_v4 = date.today()
+    
+    # 數值初始化為 int
+    if 'add_meter_peak_v4' not in st.session_state: st.session_state.add_meter_peak_v4 = 0
+    if 'add_meter_off_v4' not in st.session_state: st.session_state.add_meter_off_v4 = 0
+    if 'add_meter_usage_v4' not in st.session_state: st.session_state.add_meter_usage_v4 = 0
+
+    # --- 介面佈局 ---
+    c1, c2, c3 = st.columns(3)
+    new_bill_type = c1.selectbox("費用類型*", options=bill_type_options_add, key="add_meter_type_v4", on_change=update_end_date_meter)
+    new_amount = c2.number_input("帳單金額*", min_value=0, step=100, value=None, placeholder="請輸入...", key="add_meter_amount_v4")
+    c3.info(f"鎖定錶號：{meter_options[selected_meter_id]}")
+
+    c4, c5 = st.columns(2)
+    new_start_date = c4.date_input("帳單起始日*", value=st.session_state.add_meter_start_v4, key="add_meter_start_v4", on_change=update_end_date_meter)
+    new_end_date = c5.date_input("帳單結束日*", key="add_meter_end_v4")
+    
+    # 用量區塊 (改為整數輸入 min_value=0, step=1)
+    st.markdown("##### 用量資訊 (整數)")
+    u1, u2, u3 = st.columns(3)
+    new_peak = u1.number_input("尖峰度數", min_value=0, step=1, key="add_meter_peak_v4", on_change=auto_sum_usage_meter)
+    new_off_peak = u2.number_input("離峰度數", min_value=0, step=1, key="add_meter_off_v4", on_change=auto_sum_usage_meter)
+    new_usage = u3.number_input("總用量 (度/噸)*", min_value=0, step=1, key="add_meter_usage_v4", help="若填寫尖峰/離峰，此欄位會自動加總。")
+
+    # 其他區塊
+    st.markdown("##### 其他資訊")
+    o1, o2, o3 = st.columns(3)
+    new_payer = o1.selectbox("支付方*", options=payer_options_add, index=default_payer_index, key="add_meter_payer_v4")
+    new_pass = o2.checkbox("代收代付?", value=False, key="add_meter_pass_v4")
+    new_notes = st.text_area("備註", key="add_meter_notes_v4")
+
+    if st.button("儲存新帳單", type="primary"):
+        # 驗證
+        if not new_bill_type or new_amount is None or not new_start_date or not new_end_date:
+            st.error("「費用類型」、「帳單金額」、「起始日」、「結束日」為必填欄位！")
+        elif new_start_date > new_end_date:
+            st.error("「起始日」不能晚於「結束日」！")
+        else:
+            details = {
+                "dorm_id": dorm_id,
+                "meter_id": selected_meter_id,
+                "bill_type": new_bill_type,
+                "amount": int(new_amount),
+                "usage_amount": new_usage if new_usage > 0 else None,
+                "peak_usage": new_peak if new_peak > 0 else None,
+                "off_peak_usage": new_off_peak if new_off_peak > 0 else None,
+                "bill_start_date": new_start_date,
+                "bill_end_date": new_end_date,
+                "payer": new_payer,
+                "is_pass_through": new_pass,
+                "is_invoiced": False,
+                "notes": new_notes
+            }
+            with st.spinner("正在新增..."):
+                success, message, _ = finance_model.add_bill_record(details)
+            
+            if success:
+                st.success(message)
+                st.cache_data.clear()
+                # 清除 session
+                keys_to_clear = [
+                    'add_meter_type_v4', 'add_meter_amount_v4', 'add_meter_start_v4', 'add_meter_end_v4',
+                    'add_meter_peak_v4', 'add_meter_off_v4', 'add_meter_usage_v4', 
+                    'add_meter_payer_v4', 'add_meter_pass_v4', 'add_meter_notes_v4'
+                ]
+                for k in keys_to_clear:
+                    if k in st.session_state: del st.session_state[k]
                 st.rerun()
             else:
                 st.error(message)

@@ -1,6 +1,5 @@
 # 檔案: views/expense_view.py
-# (v2.0 - DataEditor 模式)
-# (v3.0 - 快速新增表單改為 V6 - 移除 Expander 和 Form，實現動態連動)
+# (v4.0 - 新增尖峰/離峰度數支援)
 
 import streamlit as st
 import pandas as pd
@@ -33,8 +32,10 @@ def render():
 
     st.markdown("---")
 
-    # --- 1. 準備選項與回呼函式 ---
-    st.subheader("➕ 快速新增最新一筆帳單") # <-- 移除 Expander
+    # ==========================================
+    # 1. 快速新增區塊 (含自動加總邏輯)
+    # ==========================================
+    st.subheader("➕ 快速新增最新一筆帳單") 
 
     bill_type_options_add = ["電費", "水費", "天然氣", "網路費", "子母車", "清潔", "瓦斯費"]
     payer_options_add = ["我司", "雇主", "工人"]
@@ -56,43 +57,49 @@ def render():
     except ValueError:
         default_payer_index_add = 0
 
-    # --- 2. 定義日期自動計算的回呼 (Callback) ---
+    # --- 定義回呼函式 (Callbacks) ---
+
     def update_end_date():
-        """
-        當「費用類型」或「起始日」改變時觸發此函式。
-        自動計算結束日期。
-        """
+        """當「費用類型」或「起始日」改變時，自動計算預設結束日期"""
         start_date = st.session_state.get('add_start_date_v6')
         bill_type = st.session_state.get('add_bill_type_v6')
         
         if start_date and bill_type in ["電費", "水費"]:
             try:
-                # 計算：起始日 + 2個月
+                # 預設 +2 個月
                 st.session_state.add_end_date_v6 = start_date + relativedelta(months=2)
             except Exception as e:
                 print(f"Error calculating end date: {e}")
                 st.session_state.add_end_date_v6 = date.today()
-        # (如果不是電費或水費，我們不主動修改結束日期，讓使用者自行填寫)
 
-    # --- 3. 初始化 Session State (如果不存在) ---
-    # (使用 v6 結尾以避免與舊 session 衝突)
-    if 'add_bill_type_v6' not in st.session_state:
-        st.session_state.add_bill_type_v6 = bill_type_options_add[0]
-    if 'add_start_date_v6' not in st.session_state:
-        st.session_state.add_start_date_v6 = None
-    if 'add_end_date_v6' not in st.session_state:
-        st.session_state.add_end_date_v6 = date.today()
+    def auto_sum_usage():
+        """當尖峰或離峰度數改變時，自動更新總用量"""
+        p = st.session_state.get('add_peak_v6') or 0.0
+        op = st.session_state.get('add_off_peak_v6') or 0.0
+        # 只有當兩者至少有一個有值時才更新，避免覆蓋使用者手動輸入的總量
+        if p > 0 or op > 0:
+            st.session_state.add_usage_v6 = float(p + op)
 
-
-    # --- 4. 直接渲染元件 (不使用 st.form) ---
+    # --- 初始化 Session State (如果不存在) ---
+    if 'add_bill_type_v6' not in st.session_state: st.session_state.add_bill_type_v6 = bill_type_options_add[0]
+    if 'add_start_date_v6' not in st.session_state: st.session_state.add_start_date_v6 = None
+    if 'add_end_date_v6' not in st.session_state: st.session_state.add_end_date_v6 = date.today()
     
+    # 新增尖峰/離峰的 state
+    if 'add_peak_v6' not in st.session_state: st.session_state.add_peak_v6 = 0.0
+    if 'add_off_peak_v6' not in st.session_state: st.session_state.add_off_peak_v6 = 0.0
+    if 'add_usage_v6' not in st.session_state: st.session_state.add_usage_v6 = 0.0
+
+
+    # --- 渲染元件 ---
+    
+    # 第一排：基本資訊
     c1, c2, c3 = st.columns(3)
     
-    # 費用類型 (會觸發回呼)
     new_bill_type = c1.selectbox(
         "費用類型*", 
         options=bill_type_options_add, 
-        key="add_bill_type_v6", # 使用新 key
+        key="add_bill_type_v6", 
         on_change=update_end_date 
     )
     
@@ -121,26 +128,40 @@ def render():
         key="add_meter_id_v6"
     )
 
+    # 第二排：日期
     c4, c5 = st.columns(2)
-    
-    # 起始日 (會觸發回呼)
     new_start_date = c4.date_input(
         "帳單起始日*", 
         value=st.session_state.add_start_date_v6, 
         key="add_start_date_v6",
         on_change=update_end_date
     )
+    new_end_date = c5.date_input("帳單結束日*", key="add_end_date_v6")
     
-    # 結束日 (會被回呼更新)
-    new_end_date = c5.date_input(
-        "帳單結束日*", 
-        key="add_end_date_v6" 
+    # 第三排：用量資訊 (新增尖峰/離峰)
+    st.markdown("##### 用量資訊")
+    u1, u2, u3 = st.columns(3)
+    
+    new_peak = u1.number_input(
+        "尖峰度數", min_value=0.0, step=0.1, 
+        key="add_peak_v6", on_change=auto_sum_usage
+    )
+    new_off_peak = u2.number_input(
+        "離峰度數", min_value=0.0, step=0.1, 
+        key="add_off_peak_v6", on_change=auto_sum_usage
     )
     
+    new_usage = u3.number_input(
+        "總用量 (度/噸)*", min_value=0.0, step=0.1, 
+        key="add_usage_v6", help="若填寫尖峰/離峰，此欄位會自動加總，也可手動修改。"
+    )
+
+    # 第四排：其他資訊
+    st.markdown("##### 其他資訊")
     c6, c7, c8 = st.columns(3)
-    new_usage = c6.number_input("用量(度/噸)", min_value=0.0, step=0.01, value=None, placeholder="選填...", key="add_usage_v6")
-    new_payer = c7.selectbox("支付方*", options=payer_options_add, index=default_payer_index_add, key="add_payer_v6")
-    new_pass_through = c8.checkbox("代收代付?", value=False, help="此帳單是否僅為代收，不計入損益", key="add_pass_through_v6")
+    new_payer = c6.selectbox("支付方*", options=payer_options_add, index=default_payer_index_add, key="add_payer_v6")
+    new_pass_through = c7.checkbox("代收代付?", value=False, help="此帳單是否僅為代收，不計入損益", key="add_pass_through_v6")
+    # c8 留空或放其他
     
     new_notes = st.text_area("備註 (選填)", key="add_notes_v6")
 
@@ -151,7 +172,11 @@ def render():
         bill_type_val = st.session_state.add_bill_type_v6
         amount_val = st.session_state.add_amount_v6
         meter_id_val = st.session_state.add_meter_id_v6
+        
         usage_val = st.session_state.add_usage_v6
+        peak_val = st.session_state.add_peak_v6
+        off_peak_val = st.session_state.add_off_peak_v6
+        
         start_date_val = st.session_state.add_start_date_v6
         end_date_val = st.session_state.add_end_date_v6
         payer_val = st.session_state.add_payer_v6
@@ -169,11 +194,15 @@ def render():
                 "meter_id": meter_id_val, 
                 "bill_type": bill_type_val,
                 "amount": amount_val,
-                "usage_amount": usage_val,
+                "usage_amount": usage_val if usage_val > 0 else None,
+                # 新增尖峰離峰
+                "peak_usage": peak_val if peak_val > 0 else None,
+                "off_peak_usage": off_peak_val if off_peak_val > 0 else None,
+                
                 "bill_start_date": start_date_val,
                 "bill_end_date": end_date_val,
                 "payer": payer_val,
-                "is_pass_through": bool(pass_through_val), # 修復 numpy.bool 錯誤
+                "is_pass_through": bool(pass_through_val),
                 "is_invoiced": False, 
                 "notes": notes_val
             }
@@ -186,7 +215,8 @@ def render():
                 st.cache_data.clear() 
                 # 清除 session state
                 keys_to_delete = [
-                    'add_bill_type_v6', 'add_amount_v6', 'add_meter_id_v6', 'add_usage_v6',
+                    'add_bill_type_v6', 'add_amount_v6', 'add_meter_id_v6', 
+                    'add_usage_v6', 'add_peak_v6', 'add_off_peak_v6', # 清除新欄位
                     'add_start_date_v6', 'add_end_date_v6', 'add_payer_v6', 
                     'add_pass_through_v6', 'add_notes_v6'
                 ]
@@ -197,6 +227,9 @@ def render():
             else:
                 st.error(message)
 
+    # ==========================================
+    # 2. 帳單總覽與批次編輯區塊
+    # ==========================================
     st.subheader(f"帳單總覽: {dorm_options.get(selected_dorm_id)}")
     st.info(
         """
@@ -212,6 +245,7 @@ def render():
     # 載入 data_editor 所需的資料
     @st.cache_data
     def get_bills_data_for_editor(dorm_id):
+        # 注意：後端 finance_model.get_bills_for_dorm_editor 需已更新 SQL 查詢
         return finance_model.get_bills_for_dorm_editor(dorm_id)
 
     bills_df = get_bills_data_for_editor(selected_dorm_id)
@@ -264,8 +298,14 @@ def render():
                     "帳單金額",
                     min_value=0, step=100, format="%d", required=True
                 ),
+                "peak_usage": st.column_config.NumberColumn(
+                    "尖峰度數", min_value=0.0, format="%.2f"
+                ),
+                "off_peak_usage": st.column_config.NumberColumn(
+                    "離峰度數", min_value=0.0, format="%.2f"
+                ),
                 "usage_amount": st.column_config.NumberColumn(
-                    "用量(度/噸)", min_value=0.0, format="%.2f", help="選填"
+                    "總用量(度/噸)", min_value=0.0, format="%.2f", help="若有輸入尖峰/離峰，此為加總值"
                 ),
                 "bill_start_date": st.column_config.DateColumn(
                     "帳單起始日", format="YYYY-MM-DD", required=True
@@ -286,7 +326,14 @@ def render():
                     "已請款?", default=False
                 ),
                 "notes": st.column_config.TextColumn("備註")
-            }
+            },
+            # 調整欄位順序，將尖峰/離峰放在總用量旁邊
+            column_order=[
+                "id", "meter_id", "bill_type", "amount", 
+                "peak_usage", "off_peak_usage", "usage_amount", 
+                "bill_start_date", "bill_end_date", "payer", 
+                "is_pass_through", "is_invoiced", "notes"
+            ]
         )
         
         submitted = st.form_submit_button("🚀 儲存下方表格的所有變更")
