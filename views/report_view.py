@@ -541,6 +541,21 @@ def render():
 
             selected_bill_ids_ex = selected_water_bill_ids_ex + selected_elec_bill_ids_ex
 
+            st.markdown("---")
+            # 【新增】計算模式選擇
+            calc_mode_option = st.radio(
+                "選擇計算模式：",
+                options=["依帳單計費 (以帳單起迄為準，完整分攤)", "依日期區間計費 (以搜尋區間為準，嚴格切斷)"],
+                index=0,
+                help="""
+                - **依帳單計費**：無論您搜尋的日期為何，系統會將您勾選的帳單金額「全額」納入計算，並向該帳單期間內的所有住戶收費。
+                - **依日期區間計費**：系統只計算您上方設定的「起始日期」到「結束日期」這段期間的費用與人頭。若帳單跨出此範圍，金額會按天數比例縮減。
+                """
+            )
+            
+            # 將選項轉換為後端參數代碼
+            calc_mode_code = 'bill' if "依帳單" in calc_mode_option else 'date_range'
+
             # --- 步驟 4: 產生報表 ---
             if st.button("🚀 產生超額水電費分攤報表", type="primary", key="generate_ex_report"):
                 if not selected_dorm_ids_ex:
@@ -551,13 +566,16 @@ def render():
                     st.error("請至少勾選一筆水費或電費帳單！")
                 else:
                     with st.spinner(f"正在為 {len(final_selected_employers)} 個雇主產生報表..."):
-                        # 傳入 ID 列表和雇主名稱列表
-                        dorm_address_list, bills_df, details_df, total_charge = report_model.get_excess_utility_report_data(
+                        # 呼叫後端 (傳入 calc_mode_code)
+                        dorm_address_list, bills_df, details_df, total_charge, total_excess = report_model.get_excess_utility_report_data(
                             selected_dorm_ids_ex, 
                             final_selected_employers, 
                             selected_bill_ids_ex,
                             fixed_subsidy_amount,
-                            include_external_workers # 傳遞勾選狀態
+                            include_external_workers,
+                            calculation_mode=calc_mode_code, # 傳入模式
+                            report_start_date=bill_range_start_ex,
+                            report_end_date=bill_range_end_ex
                         )
 
                     if dorm_address_list is None or details_df is None:
@@ -567,49 +585,60 @@ def render():
                     elif details_df.empty:
                         st.warning("在您勾選的帳單期間內，找不到目標雇主的任何在住人員。")
                     else:
-                        
-                        # 報表標題調整為多地址/多雇主
-                        dorm_title = " / ".join(dorm_address_list) 
-                        employer_title = " / ".join(final_selected_employers)
-                        
-                        # 準備 Excel 數據
-                        summary_header_df = pd.DataFrame({
-                            "宿舍地址": [dorm_title],
-                            "目標雇主": [employer_title],
-                            "總水電費": [f"NT$ {int(total_charge):,}"],
-                            "計算基準 (元/月)": [fixed_subsidy_amount],
-                            "總人數": [details_df.shape[0]],
-                        })
+                        # --- 【新增】判斷是否超額 ---
+                        if total_excess <= 0:
+                            # 情況 A：沒超過，顯示提示，不產出報表
+                            st.info(f"ℹ️ **計算結果：未達超額標準**")
+                            st.markdown(f"""
+                            * 帳單總金額：**NT$ {int(bills_df['amount'].sum()):,}**
+                            * 預期基本收費總額：**NT$ {int(bills_df['amount'].sum() - total_excess):,}** (依人頭/天數計算)
+                            * **結論**：總費用在基本額度內，無須額外分攤超額費用，**不需印製報表**。
+                            """)
+                        else:
+                            # 情況 B：超過了，才執行原本的 Excel 產生與下載邏輯
+                            
+                            # 報表標題調整為多地址/多雇主
+                            dorm_title = " / ".join(dorm_address_list) 
+                            employer_title = " / ".join(final_selected_employers)
+                            
+                            # 準備 Excel 數據
+                            summary_header_df = pd.DataFrame({
+                                "宿舍地址": [dorm_title],
+                                "目標雇主": [employer_title],
+                                "總水電費": [f"NT$ {int(total_charge):,}"],
+                                "計算基準 (元/月)": [fixed_subsidy_amount],
+                                "總人數": [details_df.shape[0]],
+                            })
 
-                        bill_summary_df = bills_df.copy()
-                        bill_summary_df.rename(columns={
-                            'bill_type': '帳單', 'bill_start_date': '起日', 'bill_end_date': '迄日', 'amount': '費用'
-                        }, inplace=True)
-                        bill_summary_df['天數'] = (pd.to_datetime(bill_summary_df['迄日']) - pd.to_datetime(bill_summary_df['起日'])).dt.days + 1
-                        
-                        
-                        final_details_df = details_df[['雇主', '姓名', '英文姓名', '護照號碼', '國籍', '性別', '入住日期', '離住日期', '居住天數', '應收水電費']].copy()
-                        
-                        final_details_df['應收水電費'] = final_details_df['應收水電費'].round().astype(int)
+                            bill_summary_df = bills_df.copy()
+                            bill_summary_df.rename(columns={
+                                'bill_type': '帳單', 'bill_start_date': '起日', 'bill_end_date': '迄日', 'amount': '費用'
+                            }, inplace=True)
+                            bill_summary_df['天數'] = (pd.to_datetime(bill_summary_df['迄日']) - pd.to_datetime(bill_summary_df['起日'])).dt.days + 1
+                            
+                            
+                            final_details_df = details_df[['雇主', '姓名', '英文姓名', '護照號碼', '國籍', '性別', '入住日期', '離住日期', '居住天數', '應收水電費']].copy()
+                            
+                            final_details_df['應收水電費'] = final_details_df['應收水電費'].round().astype(int)
 
-                        excel_file_data = {
-                            "超額水電費報表": [
-                                {"dataframe": summary_header_df, "title": "【超額水電費請款單】"},
-                                {"dataframe": bill_summary_df[['帳單', '起日', '迄日', '天數', '費用']], "title": "帳單摘要"},
-                                {"dataframe": final_details_df, "title": "應收費用明細"}
-                            ]
-                        }
+                            excel_file_data = {
+                                "超額水電費報表": [
+                                    {"dataframe": summary_header_df, "title": "【超額水電費請款單】"},
+                                    {"dataframe": bill_summary_df[['帳單', '起日', '迄日', '天數', '費用']], "title": "帳單摘要"},
+                                    {"dataframe": final_details_df, "title": "應收費用明細"}
+                                ]
+                            }
 
-                        excel_file = to_excel(excel_file_data)
-                        
-                        st.success(f"報表已成功產生！總水電費為 NT$ {int(total_charge):,}")
-                        
-                        file_name_prefix = employer_title.replace(" ", "_").replace("/", "_")
-                        st.download_button(
-                            label="📥 點此下載 Excel 報表",
-                            data=excel_file,
-                            file_name=f"{file_name_prefix}_超額水電費報表_{bill_range_end_ex}.xlsx"
-                        )
+                            excel_file = to_excel(excel_file_data)
+                            
+                            st.success(f"報表已成功產生！總水電費為 NT$ {int(total_charge):,}")
+                            
+                            file_name_prefix = employer_title.replace(" ", "_").replace("/", "_")
+                            st.download_button(
+                                label="📥 點此下載 Excel 報表",
+                                data=excel_file,
+                                file_name=f"{file_name_prefix}_超額水電費報表_{bill_range_end_ex}.xlsx"
+                            )
 
     st.markdown("---")
     with st.container(border=True):

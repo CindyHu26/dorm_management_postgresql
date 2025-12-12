@@ -544,33 +544,37 @@ def get_employer_profit_loss_report(employer_names: list, year_month: str):
     finally:
         if conn: conn.close()
 
-def get_excess_utility_report_data(dorm_ids: list, employer_names: list, bill_ids: list, fixed_subsidy: int, include_external_workers: bool):
+def get_excess_utility_report_data(
+    dorm_ids: list, 
+    employer_names: list, 
+    bill_ids: list, 
+    fixed_subsidy: int, 
+    include_external_workers: bool,
+    calculation_mode: str = 'bill', # 新增參數: 'bill' (依帳單) 或 'date_range' (依區間)
+    report_start_date=None, 
+    report_end_date=None
+):
     """
-    【新制】產生超額水電費分攤報表 (支援多宿舍、多雇主)。
+    產生超額水電費分攤報表，支援兩種計算模式。
     """
     if not dorm_ids or not employer_names or not bill_ids:
-        return None, None, None, None
+        return None, None, None, None, None
 
     conn = database.get_db_connection()
-    if not conn: return None, None, None, None
+    if not conn: return None, None, None, None, None
 
     try:
-        # 【修正】型別檢查與轉換
-        if isinstance(dorm_ids, int): dorm_ids = [dorm_ids]
-        safe_dorm_ids = list(int(i) for i in dorm_ids)
-        
-        if isinstance(bill_ids, int): bill_ids = [bill_ids]
-        safe_bill_ids = list(int(i) for i in bill_ids)
-        
-        if isinstance(employer_names, str): employer_names = [employer_names]
-        safe_employer_names = list(employer_names)
+        # 型別轉換 (確保是 list)
+        safe_dorm_ids = list(int(i) for i in (dorm_ids if isinstance(dorm_ids, list) else [dorm_ids]))
+        safe_bill_ids = list(int(i) for i in (bill_ids if isinstance(bill_ids, list) else [bill_ids]))
+        safe_employer_names = list(employer_names if isinstance(employer_names, list) else [employer_names])
 
         # 1. 獲取宿舍基本信息
         dorm_query = 'SELECT original_address FROM "Dormitories" WHERE id = ANY(%s)'
         dorm_details_df = _execute_query_to_dataframe(conn, dorm_query, (safe_dorm_ids,))
         dorm_address_list = dorm_details_df['original_address'].tolist()
         
-        # 2. 獲取所選帳單的總額和日期範圍
+        # 2. 獲取帳單
         bills_query = """
             SELECT id as bill_id, bill_type, bill_start_date, bill_end_date, amount
             FROM "UtilityBills"
@@ -580,17 +584,49 @@ def get_excess_utility_report_data(dorm_ids: list, employer_names: list, bill_id
         bills_df = _execute_query_to_dataframe(conn, bills_query, (safe_bill_ids,))
         
         if bills_df.empty:
-            return dorm_address_list, pd.DataFrame(), pd.DataFrame(), None
+            return dorm_address_list, pd.DataFrame(), pd.DataFrame(), None, None
 
-        min_bill_start = bills_df['bill_start_date'].min()
-        max_bill_end = bills_df['bill_end_date'].max()
+        # --- 【核心邏輯切換】 ---
         
-        # 修正 3.2：動態 SQL 條件
+        calc_start = None
+        calc_end = None
+        total_utility_cost = 0
+        
+        if calculation_mode == 'date_range':
+            # === 模式 A：依日期區間計費 (嚴格切斷) ===
+            # 強制使用使用者指定的區間
+            calc_start = report_start_date if report_start_date else bills_df['bill_start_date'].min()
+            calc_end = report_end_date if report_end_date else bills_df['bill_end_date'].max()
+            
+            # 計算分攤後的帳單金額 (Proration)
+            for _, bill in bills_df.iterrows():
+                b_start = pd.to_datetime(bill['bill_start_date']).date()
+                b_end = pd.to_datetime(bill['bill_end_date']).date()
+                b_amount = bill['amount']
+                
+                total_bill_days = (b_end - b_start).days + 1
+                overlap_start = max(b_start, calc_start)
+                overlap_end = min(b_end, calc_end)
+                
+                if overlap_start <= overlap_end:
+                    overlap_days = (overlap_end - overlap_start).days + 1
+                    ratio = overlap_days / total_bill_days if total_bill_days > 0 else 0
+                    total_utility_cost += b_amount * ratio
+        else:
+            # === 模式 B：依帳單計費 (完整金額) ===
+            # 計算區間自動擴展至包含所有帳單
+            calc_start = bills_df['bill_start_date'].min()
+            calc_end = bills_df['bill_end_date'].max()
+            
+            # 直接加總帳單全額
+            total_utility_cost = bills_df['amount'].sum()
+
+        # 3. 獲取「計算區間內」的工人居住天數
+        # 使用上面決定好的 calc_start 和 calc_end
         external_filter_sql = ""
         if not include_external_workers:
             external_filter_sql = " AND (w.special_status IS NULL OR w.special_status NOT ILIKE '%%掛宿外住%%')" 
             
-        # 3. 獲取在該期間內所有工人的居住天數 (Worker Days)
         worker_days_query = f"""
             WITH DateRange AS (
                 SELECT %s::date as start_date, %s::date as end_date
@@ -599,6 +635,7 @@ def get_excess_utility_report_data(dorm_ids: list, employer_names: list, bill_id
                 w.unique_id, w.worker_name, w.employer_name, w.native_name, 
                 w.passport_number, w.nationality, w.gender,
                 r.dorm_id, ah.start_date, ah.end_date,
+                -- 計算重疊天數
                 (LEAST(COALESCE(ah.end_date, dr.end_date), dr.end_date) - GREATEST(ah.start_date, dr.start_date) + 1) AS lived_days
             FROM "AccommodationHistory" ah
             JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
@@ -607,18 +644,21 @@ def get_excess_utility_report_data(dorm_ids: list, employer_names: list, bill_id
             WHERE r.dorm_id = ANY(%s)
               AND ah.start_date <= dr.end_date
               AND (ah.end_date IS NULL OR ah.end_date >= dr.start_date)
-              {external_filter_sql} -- 【關鍵】動態篩選
+              {external_filter_sql}
         """
-        worker_days_df = _execute_query_to_dataframe(conn, worker_days_query, (min_bill_start, max_bill_end, safe_dorm_ids))
+        worker_days_df = _execute_query_to_dataframe(conn, worker_days_query, (calc_start, calc_end, safe_dorm_ids))
         
         if worker_days_df.empty:
-            return dorm_address_list, bills_df, pd.DataFrame(), 0.0
+            return dorm_address_list, bills_df, pd.DataFrame(), 0.0, 0.0
 
-        # 4. 核心計算 (省略)
+        # 4. 核心計算 (分攤)
         total_dorm_days = worker_days_df['lived_days'].sum()
-        total_utility_cost = bills_df['amount'].sum()
         avg_days_per_month = 30.4375 
+        
+        # 應收基本費
         expected_total_subsidy = total_dorm_days * (fixed_subsidy / avg_days_per_month)
+        
+        # 總超額
         total_excess_cost = total_utility_cost - expected_total_subsidy
 
         charge_per_day = 0.0
@@ -635,11 +675,11 @@ def get_excess_utility_report_data(dorm_ids: list, employer_names: list, bill_id
         worker_days_df['daily_charge'] = charge_per_day
         worker_days_df['final_bill_amount'] = (worker_days_df['lived_days'] * worker_days_df['daily_charge']).round().astype(int)
         
-        # 6. 彙總目標雇主的請款金額
+        # 6. 彙總目標雇主
         target_employer_df = worker_days_df[worker_days_df['employer_name'].isin(safe_employer_names)].copy()
         
         if target_employer_df.empty:
-            return dorm_address_list, bills_df, pd.DataFrame(), 0.0
+            return dorm_address_list, bills_df, pd.DataFrame(), 0.0, total_excess_cost
 
         # 7. 整理輸出
         report_df = target_employer_df[[
@@ -647,26 +687,19 @@ def get_excess_utility_report_data(dorm_ids: list, employer_names: list, bill_id
             'passport_number', 'nationality', 'gender',
             'start_date', 'end_date', 'lived_days', 'final_bill_amount'
         ]].rename(columns={
-            'employer_name': '雇主',
-            'worker_name': '姓名',
-            'native_name': '英文姓名',
-            'passport_number': '護照號碼',
-            'nationality': '國籍',
-            'gender': '性別',
-            'start_date': '入住日期',
-            'end_date': '離住日期',
-            'lived_days': '居住天數',
+            'employer_name': '雇主', 'worker_name': '姓名', 'native_name': '英文姓名',
+            'passport_number': '護照號碼', 'nationality': '國籍', 'gender': '性別',
+            'start_date': '入住日期', 'end_date': '離住日期', 'lived_days': '居住天數',
             'final_bill_amount': '應收水電費'
         })
         
         total_charge = report_df['應收水電費'].sum()
         
-        return dorm_address_list, bills_df, report_df, total_charge
+        return dorm_address_list, bills_df, report_df, total_charge, total_excess_cost
     
     except Exception as e:
         print(f"Error in get_excess_utility_report_data: {e}")
-        return None, None, None, None
-    
+        return None, None, None, None, None
     finally:
         if conn: conn.close()
 
