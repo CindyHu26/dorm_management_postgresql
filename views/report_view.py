@@ -576,7 +576,7 @@ def render():
                         summary_header_df = pd.DataFrame({
                             "宿舍地址": [dorm_title],
                             "目標雇主": [employer_title],
-                            "總請款金額": [f"NT$ {int(total_charge):,}"],
+                            "總水電費": [f"NT$ {int(total_charge):,}"],
                             "計算基準 (元/月)": [fixed_subsidy_amount],
                             "總人數": [details_df.shape[0]],
                         })
@@ -602,7 +602,7 @@ def render():
 
                         excel_file = to_excel(excel_file_data)
                         
-                        st.success(f"報表已成功產生！總請款金額為 NT$ {int(total_charge):,}")
+                        st.success(f"報表已成功產生！總水電費為 NT$ {int(total_charge):,}")
                         
                         file_name_prefix = employer_title.replace(" ", "_").replace("/", "_")
                         st.download_button(

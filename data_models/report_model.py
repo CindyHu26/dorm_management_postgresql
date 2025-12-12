@@ -199,17 +199,24 @@ def get_monthly_exception_report(year_month: str):
         if conn: 
             conn.close()
 
-def get_utility_bills_for_selection(dorm_ids: list, start_date, end_date):
+def get_utility_bills_for_selection(dorm_ids, start_date, end_date):
     """
     獲取指定宿舍列表和日期範圍內的水費和電費帳單。
     """
     if not dorm_ids: return []
+    
     conn = database.get_db_connection()
     if not conn: return []
     
     try:
-        # 【修正 1】將列表轉換為安全的 tuple
-        safe_dorm_ids = tuple(int(i) for i in dorm_ids)
+        # 【修正】檢查輸入類型：如果是單一整數，將其轉換為列表
+        if isinstance(dorm_ids, int):
+            target_ids = [dorm_ids]
+        else:
+            target_ids = dorm_ids
+
+        # 確保列表中的元素都是整數，並維持 List 型態 (給 ANY 使用)
+        safe_dorm_ids = list(int(i) for i in target_ids)
         
         query = """
             SELECT
@@ -222,6 +229,7 @@ def get_utility_bills_for_selection(dorm_ids: list, start_date, end_date):
                 AND bill_start_date <= %s
             ORDER BY dorm_id, bill_type, bill_end_date DESC;
         """
+        # 注意：safe_dorm_ids 本身是 list，但在 execute 參數中要放在 tuple 裡
         df = _execute_query_to_dataframe(conn, query, (safe_dorm_ids, start_date, end_date))
         return df.to_dict('records')
         
@@ -547,10 +555,15 @@ def get_excess_utility_report_data(dorm_ids: list, employer_names: list, bill_id
     if not conn: return None, None, None, None
 
     try:
-        # 【修正 3.1】將 ID 列表轉換為安全的 tuple
-        safe_dorm_ids = tuple(int(i) for i in dorm_ids)
-        safe_bill_ids = tuple(int(i) for i in bill_ids)
-        safe_employer_names = tuple(employer_names)
+        # 【修正】型別檢查與轉換
+        if isinstance(dorm_ids, int): dorm_ids = [dorm_ids]
+        safe_dorm_ids = list(int(i) for i in dorm_ids)
+        
+        if isinstance(bill_ids, int): bill_ids = [bill_ids]
+        safe_bill_ids = list(int(i) for i in bill_ids)
+        
+        if isinstance(employer_names, str): employer_names = [employer_names]
+        safe_employer_names = list(employer_names)
 
         # 1. 獲取宿舍基本信息
         dorm_query = 'SELECT original_address FROM "Dormitories" WHERE id = ANY(%s)'
@@ -657,7 +670,7 @@ def get_excess_utility_report_data(dorm_ids: list, employer_names: list, bill_id
     finally:
         if conn: conn.close()
 
-def get_employers_in_dorms_for_period(dorm_ids: list, start_date, end_date) -> list:
+def get_employers_in_dorms_for_period(dorm_ids, start_date, end_date) -> list:
     """
     獲取在指定宿舍列表和日期範圍內有住宿紀錄的雇主名稱。
     """
@@ -667,8 +680,13 @@ def get_employers_in_dorms_for_period(dorm_ids: list, start_date, end_date) -> l
     if not conn: return []
     
     try:
-        # 【修正 2】將列表轉換為安全的 tuple
-        safe_dorm_ids = tuple(int(i) for i in dorm_ids)
+        # 【修正】型別檢查與列表轉換
+        if isinstance(dorm_ids, int):
+            target_ids = [dorm_ids]
+        else:
+            target_ids = dorm_ids
+            
+        safe_dorm_ids = list(int(i) for i in target_ids)
         
         query = """
             SELECT DISTINCT
@@ -690,4 +708,4 @@ def get_employers_in_dorms_for_period(dorm_ids: list, start_date, end_date) -> l
         print(f"Error getting employers in dorms for period: {e}")
         return []
     finally:
-        if conn: conn.close() 
+        if conn: conn.close()
