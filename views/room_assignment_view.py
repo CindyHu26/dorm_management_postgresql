@@ -138,10 +138,17 @@ def render():
                 else:
                     updates_list = []
                     for _, row in updates_df.iterrows():
+                        raw_room = row['新房號']
+                        if isinstance(raw_room, list):
+                            # 如果是清單 (例如 [105])，取出第一個元素
+                            final_room_id = int(raw_room[0]) if len(raw_room) > 0 else None
+                        else:
+                            # 如果是單一數值 (例如 105 或 105.0)
+                            final_room_id = int(raw_room)
                         updates_list.append({
                             'ah_id': row['ah_id'],
                             'worker_id': row['worker_unique_id'],
-                            'new_room_id': row['新房號'],
+                            'new_room_id': final_room_id,
                             'new_bed_number': str(row['新床位編號']).strip() or None,
                             'new_start_date': row['新入住日'] 
                         })
@@ -224,7 +231,7 @@ def render():
                 "選擇更新後的保護層級*",
                 options=list(protection_options.keys()),
                 format_func=lambda x: protection_options[x],
-                index=0,
+                index=1,
                 key="correct_prot_level"
             )
 
