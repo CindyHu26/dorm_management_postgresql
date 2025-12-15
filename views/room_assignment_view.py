@@ -125,7 +125,7 @@ def render():
                 "選擇更新後的保護層級*",
                 options=list(protection_options.keys()),
                 format_func=lambda x: protection_options[x],
-                index=0,
+                index=1,
                 key="assign_prot_level"
             )
             
