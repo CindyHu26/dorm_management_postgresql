@@ -586,37 +586,51 @@ def get_fee_history_for_worker(unique_id: str):
 
 def change_worker_accommodation(worker_id: str, new_room_id: int, change_date: date, bed_number: str = None):
     """
-    【v2.4 修正版】處理工人換宿的核心業務邏輯，修正日期計算錯誤。
+    【v2.6 修正版】處理工人換宿的核心業務邏輯。
+    修正1：允許同房間換床位 (若房間相同但床號不同，仍視為換宿)。
+    修正2：前後段日期的銜接改為「同一天」 (舊離住日 = 新入住日 = 換宿生效日)。
     """
     conn = database.get_db_connection()
     if not conn: return False, "資料庫連線失敗"
     try:
-        from datetime import timedelta # 匯入標準時間差函式庫
+        # 移除 timedelta 的引用，因為不再需要減一天
+        # from datetime import timedelta 
 
         with conn.cursor() as cursor:
+            # 1. 查詢舊紀錄 (多查 bed_number 以便比對)
             cursor.execute(
-                'SELECT id, room_id FROM "AccommodationHistory" WHERE worker_unique_id = %s AND end_date IS NULL ORDER BY start_date DESC LIMIT 1',
+                'SELECT id, room_id, bed_number FROM "AccommodationHistory" WHERE worker_unique_id = %s AND end_date IS NULL ORDER BY start_date DESC LIMIT 1',
                 (worker_id,)
             )
             current_accommodation = cursor.fetchone()
 
+            # 2. 修改阻擋邏輯：只有「房間相同」且「床位也相同」時才擋
             if current_accommodation and current_accommodation['room_id'] == new_room_id:
-                return True, "工人已在該房間，無需變更。"
+                # 取出新舊床位並轉為字串比較 (處理 None)
+                curr_bed = current_accommodation.get('bed_number') or ''
+                new_bed = bed_number or ''
+                
+                if str(curr_bed).strip() == str(new_bed).strip():
+                    return True, "工人已在該房間且床位相同，無需變更。"
+                
+                # 若房間相同但床位不同，程式繼續往下執行 (視為換宿)
 
             if current_accommodation:
-                # 將舊紀錄的結束日設為新紀錄開始日的前一天
-                end_date_for_old_record = change_date - timedelta(days=1)
+                # 【修改重點】舊紀錄的結束日 = 換宿生效日 (同一天)
+                # 這樣在報表合併邏輯中，這一天會因為重疊而被視為連續期間
                 cursor.execute(
                     'UPDATE "AccommodationHistory" SET end_date = %s WHERE id = %s',
-                    (end_date_for_old_record, current_accommodation['id'])
+                    (change_date, current_accommodation['id'])
                 )
             
             if new_room_id is not None:
+                # 新紀錄的開始日 = 換宿生效日
                 cursor.execute(
                     'INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, bed_number) VALUES (%s, %s, %s, %s)',
                     (worker_id, new_room_id, change_date, bed_number)
                 )
 
+            # 更新資料來源狀態
             cursor.execute(
                 'UPDATE "Workers" SET data_source = %s WHERE unique_id = %s',
                 ('手動調整', worker_id)
