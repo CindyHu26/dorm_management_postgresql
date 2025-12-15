@@ -284,7 +284,9 @@ def get_income_summary(dorm_ids: list, year_month: str):
 
 def get_resident_details_as_df(dorm_ids: list, year_month: str):
     """
-    【v3.0 同月計算修正版】
+    【v3.1 連續入住日修正版】查詢指定月份的宿舍在住人員明細。
+    修正：針對「入住此房日」欄位，使用遞迴查詢 (Recursive CTE) 自動追溯
+         該員在同宿舍內的連續居住起始日。
     """
     if not dorm_ids: return pd.DataFrame()
     conn = database.get_db_connection()
@@ -293,16 +295,22 @@ def get_resident_details_as_df(dorm_ids: list, year_month: str):
     try:
         params = {"dorm_ids": dorm_ids, "year_month": year_month}
         query = f"""
-            WITH DateParams AS (
+            WITH RECURSIVE 
+            DateParams AS (
                 SELECT
                     TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') as first_day_of_month,
                     (TO_DATE(%(year_month)s || '-01', 'YYYY-MM-DD') + '1 month'::interval - '1 day'::interval)::date as last_day_of_month
             ),
-            ActiveWorkersInMonth AS (
+            -- 1. 先找出該月份的「目標紀錄」 (每人取最新一筆)
+            -- 這筆紀錄決定了房號、床位、以及目前的離住狀態
+            TargetRecords AS (
                  SELECT DISTINCT ON (ah.worker_unique_id)
-                    ah.worker_unique_id, r.dorm_id, r.room_number,
+                    ah.worker_unique_id, 
+                    r.dorm_id, 
+                    r.room_number,
                     ah.bed_number,
-                    ah.start_date AS accommodation_start, ah.end_date AS accommodation_end
+                    ah.start_date, 
+                    ah.end_date
                 FROM "AccommodationHistory" ah
                 JOIN "Rooms" r ON ah.room_id = r.id
                 CROSS JOIN DateParams dp
@@ -311,6 +319,38 @@ def get_resident_details_as_df(dorm_ids: list, year_month: str):
                   AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
                 ORDER BY ah.worker_unique_id, ah.start_date DESC, ah.id DESC
             ),
+            -- 2. 遞迴追溯：找出這筆紀錄的「源頭」入住日
+            ContinuousStay AS (
+                -- (A) 錨點：從目標紀錄開始
+                SELECT 
+                    tr.worker_unique_id,
+                    tr.start_date as current_segment_start,
+                    tr.start_date as true_start_date,
+                    tr.dorm_id
+                FROM TargetRecords tr
+
+                UNION ALL
+
+                -- (B) 遞迴：往前找無縫銜接且同宿舍的紀錄
+                SELECT 
+                    cs.worker_unique_id,
+                    prev.start_date,
+                    prev.start_date,
+                    cs.dorm_id
+                FROM ContinuousStay cs
+                JOIN "AccommodationHistory" prev ON prev.end_date = cs.current_segment_start -- 連續 (前筆結束=後筆開始)
+                JOIN "Rooms" prev_r ON prev.room_id = prev_r.id
+                WHERE 
+                    prev.worker_unique_id = cs.worker_unique_id
+                    AND prev_r.dorm_id = cs.dorm_id -- 同宿舍
+            ),
+            -- 3. 取出每人的最早日期
+            FinalStartDate AS (
+                SELECT worker_unique_id, MIN(true_start_date) as original_start_date
+                FROM ContinuousStay
+                GROUP BY worker_unique_id
+            ),
+            -- 4. 費用資料 (維持不變)
             MonthFeeHistory AS (
                 SELECT
                     worker_unique_id, fee_type, amount,
@@ -319,17 +359,21 @@ def get_resident_details_as_df(dorm_ids: list, year_month: str):
                 CROSS JOIN DateParams dp
                 WHERE effective_date BETWEEN dp.first_day_of_month AND dp.last_day_of_month
             )
+            -- 5. 最終查詢
             SELECT
                 d.original_address AS "宿舍",
-                awm.room_number AS "房號",
+                tr.room_number AS "房號",
                 w.worker_name AS "姓名",
                 w.employer_name AS "雇主",
                 w.gender AS "性別",
                 w.nationality AS "國籍",
-                awm.accommodation_start AS "入住此房日",
-                awm.accommodation_end AS "離開此房日",
+                
+                -- 【核心修改】使用追溯後的日期
+                fs.original_start_date AS "入住此房日",
+                
+                tr.end_date AS "離開此房日",
                 w.work_permit_expiry_date AS "工作期限",
-                awm.bed_number AS "床位編號",
+                tr.bed_number AS "床位編號",
                 
                 COALESCE(rent.amount, 0) AS "房租",
                 COALESCE(util.amount, 0) AS "水電費",
@@ -339,17 +383,18 @@ def get_resident_details_as_df(dorm_ids: list, year_month: str):
                 
                 w.special_status AS "特殊狀況",
                 w.worker_notes AS "備註"
-            FROM ActiveWorkersInMonth awm
-            JOIN "Workers" w ON awm.worker_unique_id = w.unique_id
-            JOIN "Dormitories" d ON awm.dorm_id = d.id
+            FROM TargetRecords tr
+            JOIN FinalStartDate fs ON tr.worker_unique_id = fs.worker_unique_id
+            JOIN "Workers" w ON tr.worker_unique_id = w.unique_id
+            JOIN "Dormitories" d ON tr.dorm_id = d.id
             
-            LEFT JOIN (SELECT worker_unique_id, amount FROM MonthFeeHistory WHERE fee_type = '房租' AND rn = 1) rent ON awm.worker_unique_id = rent.worker_unique_id
-            LEFT JOIN (SELECT worker_unique_id, amount FROM MonthFeeHistory WHERE fee_type = '水電費' AND rn = 1) util ON awm.worker_unique_id = util.worker_unique_id
-            LEFT JOIN (SELECT worker_unique_id, amount FROM MonthFeeHistory WHERE fee_type = '清潔費' AND rn = 1) clean ON awm.worker_unique_id = clean.worker_unique_id
-            LEFT JOIN (SELECT worker_unique_id, amount FROM MonthFeeHistory WHERE fee_type = '宿舍復歸費' AND rn = 1) resto ON awm.worker_unique_id = resto.worker_unique_id
-            LEFT JOIN (SELECT worker_unique_id, amount FROM MonthFeeHistory WHERE fee_type = '充電清潔費' AND rn = 1) charge ON awm.worker_unique_id = charge.worker_unique_id
+            LEFT JOIN (SELECT worker_unique_id, amount FROM MonthFeeHistory WHERE fee_type = '房租' AND rn = 1) rent ON tr.worker_unique_id = rent.worker_unique_id
+            LEFT JOIN (SELECT worker_unique_id, amount FROM MonthFeeHistory WHERE fee_type = '水電費' AND rn = 1) util ON tr.worker_unique_id = util.worker_unique_id
+            LEFT JOIN (SELECT worker_unique_id, amount FROM MonthFeeHistory WHERE fee_type = '清潔費' AND rn = 1) clean ON tr.worker_unique_id = clean.worker_unique_id
+            LEFT JOIN (SELECT worker_unique_id, amount FROM MonthFeeHistory WHERE fee_type = '宿舍復歸費' AND rn = 1) resto ON tr.worker_unique_id = resto.worker_unique_id
+            LEFT JOIN (SELECT worker_unique_id, amount FROM MonthFeeHistory WHERE fee_type = '充電清潔費' AND rn = 1) charge ON tr.worker_unique_id = charge.worker_unique_id
             
-            ORDER BY d.original_address, awm.room_number, w.worker_name;
+            ORDER BY d.original_address, tr.room_number, w.worker_name;
         """
         return _execute_query_to_dataframe(conn, query, params)
     finally:

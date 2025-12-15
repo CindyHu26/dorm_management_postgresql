@@ -17,8 +17,10 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_workers_for_view(filters: dict):
     """
-    【v3.3 系統地址顯示版】人員管理列表。
-    修正：新增「系統地址」與「系統房號」欄位，顯示爬蟲抓取到的原始位置 (Workers.room_id)。
+    【v3.5 連續入住日修正版】人員管理列表。
+    修正：入住日期不再只顯示「最新一筆」的開始日，而是透過遞迴查詢 (Recursive CTE)
+         自動追溯該員在「同一間宿舍」且「時間連續」的最早入住日。
+         解決換床/換房後，入住日被重置為當天的問題。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -27,16 +29,62 @@ def get_workers_for_view(filters: dict):
 
     try:
         base_query = f"""
-            WITH 
-            LastAccommodation AS (
+            WITH RECURSIVE 
+            -- 1. 先找出每位員工「最新」的一筆住宿紀錄 (作為錨點)
+            LatestAccom AS (
                 SELECT
-                    worker_unique_id,
-                    room_id,
-                    bed_number,
-                    start_date,
-                    ROW_NUMBER() OVER(PARTITION BY worker_unique_id ORDER BY start_date DESC, id DESC) as rn
-                FROM "AccommodationHistory"
+                    ah.id,
+                    ah.worker_unique_id,
+                    ah.room_id,
+                    ah.bed_number,
+                    ah.start_date,
+                    ah.end_date,
+                    r.dorm_id,
+                    d.original_address,
+                    r.room_number
+                FROM "AccommodationHistory" ah
+                JOIN "Rooms" r ON ah.room_id = r.id
+                JOIN "Dormitories" d ON r.dorm_id = d.id
+                WHERE ah.id IN (
+                    -- 這裡用 Window Function 確保只取每個人的最後一筆
+                    SELECT id FROM (
+                        SELECT id, ROW_NUMBER() OVER(PARTITION BY worker_unique_id ORDER BY start_date DESC, id DESC) as rn
+                        FROM "AccommodationHistory"
+                    ) sub WHERE rn = 1
+                )
             ),
+            -- 2. 使用遞迴 CTE 往前追溯「連續且同宿舍」的源頭
+            ContinuousStay AS (
+                -- (A) 初始行：放入最新紀錄，並將其 start_date 設為目前的「追溯起點」
+                SELECT 
+                    la.worker_unique_id,
+                    la.start_date as current_segment_start, -- 這一區段的開始
+                    la.start_date as true_start_date,       -- [將被不斷更新的最早日期]
+                    la.dorm_id                              -- 鎖定宿舍 ID
+                FROM LatestAccom la
+
+                UNION ALL
+
+                -- (B) 遞迴行：尋找「上一筆」紀錄
+                SELECT 
+                    cs.worker_unique_id,
+                    prev.start_date,                        -- 更新區段開始日
+                    prev.start_date as true_start_date,     -- 更新最早日期
+                    cs.dorm_id
+                FROM ContinuousStay cs
+                JOIN "AccommodationHistory" prev ON prev.end_date = cs.current_segment_start -- 條件1: 日期無縫銜接 (前筆結束=後筆開始)
+                JOIN "Rooms" prev_r ON prev.room_id = prev_r.id
+                WHERE 
+                    prev.worker_unique_id = cs.worker_unique_id
+                    AND prev_r.dorm_id = cs.dorm_id         -- 條件2: 必須是同一間宿舍
+            ),
+            -- 3. 彙整算出每個人真正的「最早入住日」
+            FinalStartDate AS (
+                SELECT worker_unique_id, MIN(true_start_date) as original_start_date
+                FROM ContinuousStay
+                GROUP BY worker_unique_id
+            ),
+            -- 4. 費用統計 (維持原樣)
             PreviousMonthFees AS (
                 SELECT 
                     worker_unique_id, 
@@ -45,19 +93,23 @@ def get_workers_for_view(filters: dict):
                 WHERE TO_CHAR(effective_date, 'YYYY-MM') = TO_CHAR({current_date_func} - INTERVAL '1 month', 'YYYY-MM')
                 GROUP BY worker_unique_id
             )
+            -- 5. 主查詢
             SELECT
                 w.unique_id,
                 w.employer_name AS "雇主",
                 w.worker_name AS "姓名",
                 
-                -- 實際住宿 (AccommodationHistory)
-                d_actual.original_address AS "實際地址",
-                r_actual.room_number AS "實際房號",
-                
+                -- 實際住宿 (顯示最新那筆的資訊)
+                la.original_address AS "實際地址",
+                la.room_number AS "實際房號",
                 la.bed_number AS "床位編號",
+                
                 w.gender AS "性別",
                 w.nationality AS "國籍",
-                la.start_date AS "入住日期",
+                
+                -- 【核心修改】這裡改用算出來的「最早連續入住日」
+                fs.original_start_date AS "入住日期",
+                
                 w.accommodation_end_date AS "離住日期",
                 w.work_permit_expiry_date AS "工作期限",
                 w.special_status as "特殊狀況",
@@ -67,7 +119,8 @@ def get_workers_for_view(filters: dict):
                 END as "在住狀態",
                 
                 COALESCE(pmf.total_amount, 0) AS "上月總收租",
-                -- 【新增】系統掛帳 (Workers.room_id)
+                
+                -- 系統掛帳
                 d_sys.original_address AS "系統地址",
                 w.worker_notes AS "個人備註",
                 w.passport_number AS "護照號碼", 
@@ -75,14 +128,18 @@ def get_workers_for_view(filters: dict):
                 d_actual.primary_manager AS "主要管理人",
                 w.data_source as "資料來源"
             FROM "Workers" w
-            -- 1. 關聯實際住宿
-            LEFT JOIN (SELECT * FROM LastAccommodation WHERE rn = 1) la ON w.unique_id = la.worker_unique_id
-            LEFT JOIN "Rooms" r_actual ON la.room_id = r_actual.id
-            LEFT JOIN "Dormitories" d_actual ON r_actual.dorm_id = d_actual.id
-            -- 2. 關聯系統掛帳 (Workers.room_id)
+            -- 1. 關聯最新住宿 (取得房號、床位等現況)
+            LEFT JOIN LatestAccom la ON w.unique_id = la.worker_unique_id
+            LEFT JOIN "Dormitories" d_actual ON la.dorm_id = d_actual.id -- 補關聯以取得管理人
+            
+            -- 2. 關聯最早入住日
+            LEFT JOIN FinalStartDate fs ON w.unique_id = fs.worker_unique_id
+            
+            -- 3. 關聯系統掛帳
             LEFT JOIN "Rooms" r_sys ON w.room_id = r_sys.id
             LEFT JOIN "Dormitories" d_sys ON r_sys.dorm_id = d_sys.id
-            -- 3. 費用
+            
+            -- 4. 費用
             LEFT JOIN PreviousMonthFees pmf ON w.unique_id = pmf.worker_unique_id
         """
 
@@ -91,25 +148,22 @@ def get_workers_for_view(filters: dict):
 
         if filters.get('name_search'):
             term = f"%{filters['name_search']}%"
-            # 搜尋範圍增加 passport_number 與 arc_number
             where_clauses.append("""(
                 w.worker_name ILIKE %s OR 
                 w.employer_name ILIKE %s OR 
-                d_actual.original_address ILIKE %s OR 
+                la.original_address ILIKE %s OR 
                 d_sys.original_address ILIKE %s OR 
                 w.passport_number ILIKE %s OR 
                 w.arc_number ILIKE %s
             )""")
-            # 參數也要增加兩個 term 對應新增的欄位
             params.extend([term, term, term, term, term, term])
 
         if filters.get('dorm_id'):
-            # 這裡維持篩選「實際地址」，因為管理上通常是看人實際上在哪
-            where_clauses.append("d_actual.id = %s")
+            where_clauses.append("la.dorm_id = %s") # 修改為使用 LatestAccom 的 dorm_id
             params.append(filters['dorm_id'])
 
         if filters.get('room_id'):
-            where_clauses.append("r_actual.id = %s")
+            where_clauses.append("la.room_id = %s") # 修改為使用 LatestAccom 的 room_id
             params.append(filters['room_id'])
             
         if filters.get('nationality') and filters.get('nationality') != '全部':

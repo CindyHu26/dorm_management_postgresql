@@ -241,8 +241,9 @@ def get_utility_bills_for_selection(dorm_ids, start_date, end_date):
 
 def get_custom_utility_report_data(dorm_id: int, employer_name: str, selected_bill_ids: list):
     """
-    【v2.2 合併歷史版】根據使用者選擇的帳單 ID，產生客製化水電費分攤報表。
-    邏輯修正：針對「換宿」情況（同一人多筆歷史），進行合併顯示與不重複天數計算。
+    【v2.3 完整歷史修正版】根據使用者選擇的帳單 ID，產生客製化水電費分攤報表。
+    邏輯修正：解決「帳單截止後才換床」導致被誤判為離住的問題。
+    方法：先篩選出期間內有居住的人員，再撈取這些人在該宿舍的「所有」歷史紀錄來判斷狀態。
     """
     conn = database.get_db_connection()
     if not conn or not selected_bill_ids:
@@ -268,96 +269,98 @@ def get_custom_utility_report_data(dorm_id: int, employer_name: str, selected_bi
         min_bill_start = bills_df['bill_start_date'].min()
         max_bill_end = bills_df['bill_end_date'].max()
         
-        # 2. 查詢員工的所有相關住宿歷史 (包含換房、換床紀錄)
-        # 這裡不只查一筆，而是查該期間內所有的紀錄
+        # 2. 查詢員工的所有相關住宿歷史
+        # 【核心修改】使用 CTE 先找出「期間內有在住」的人員 ID，再抓出這些人在該宿舍的「完整歷史」
+        # 這樣才能正確判斷「連續住宿」的情況，避免因帳單截止日卡到換床日，導致看不到新紀錄而誤判為離住
         workers_query = """
+            WITH TargetWorkers AS (
+                SELECT DISTINCT ah.worker_unique_id
+                FROM "AccommodationHistory" ah
+                JOIN "Rooms" r ON ah.room_id = r.id
+                JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+                WHERE r.dorm_id = %s 
+                  AND w.employer_name = %s
+                  AND ah.start_date <= %s
+                  AND (ah.end_date IS NULL OR ah.end_date >= %s)
+            )
             SELECT
                 w.unique_id, w.worker_name, w.native_name, ah.start_date, ah.end_date
             FROM "AccommodationHistory" ah
             JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
             JOIN "Rooms" r ON ah.room_id = r.id
-            WHERE r.dorm_id = %s 
-              AND w.employer_name = %s
-              AND ah.start_date <= %s
-              AND (ah.end_date IS NULL OR ah.end_date >= %s)
+            JOIN TargetWorkers tw ON w.unique_id = tw.worker_unique_id
+            WHERE r.dorm_id = %s
             ORDER BY w.worker_name, ah.start_date
         """
-        workers_df = _execute_query_to_dataframe(conn, workers_query, (dorm_id, employer_name, max_bill_end, min_bill_start))
+        # 注意參數順序：CTE(dorm, emp, end, start) -> Main(dorm)
+        params = (dorm_id, employer_name, max_bill_end, min_bill_start, dorm_id)
+        workers_df = _execute_query_to_dataframe(conn, workers_query, params)
         
         if workers_df.empty:
             return dorm_details, bills_df, pd.DataFrame()
             
         results = []
         
-        # --- 【核心修改】改用 GroupBy 針對每位員工 (unique_id) 進行合併 ---
+        # 3. 針對每位員工進行資料合併與計算
         for unique_id, group in workers_df.groupby('unique_id'):
-            # A. 取得基本資料 (假設同 ID 姓名不變，取第一筆即可)
             first_rec = group.iloc[0]
             worker_row = { 
                 "姓名": first_rec['worker_name'], 
                 "母語姓名": first_rec['native_name'] 
             }
             
-            # B. 決定顯示用的「合併後」起訖日
-            # 入住日：取該員在這段期間內「最早」的入住日
+            # 顯示用的起訖日
+            # 入住日：取最早
             merged_start = pd.to_datetime(group['start_date']).min()
             worker_row["入住日期"] = merged_start.strftime('%Y-%m-%d')
             
-            # 離住日：如果任一筆紀錄沒有 end_date (代表還在住)，則顯示空白；否則取最晚的一天
-            # 這能解決「換宿那天顯示離住」的問題，因為新紀錄會是「在住」
+            # 離住日：若「任何一筆」紀錄還在住 (end_date is null)，就代表他在住
             if group['end_date'].isnull().any():
-                worker_row["離住日期"] = "" # 只要還有一筆是活著的，就算在住
+                worker_row["離住日期"] = "" 
             else:
+                # 否則取最後一天
                 merged_end = pd.to_datetime(group['end_date']).max()
                 worker_row["離住日期"] = merged_end.strftime('%Y-%m-%d')
 
-            # C. 針對每一張帳單，精確計算「不重複」的居住天數
+            # 計算每張帳單的居住天數 (使用 Set 去重)
             for _, bill in bills_df.iterrows():
                 bill_col_name = f"{bill['bill_type']}_{bill['bill_id']}"
                 
                 b_start = pd.to_datetime(bill['bill_start_date']).date()
                 b_end = pd.to_datetime(bill['bill_end_date']).date()
                 
-                # 使用 Set (集合) 來儲存這張帳單期間內，該員工有居住的「具體日期」
-                # 這樣即使多段歷史有重疊 (例如 12/15 同時是舊紀錄離住 和 新紀錄入住)，12/15 也只會被算一次
                 occupied_dates = set()
                 
                 for _, row in group.iterrows():
-                    # 該段歷史的起訖
                     seg_start = pd.to_datetime(row['start_date']).date()
                     seg_end_val = row['end_date']
-                    # 若無結束日，視為無限期 (至少大於帳單結束日)
                     seg_end = pd.to_datetime(seg_end_val).date() if pd.notna(seg_end_val) else date(9999, 12, 31)
                     
-                    # 計算該段歷史與帳單的「交集區間」
+                    # 計算交集
                     overlap_start = max(seg_start, b_start)
                     overlap_end = min(seg_end, b_end)
                     
-                    # 將交集區間內的每一天都加入 Set
                     if overlap_start <= overlap_end:
                         curr = overlap_start
                         while curr <= overlap_end:
                             occupied_dates.add(curr)
                             curr += timedelta(days=1)
                 
-                # Set 的長度就是實際不重複的居住天數
                 worker_row[f"{bill_col_name}_days"] = len(occupied_dates)
             
             results.append(worker_row)
 
         details_df = pd.DataFrame(results)
 
-        # 3. 計算費用 (根據總天數分攤)
+        # 4. 計算費用
         for _, bill in bills_df.iterrows():
             bill_col_name = f"{bill['bill_type']}_{bill['bill_id']}"
             
-            # 檢查是否有該欄位 (預防沒人的情況)
             if f"{bill_col_name}_days" in details_df.columns:
                 total_days_for_bill = details_df[f"{bill_col_name}_days"].sum()
                 
                 if total_days_for_bill > 0:
                     cost_per_day = bill['amount'] / total_days_for_bill
-                    # 計算每人費用
                     details_df[f"{bill_col_name}_fee"] = details_df[f"{bill_col_name}_days"] * cost_per_day
                 else:
                     details_df[f"{bill_col_name}_fee"] = 0
