@@ -273,7 +273,10 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                     if data_source != '手動管理(他仲)' and data_source != '手動調整':
                          update_details['data_source'] = '系統自動更新'
                     
-                    if new_room_id is not None: update_details['room_id'] = new_room_id 
+                    # 修正：如果資料來源是受保護的狀態，則不更新 room_id
+                    protected_sources = ['手動管理(他仲)', '手動調整']
+                    if new_room_id is not None and data_source not in protected_sources: 
+                        update_details['room_id'] = new_room_id
                     update_details['accommodation_end_date'] = final_departure_date
                     
                     fields = ', '.join([f'"{key}" = %s' for key in update_details.keys()])
@@ -285,6 +288,7 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                     if new_room_id is not None:
                         new_dorm_id = room_to_dorm_map.get(new_room_id)
                         current_dorm_id = room_to_dorm_map.get(current_room_id)
+                        # 判斷是否換了宿舍
                         is_dorm_change = (new_dorm_id != current_dorm_id)
                         
                         # 重新入職判斷 (離職超過7天後又出現)
@@ -294,28 +298,34 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                             if time_difference.days > REHIRE_THRESHOLD_DAYS:
                                 is_long_term_rehire = True
                         
-                        if data_source != '手動調整' and (is_dorm_change or is_long_term_rehire):
-                            # 宿舍變動時，起始日應以 TODAY 為優先 (避免檔案中的舊日期造成資料衝突/回溯複雜度)
+                        # 【核心修正區塊開始】
+                        if data_source not in ['手動調整', '手動管理(他仲)'] and (is_dorm_change or is_long_term_rehire):
+                            # 修正邏輯：換宿時，新紀錄的起始日必須是 "今天" (today)，
+                            # 不能使用 fresh_start_date_obj (這是 Excel 裡的交工日，通常是舊日期)
                             
-                            # 確定新住宿的起始日：優先使用 TODAY
+                            # 1. 設定新紀錄的開始日 = 今天 (例如 11/15)
                             new_hist_start = today 
                             
-                            # 結束舊的
+                            # 2. 結束舊的紀錄
                             if current_history_end_date is None:
-                                # 將舊紀錄的 end_date 設為新紀錄開始日【同一天】(維持連續性)
+                                # 將舊紀錄的 end_date 設為新紀錄開始日【同一天】
+                                # 效果：A宿舍 住到 11/15，B宿舍 從 11/15 開始住
                                 end_date_for_old_record = new_hist_start
                                 
                                 cursor.execute(
                                     'UPDATE "AccommodationHistory" SET end_date = %s WHERE worker_unique_id = %s AND end_date IS NULL', 
                                     (end_date_for_old_record, worker_id)
                                 )
-                            # 建立新的
-                            # 注意: new_hist_start 已經是 today
-                            cursor.execute('INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, end_date) VALUES (%s, %s, %s, %s)', (worker_id, new_room_id, new_hist_start, final_departure_date))
+                            
+                            # 3. 建立新的紀錄
+                            # 注意：這裡使用的是 new_hist_start (今天)，而不是 fresh_worker 的日期
+                            cursor.execute(
+                                'INSERT INTO "AccommodationHistory" (worker_unique_id, room_id, start_date, end_date) VALUES (%s, %s, %s, %s)', 
+                                (worker_id, new_room_id, new_hist_start, final_departure_date)
+                            )
                             moved_count += 1
                             
-                            # 【新增日誌】
-                            log_callback(f"INFO: [換宿] 偵測到 '{fresh_name}' 地址變更 ({current_dorm_id} -> {new_dorm_id})，執行換宿作業。")
+                            log_callback(f"INFO: [換宿] 偵測到 '{fresh_name}' 地址變更 ({current_dorm_id} -> {new_dorm_id})，已建立新住宿紀錄 (起始日: {new_hist_start})。")
                             
                         elif final_departure_date != current_history_end_date:
                             # 僅更新離住日

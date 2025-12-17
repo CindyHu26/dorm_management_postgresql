@@ -59,8 +59,6 @@ def render():
         col1, col2 = st.columns(2)
         col1.info(f"**宿舍編號:** {dorm_details.get('legacy_dorm_code') or '未設定'}")
         col2.info(f"**變動費用備註:** {dorm_details.get('utility_bill_notes') or '無'}")
-
-    st.markdown("---")
     
     # --- 選項準備 ---
     bill_type_options_add = ["電費", "水費", "天然氣", "網路費", "子母車", "清潔", "瓦斯費"]
@@ -85,23 +83,129 @@ def render():
     except ValueError:
         default_bill_type_idx = 0
 
+    st.markdown("---")
+
     # ==========================================
-    # 3. 帳單總覽與批次編輯 (移至上方)
+    # 3. 快速新增區塊 (移至下方，並改為整數)
+    # ==========================================
+    st.subheader("➕ 快速新增最新一筆帳單")
+
+    # --- Callback: 自動計算結束日 ---
+    def update_end_date_meter():
+        start_date = st.session_state.get('add_meter_start_v4')
+        bill_type = st.session_state.get('add_meter_type_v4')
+        if start_date and bill_type in ["電費", "水費"]:
+            try:
+                st.session_state.add_meter_end_v4 = start_date + relativedelta(months=2)
+            except Exception:
+                st.session_state.add_meter_end_v4 = date.today()
+
+    # --- Callback: 自動加總度數 (整數版) ---
+    def auto_sum_usage_meter():
+        # 使用 get 並給定預設值 0 (整數)
+        p = st.session_state.get('add_meter_peak_v4') or 0
+        op = st.session_state.get('add_meter_off_v4') or 0
+        if p > 0 or op > 0:
+            st.session_state.add_meter_usage_v4 = int(p + op)
+
+    # --- Session State 初始化 (使用整數 0) ---
+    if 'add_meter_type_v4' not in st.session_state: st.session_state.add_meter_type_v4 = bill_type_options_add[default_bill_type_idx]
+    if 'add_meter_start_v4' not in st.session_state: st.session_state.add_meter_start_v4 = None
+    if 'add_meter_end_v4' not in st.session_state: st.session_state.add_meter_end_v4 = date.today()
+    
+    # 數值初始化為 int
+    if 'add_meter_peak_v4' not in st.session_state: st.session_state.add_meter_peak_v4 = 0
+    if 'add_meter_off_v4' not in st.session_state: st.session_state.add_meter_off_v4 = 0
+    if 'add_meter_usage_v4' not in st.session_state: st.session_state.add_meter_usage_v4 = 0
+
+    st.caption(f"目前鎖定錶號：{meter_options[selected_meter_id]}")  # 將提示移至上方，節省欄位空間
+
+    # --- 第一排：基本帳單資訊 (5欄) ---
+    r1c1, r1c2, r1c3, r1c4, r1c5 = st.columns(5)
+    with r1c1:
+        new_bill_type = st.selectbox("費用類型*", options=bill_type_options_add, key="add_meter_type_v4", on_change=update_end_date_meter)
+    with r1c2:
+        new_amount = st.number_input("帳單金額*", min_value=0, step=100, value=None, placeholder="請輸入...", key="add_meter_amount_v4")
+    with r1c3:
+        new_start_date = st.date_input("帳單起始日*", value=st.session_state.add_meter_start_v4, key="add_meter_start_v4", on_change=update_end_date_meter)
+    with r1c4:
+        new_end_date = st.date_input("帳單結束日*", key="add_meter_end_v4")
+    with r1c5:
+        new_payer = st.selectbox("支付方*", options=payer_options_add, index=default_payer_index, key="add_meter_payer_v4")
+
+    # --- 第二排：用量與其他 (5欄) ---
+    r2c1, r2c2, r2c3, r2c4, r2c5 = st.columns(5)
+    with r2c1:
+        new_peak = st.number_input("尖峰 (整數)", min_value=0, step=1, key="add_meter_peak_v4", on_change=auto_sum_usage_meter)
+    with r2c2:
+        new_off_peak = st.number_input("離峰 (整數)", min_value=0, step=1, key="add_meter_off_v4", on_change=auto_sum_usage_meter)
+    with r2c3:
+        new_usage = st.number_input("總用量 (整數)*", min_value=0, step=1, key="add_meter_usage_v4", help="填寫尖峰/離峰會自動加總")
+    with r2c4:
+        # 改用 text_input 節省高度
+        new_notes = st.text_input("備註", key="add_meter_notes_v4") 
+    with r2c5:
+        st.write("") # 增加一點留白讓 Checkbox 下沉對齊
+        st.write("")
+        new_pass = st.checkbox("代收代付?", value=False, key="add_meter_pass_v4")
+
+    if st.button("儲存新帳單", type="primary"):
+        # 驗證
+        if not new_bill_type or new_amount is None or not new_start_date or not new_end_date:
+            st.error("「費用類型」、「帳單金額」、「起始日」、「結束日」為必填欄位！")
+        elif new_start_date > new_end_date:
+            st.error("「起始日」不能晚於「結束日」！")
+        else:
+            details = {
+                "dorm_id": dorm_id,
+                "meter_id": selected_meter_id,
+                "bill_type": new_bill_type,
+                "amount": int(new_amount),
+                "usage_amount": new_usage if new_usage > 0 else None,
+                "peak_usage": new_peak if new_peak > 0 else None,
+                "off_peak_usage": new_off_peak if new_off_peak > 0 else None,
+                "bill_start_date": new_start_date,
+                "bill_end_date": new_end_date,
+                "payer": new_payer,
+                "is_pass_through": new_pass,
+                "is_invoiced": False,
+                "notes": new_notes
+            }
+            with st.spinner("正在新增..."):
+                success, message, _ = finance_model.add_bill_record(details)
+            
+            if success:
+                st.success(message)
+                st.cache_data.clear()
+                # 清除 session
+                keys_to_clear = [
+                    'add_meter_type_v4', 'add_meter_amount_v4', 'add_meter_start_v4', 'add_meter_end_v4',
+                    'add_meter_peak_v4', 'add_meter_off_v4', 'add_meter_usage_v4', 
+                    'add_meter_payer_v4', 'add_meter_pass_v4', 'add_meter_notes_v4'
+                ]
+                for k in keys_to_clear:
+                    if k in st.session_state: del st.session_state[k]
+                st.rerun()
+            else:
+                st.error(message)
+    st.markdown("---")
+    # ==========================================
+    # 4. 帳單總覽與批次編輯
     # ==========================================
     st.subheader("帳單總覽 (可批次編輯/刪除)")
-    st.info(
-        """
-        - **編輯**：直接在表格中修改資料。
-        - **刪除**：點擊該列最左側的 `▢` 並於右上角選擇 `🗑`。
-        """
-    ) 
-
     @st.cache_data
     def get_bills_for_editor(meter_id):
         # 呼叫後端函式
         return finance_model.get_bills_for_editor(meter_id)
 
     bills_df = get_bills_for_editor(selected_meter_id)
+    # ==================== [排序邏輯] ====================
+    if not bills_df.empty and 'bill_start_date' in bills_df.columns:
+        # 依照「帳單起始日」排序
+        # ascending=False : 降冪排序 (日期越新的在越上面，推薦使用)
+        # ascending=True  : 升冪排序 (日期越舊的在越上面)
+        bills_df = bills_df.sort_values(by='bill_start_date', ascending=False)
+    # =======================================================
 
     with st.form("bill_editor_form"):
         edited_df = st.data_editor(
@@ -149,102 +253,10 @@ def render():
                 st.rerun()
             else:
                 st.error(message)
+    st.info(
+        """
+        - **編輯**：直接在表格中修改資料。
+        - **刪除**：點擊該列最左側的 `▢` 並於右上角選擇 `🗑`。
+        """
+    ) 
 
-    st.markdown("---")
-
-    # ==========================================
-    # 4. 快速新增區塊 (移至下方，並改為整數)
-    # ==========================================
-    st.subheader("➕ 快速新增最新一筆帳單")
-
-    # --- Callback: 自動計算結束日 ---
-    def update_end_date_meter():
-        start_date = st.session_state.get('add_meter_start_v4')
-        bill_type = st.session_state.get('add_meter_type_v4')
-        if start_date and bill_type in ["電費", "水費"]:
-            try:
-                st.session_state.add_meter_end_v4 = start_date + relativedelta(months=2)
-            except Exception:
-                st.session_state.add_meter_end_v4 = date.today()
-
-    # --- Callback: 自動加總度數 (整數版) ---
-    def auto_sum_usage_meter():
-        # 使用 get 並給定預設值 0 (整數)
-        p = st.session_state.get('add_meter_peak_v4') or 0
-        op = st.session_state.get('add_meter_off_v4') or 0
-        if p > 0 or op > 0:
-            st.session_state.add_meter_usage_v4 = int(p + op)
-
-    # --- Session State 初始化 (使用整數 0) ---
-    if 'add_meter_type_v4' not in st.session_state: st.session_state.add_meter_type_v4 = bill_type_options_add[default_bill_type_idx]
-    if 'add_meter_start_v4' not in st.session_state: st.session_state.add_meter_start_v4 = None
-    if 'add_meter_end_v4' not in st.session_state: st.session_state.add_meter_end_v4 = date.today()
-    
-    # 數值初始化為 int
-    if 'add_meter_peak_v4' not in st.session_state: st.session_state.add_meter_peak_v4 = 0
-    if 'add_meter_off_v4' not in st.session_state: st.session_state.add_meter_off_v4 = 0
-    if 'add_meter_usage_v4' not in st.session_state: st.session_state.add_meter_usage_v4 = 0
-
-    # --- 介面佈局 ---
-    c1, c2, c3 = st.columns(3)
-    new_bill_type = c1.selectbox("費用類型*", options=bill_type_options_add, key="add_meter_type_v4", on_change=update_end_date_meter)
-    new_amount = c2.number_input("帳單金額*", min_value=0, step=100, value=None, placeholder="請輸入...", key="add_meter_amount_v4")
-    c3.info(f"鎖定錶號：{meter_options[selected_meter_id]}")
-
-    c4, c5 = st.columns(2)
-    new_start_date = c4.date_input("帳單起始日*", value=st.session_state.add_meter_start_v4, key="add_meter_start_v4", on_change=update_end_date_meter)
-    new_end_date = c5.date_input("帳單結束日*", key="add_meter_end_v4")
-    
-    # 用量區塊 (改為整數輸入 min_value=0, step=1)
-    st.markdown("##### 用量資訊 (整數)")
-    u1, u2, u3 = st.columns(3)
-    new_peak = u1.number_input("尖峰度數", min_value=0, step=1, key="add_meter_peak_v4", on_change=auto_sum_usage_meter)
-    new_off_peak = u2.number_input("離峰度數", min_value=0, step=1, key="add_meter_off_v4", on_change=auto_sum_usage_meter)
-    new_usage = u3.number_input("總用量 (度/噸)*", min_value=0, step=1, key="add_meter_usage_v4", help="若填寫尖峰/離峰，此欄位會自動加總。")
-
-    # 其他區塊
-    st.markdown("##### 其他資訊")
-    o1, o2, o3 = st.columns(3)
-    new_payer = o1.selectbox("支付方*", options=payer_options_add, index=default_payer_index, key="add_meter_payer_v4")
-    new_pass = o2.checkbox("代收代付?", value=False, key="add_meter_pass_v4")
-    new_notes = st.text_area("備註", key="add_meter_notes_v4")
-
-    if st.button("儲存新帳單", type="primary"):
-        # 驗證
-        if not new_bill_type or new_amount is None or not new_start_date or not new_end_date:
-            st.error("「費用類型」、「帳單金額」、「起始日」、「結束日」為必填欄位！")
-        elif new_start_date > new_end_date:
-            st.error("「起始日」不能晚於「結束日」！")
-        else:
-            details = {
-                "dorm_id": dorm_id,
-                "meter_id": selected_meter_id,
-                "bill_type": new_bill_type,
-                "amount": int(new_amount),
-                "usage_amount": new_usage if new_usage > 0 else None,
-                "peak_usage": new_peak if new_peak > 0 else None,
-                "off_peak_usage": new_off_peak if new_off_peak > 0 else None,
-                "bill_start_date": new_start_date,
-                "bill_end_date": new_end_date,
-                "payer": new_payer,
-                "is_pass_through": new_pass,
-                "is_invoiced": False,
-                "notes": new_notes
-            }
-            with st.spinner("正在新增..."):
-                success, message, _ = finance_model.add_bill_record(details)
-            
-            if success:
-                st.success(message)
-                st.cache_data.clear()
-                # 清除 session
-                keys_to_clear = [
-                    'add_meter_type_v4', 'add_meter_amount_v4', 'add_meter_start_v4', 'add_meter_end_v4',
-                    'add_meter_peak_v4', 'add_meter_off_v4', 'add_meter_usage_v4', 
-                    'add_meter_payer_v4', 'add_meter_pass_v4', 'add_meter_notes_v4'
-                ]
-                for k in keys_to_clear:
-                    if k in st.session_state: del st.session_state[k]
-                st.rerun()
-            else:
-                st.error(message)
