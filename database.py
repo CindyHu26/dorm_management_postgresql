@@ -243,8 +243,9 @@ def create_all_tables_and_indexes():
                 "is_invoiced" BOOLEAN, "notes" TEXT,
                 "payer" VARCHAR(50),
                 "is_pass_through" BOOLEAN DEFAULT FALSE,
-                "peak_usage" NUMERIC(10, 2),      -- 【新增】尖峰度數
-                "off_peak_usage" NUMERIC(10, 2),  -- 【新增】離峰度數
+                "peak_usage" NUMERIC(10, 2),    
+                "sat_half_peak_usage" NUMERIC(10, 2),
+                "off_peak_usage" NUMERIC(10, 2),  
                 FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE,
                 FOREIGN KEY ("meter_id") REFERENCES "Meters" ("id") ON DELETE SET NULL
             );

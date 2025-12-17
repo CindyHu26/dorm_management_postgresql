@@ -105,6 +105,9 @@ def render():
                 "peak_usage": st.column_config.NumberColumn(
                     "尖峰度數", min_value=0.0, format="%.2f"
                 ),
+                "sat_half_peak_usage": st.column_config.NumberColumn(
+                    "週六半尖峰", min_value=0.0, format="%.2f"
+                ),
                 "off_peak_usage": st.column_config.NumberColumn(
                     "離峰度數", min_value=0.0, format="%.2f"
                 ),
@@ -133,7 +136,7 @@ def render():
             },
             column_order=[
                 "id", "meter_id", "bill_type", "amount", 
-                "peak_usage", "off_peak_usage", "usage_amount", 
+                "peak_usage", "sat_half_peak_usage", "off_peak_usage", "usage_amount", 
                 "bill_start_date", "bill_end_date", "payer", 
                 "is_pass_through", "is_invoiced", "notes"
             ]
@@ -197,9 +200,11 @@ def render():
         """當尖峰或離峰度數改變時，自動更新總用量"""
         p = st.session_state.get('add_peak_v6') or 0
         op = st.session_state.get('add_off_peak_v6') or 0
-        # 只有當兩者至少有一個有值時才更新
-        if p > 0 or op > 0:
-            st.session_state.add_usage_v6 = int(p + op)
+        sp = st.session_state.get('add_sat_sp_v6') or 0
+        
+        # 只要任一欄位有值，就自動計算總和
+        if p > 0 or op > 0 or sp > 0:
+            st.session_state.add_usage_v6 = int(p + op + sp)
 
     # --- 初始化 Session State (如果不存在) ---
     if 'add_bill_type_v6' not in st.session_state: st.session_state.add_bill_type_v6 = bill_type_options_add[0]
@@ -208,6 +213,7 @@ def render():
     
     # 新增尖峰/離峰的 state (預設為 0 整數)
     if 'add_peak_v6' not in st.session_state: st.session_state.add_peak_v6 = 0
+    if 'add_sat_sp_v6' not in st.session_state: st.session_state.add_sat_sp_v6 = 0
     if 'add_off_peak_v6' not in st.session_state: st.session_state.add_off_peak_v6 = 0
     if 'add_usage_v6' not in st.session_state: st.session_state.add_usage_v6 = 0
 
@@ -267,6 +273,10 @@ def render():
         "尖峰度數", min_value=0, step=1, 
         key="add_peak_v6", on_change=auto_sum_usage
     )
+    new_sat_sp = u2.number_input(
+        "週六半尖峰", min_value=0, step=1, 
+        key="add_sat_sp_v6", on_change=auto_sum_usage
+    )
     new_off_peak = u2.number_input(
         "離峰度數", min_value=0, step=1, 
         key="add_off_peak_v6", on_change=auto_sum_usage
@@ -296,6 +306,7 @@ def render():
         
         usage_val = st.session_state.add_usage_v6
         peak_val = st.session_state.add_peak_v6
+        sat_sp_val = st.session_state.add_sat_sp_v6
         off_peak_val = st.session_state.add_off_peak_v6
         
         start_date_val = st.session_state.add_start_date_v6
@@ -319,6 +330,7 @@ def render():
                 # 轉為 float 存入資料庫 (雖然前端限制整數，但後端欄位是 numeric)
                 "usage_amount": float(usage_val) if usage_val > 0 else None,
                 "peak_usage": float(peak_val) if peak_val > 0 else None,
+                "sat_half_peak_usage": float(sat_sp_val) if sat_sp_val > 0 else None,
                 "off_peak_usage": float(off_peak_val) if off_peak_val > 0 else None,
                 
                 "bill_start_date": start_date_val,
@@ -338,7 +350,7 @@ def render():
                 # 清除 session state
                 keys_to_delete = [
                     'add_bill_type_v6', 'add_amount_v6', 'add_meter_id_v6', 
-                    'add_usage_v6', 'add_peak_v6', 'add_off_peak_v6',
+                    'add_usage_v6', 'add_peak_v6', 'add_sat_sp_v6', 'add_off_peak_v6',
                     'add_start_date_v6', 'add_end_date_v6', 'add_payer_v6', 
                     'add_pass_through_v6', 'add_notes_v6'
                 ]

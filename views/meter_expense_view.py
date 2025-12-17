@@ -102,11 +102,14 @@ def render():
 
     # --- Callback: 自動加總度數 (整數版) ---
     def auto_sum_usage_meter():
-        # 使用 get 並給定預設值 0 (整數)
+        # 使用 get 並給定預設值 0
         p = st.session_state.get('add_meter_peak_v4') or 0
         op = st.session_state.get('add_meter_off_v4') or 0
-        if p > 0 or op > 0:
-            st.session_state.add_meter_usage_v4 = int(p + op)
+        sp = st.session_state.get('add_meter_sat_sp_v4') or 0 
+        
+        # 只要任一欄位有值，就自動計算總和
+        if p > 0 or op > 0 or sp > 0:
+            st.session_state.add_meter_usage_v4 = int(p + op + sp)
 
     # --- Session State 初始化 (使用整數 0) ---
     if 'add_meter_type_v4' not in st.session_state: st.session_state.add_meter_type_v4 = bill_type_options_add[default_bill_type_idx]
@@ -115,6 +118,7 @@ def render():
     
     # 數值初始化為 int
     if 'add_meter_peak_v4' not in st.session_state: st.session_state.add_meter_peak_v4 = 0
+    if 'add_meter_sat_sp_v4' not in st.session_state: st.session_state.add_meter_sat_sp_v4 = 0
     if 'add_meter_off_v4' not in st.session_state: st.session_state.add_meter_off_v4 = 0
     if 'add_meter_usage_v4' not in st.session_state: st.session_state.add_meter_usage_v4 = 0
 
@@ -133,21 +137,25 @@ def render():
     with r1c5:
         new_payer = st.selectbox("支付方*", options=payer_options_add, index=default_payer_index, key="add_meter_payer_v4")
 
-    # --- 第二排：用量與其他 (5欄) ---
-    r2c1, r2c2, r2c3, r2c4, r2c5 = st.columns(5)
+    # --- 第二排：用量與其他 (改成 6 欄以容納新欄位) ---
+    # 順序：尖峰 -> 週六半尖峰 -> 離峰 -> 總用量 -> 備註 -> 代收代付
+    r2c1, r2c2, r2c3, r2c4, r2c5, r2c6 = st.columns(6) 
+    
     with r2c1:
         new_peak = st.number_input("尖峰 (整數)", min_value=0, step=1, key="add_meter_peak_v4", on_change=auto_sum_usage_meter)
     with r2c2:
-        new_off_peak = st.number_input("離峰 (整數)", min_value=0, step=1, key="add_meter_off_v4", on_change=auto_sum_usage_meter)
+        # 【新增】週六半尖峰
+        new_sat_sp = st.number_input("週六半尖峰", min_value=0, step=1, key="add_meter_sat_sp_v4", on_change=auto_sum_usage_meter)
     with r2c3:
-        new_usage = st.number_input("總用量 (整數)*", min_value=0, step=1, key="add_meter_usage_v4", help="填寫尖峰/離峰會自動加總")
+        new_off_peak = st.number_input("離峰 (整數)", min_value=0, step=1, key="add_meter_off_v4", on_change=auto_sum_usage_meter)
     with r2c4:
-        # 改用 text_input 節省高度
-        new_notes = st.text_input("備註", key="add_meter_notes_v4") 
+        new_usage = st.number_input("總用量 (整)*", min_value=0, step=1, key="add_meter_usage_v4", help="自動加總")
     with r2c5:
-        st.write("") # 增加一點留白讓 Checkbox 下沉對齊
+        new_notes = st.text_input("備註", key="add_meter_notes_v4") 
+    with r2c6:
+        st.write("") # 排版用
         st.write("")
-        new_pass = st.checkbox("代收代付?", value=False, key="add_meter_pass_v4")
+        new_pass = st.checkbox("代收?", value=False, key="add_meter_pass_v4")
 
     if st.button("儲存新帳單", type="primary"):
         # 驗證
@@ -163,6 +171,7 @@ def render():
                 "amount": int(new_amount),
                 "usage_amount": new_usage if new_usage > 0 else None,
                 "peak_usage": new_peak if new_peak > 0 else None,
+                "sat_half_peak_usage": new_sat_sp if new_sat_sp > 0 else None,
                 "off_peak_usage": new_off_peak if new_off_peak > 0 else None,
                 "bill_start_date": new_start_date,
                 "bill_end_date": new_end_date,
@@ -180,7 +189,7 @@ def render():
                 # 清除 session
                 keys_to_clear = [
                     'add_meter_type_v4', 'add_meter_amount_v4', 'add_meter_start_v4', 'add_meter_end_v4',
-                    'add_meter_peak_v4', 'add_meter_off_v4', 'add_meter_usage_v4', 
+                    'add_meter_peak_v4', 'add_meter_sat_sp_v4', 'add_meter_off_v4', 'add_meter_usage_v4', 
                     'add_meter_payer_v4', 'add_meter_pass_v4', 'add_meter_notes_v4'
                 ]
                 for k in keys_to_clear:
@@ -216,15 +225,16 @@ def render():
             num_rows="dynamic", 
             column_config={
                 "id": st.column_config.NumberColumn("ID", disabled=True),
-                "bill_type": st.column_config.SelectboxColumn("費用類型", options=bill_type_options_add, required=True),
-                "amount": st.column_config.NumberColumn("帳單金額", min_value=0, step=100, format="%d", required=True),
+                "bill_type": st.column_config.SelectboxColumn("類型", options=bill_type_options_add, required=True),
+                "amount": st.column_config.NumberColumn("金額", min_value=0, step=100, format="%d", required=True),
                 
                 "peak_usage": st.column_config.NumberColumn("尖峰", min_value=0.0, format="%.2f"),
+                "sat_half_peak_usage": st.column_config.NumberColumn("半尖峰", min_value=0.0, format="%.2f"),
                 "off_peak_usage": st.column_config.NumberColumn("離峰", min_value=0.0, format="%.2f"),
                 "usage_amount": st.column_config.NumberColumn("總用量", min_value=0.0, format="%.2f"),
                 
-                "bill_start_date": st.column_config.DateColumn("帳單起始日", format="YYYY-MM-DD", required=True),
-                "bill_end_date": st.column_config.DateColumn("帳單結束日", format="YYYY-MM-DD", required=True),
+                "bill_start_date": st.column_config.DateColumn("起始日", format="YYYY-MM-DD", required=True),
+                "bill_end_date": st.column_config.DateColumn("結束日", format="YYYY-MM-DD", required=True),
                 "payer": st.column_config.SelectboxColumn("支付方", options=payer_options_add, default="我司", required=True),
                 "is_pass_through": st.column_config.CheckboxColumn("代收代付?", default=False),
                 "is_invoiced": st.column_config.CheckboxColumn("已請款?", default=False),
@@ -232,7 +242,7 @@ def render():
             },
             column_order=[
                 "id", "bill_type", "amount", 
-                "peak_usage", "off_peak_usage", "usage_amount", 
+                "peak_usage", "sat_half_peak_usage", "off_peak_usage", "usage_amount", 
                 "bill_start_date", "bill_end_date", 
                 "payer", "is_pass_through", "is_invoiced", "notes"
             ]
