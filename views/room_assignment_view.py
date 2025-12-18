@@ -138,18 +138,26 @@ def render():
                 else:
                     updates_list = []
                     for _, row in updates_df.iterrows():
+                        # 1. 解包房號 (之前改過的)
                         raw_room = row['新房號']
                         if isinstance(raw_room, list):
-                            # 如果是清單 (例如 [105])，取出第一個元素
                             final_room_id = int(raw_room[0]) if len(raw_room) > 0 else None
                         else:
-                            # 如果是單一數值 (例如 105 或 105.0)
                             final_room_id = int(raw_room)
+
+                        # 2. 【本次新增】解包床位 (防止存成 ['下鋪'])
+                        raw_bed = row['新床位編號']
+                        if isinstance(raw_bed, list):
+                            final_bed = str(raw_bed[0]) if len(raw_bed) > 0 else None
+                        else:
+                            final_bed = str(raw_bed) if pd.notna(raw_bed) else None
+
                         updates_list.append({
                             'ah_id': row['ah_id'],
                             'worker_id': row['worker_unique_id'],
                             'new_room_id': final_room_id,
-                            'new_bed_number': str(row['新床位編號']).strip() or None,
+                            # 使用處理乾淨的 final_bed
+                            'new_bed_number': final_bed.strip() if final_bed and final_bed.strip() else None,
                             'new_start_date': row['新入住日'] 
                         })
                     
@@ -240,15 +248,35 @@ def render():
             if submitted:
                 updates_list = []
                 for _, row in edited_df.iterrows():
-                    new_room_val = row['修正後房號']
-                    new_bed_val = row['修正後床位']
+                    # --- 安全取得房號 (處理可能是 List 的情況) ---
+                    # 1. 解包房號
+                    raw_room_val = row['修正後房號']
+                    if isinstance(raw_room_val, list):
+                        if len(raw_room_val) > 0:
+                            new_room_val = raw_room_val[0]
+                        else:
+                            new_room_val = None
+                    else:
+                        new_room_val = raw_room_val
+
+                    # 2. 解包床位 (防止存成 ['下鋪'])
+                    raw_bed_val = row['修正後床位']
+                    if isinstance(raw_bed_val, list):
+                        if len(raw_bed_val) > 0:
+                            new_bed_val = str(raw_bed_val[0])
+                        else:
+                            new_bed_val = None
+                    else:
+                        new_bed_val = str(raw_bed_val) if pd.notna(raw_bed_val) else None
                     
+                    # 判斷是否有變更 (有房號才存)
                     if pd.notna(new_room_val):
                         updates_list.append({
                             'ah_id': row['ah_id'],
                             'worker_id': row['worker_unique_id'],
                             'new_room_id': int(new_room_val),
-                            'new_bed_number': str(new_bed_val).strip() if pd.notna(new_bed_val) and str(new_bed_val).strip() else None
+                            # 使用處理乾淨的 new_bed_val
+                            'new_bed_number': new_bed_val.strip() if new_bed_val and new_bed_val.strip() else None
                         })
 
                 if not updates_list:
