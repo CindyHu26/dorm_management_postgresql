@@ -8,7 +8,8 @@ from datetime import date
 UPLOAD_DIRS = {
     "dorm": "dorm_photos",
     "lease": "lease_photos",
-    "accommodation": "accommodation_photos"
+    "accommodation": "accommodation_photos",
+    "worker_docs": "worker_docs"
 }
 
 def get_resource_path(relative_path):
@@ -65,6 +66,36 @@ def save_uploaded_files(uploaded_files, category, naming_prefix):
         saved_paths.append(file_path)
     
     return saved_paths
+
+def save_uploaded_file(uploaded_file, sub_dir="temp_uploads", prefix=""):
+    """
+    【新增】儲存單一檔案的函式 (配合 worker_view.py 使用)
+    :param uploaded_file: Streamlit UploadedFile 物件
+    :param sub_dir: 子目錄名稱 (如 "worker_docs")
+    :param prefix: 檔名前綴
+    :return: 儲存後的相對路徑字串
+    """
+    # 1. 確保目錄存在
+    if not os.path.exists(sub_dir):
+        os.makedirs(sub_dir)
+    
+    if not uploaded_file:
+        return None
+
+    # 2. 處理檔名
+    file_ext = os.path.splitext(uploaded_file.name)[1]
+    unique_id = str(uuid.uuid4())[:6]
+    safe_prefix = sanitize_filename(prefix)
+    
+    # 格式：前綴_UUID.副檔名
+    filename = f"{safe_prefix}{unique_id}{file_ext}"
+    file_path = os.path.join(sub_dir, filename)
+    
+    # 3. 寫入檔案
+    with open(file_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    
+    return file_path
 
 def delete_file(file_path):
     """刪除指定檔案"""

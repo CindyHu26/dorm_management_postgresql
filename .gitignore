@@ -85,6 +85,8 @@ maintenance_photos/
 dorm_photos/
 lease_photos/
 accommodation_photos/
+temp_uploads/
+worker_docs/
 run_daily_sync.py
 run_monthly_finance_sync.py
 sync_log.txt

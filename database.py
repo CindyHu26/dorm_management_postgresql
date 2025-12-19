@@ -169,6 +169,16 @@ def create_all_tables_and_indexes():
                 FOREIGN KEY ("room_id") REFERENCES "Rooms" ("id") ON DELETE SET NULL
             );
             """
+            TABLES['WorkerDocuments'] = """
+            CREATE TABLE IF NOT EXISTS "WorkerDocuments" (
+                id SERIAL PRIMARY KEY,
+                worker_unique_id TEXT NOT NULL REFERENCES "Workers"(unique_id) ON DELETE CASCADE,
+                category TEXT NOT NULL, 
+                file_name TEXT NOT NULL, 
+                file_path TEXT NOT NULL, 
+                uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP 
+            );
+            """
 
             TABLES['AccommodationHistory'] = """
             CREATE TABLE IF NOT EXISTS "AccommodationHistory" (

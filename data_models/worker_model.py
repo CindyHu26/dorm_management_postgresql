@@ -1642,3 +1642,54 @@ def get_accommodation_history_for_photo_upload(filters: dict):
         return _execute_query_to_dataframe(conn, query, tuple(params))
     finally:
         if conn: conn.close()
+
+def add_worker_document(worker_unique_id, category, file_name, file_path):
+    """新增一筆人員文件紀錄 (修正版：使用 worker_unique_id)"""
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗"
+    try:
+        with conn.cursor() as cursor:
+            sql = """
+                INSERT INTO "WorkerDocuments" (worker_unique_id, category, file_name, file_path)
+                VALUES (%s, %s, %s, %s)
+            """
+            cursor.execute(sql, (worker_unique_id, category, file_name, file_path))
+        conn.commit()
+        return True, "文件上傳成功"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"上傳失敗: {e}"
+    finally:
+        if conn: conn.close()
+
+def get_worker_documents(worker_unique_id):
+    """取得指定人員的所有文件 (修正版：使用 worker_unique_id)"""
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        query = """
+            SELECT id, category, file_name, file_path, uploaded_at
+            FROM "WorkerDocuments"
+            WHERE worker_unique_id = %s
+            ORDER BY uploaded_at DESC
+        """
+        return pd.read_sql(query, conn, params=(worker_unique_id,))
+    except Exception as e:
+        print(f"查詢文件失敗: {e}")
+        return pd.DataFrame()
+    finally:
+        if conn: conn.close()
+
+def delete_worker_document(doc_id):
+    """刪除指定文件紀錄 (維持不變)"""
+    conn = database.get_db_connection()
+    if not conn: return False, "連線失敗"
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute('DELETE FROM "WorkerDocuments" WHERE id = %s', (doc_id,))
+        conn.commit()
+        return True, "紀錄已刪除"
+    except Exception as e:
+        return False, f"刪除失敗: {e}"
+    finally:
+        if conn: conn.close()
