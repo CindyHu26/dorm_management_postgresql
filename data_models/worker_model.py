@@ -1663,7 +1663,7 @@ def add_worker_document(worker_unique_id, category, file_name, file_path):
         if conn: conn.close()
 
 def get_worker_documents(worker_unique_id):
-    """取得指定人員的所有文件 (修正版：使用 worker_unique_id)"""
+    """取得指定人員的所有文件 (修正版：使用專案標準輔助函式)"""
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
@@ -1673,13 +1673,14 @@ def get_worker_documents(worker_unique_id):
             WHERE worker_unique_id = %s
             ORDER BY uploaded_at DESC
         """
-        return pd.read_sql(query, conn, params=(worker_unique_id,))
+        # 使用專案統一的輔助函式，確保欄位與資料正確對應
+        return _execute_query_to_dataframe(conn, query, (worker_unique_id,))
     except Exception as e:
         print(f"查詢文件失敗: {e}")
         return pd.DataFrame()
     finally:
         if conn: conn.close()
-
+        
 def delete_worker_document(doc_id):
     """刪除指定文件紀錄 (維持不變)"""
     conn = database.get_db_connection()

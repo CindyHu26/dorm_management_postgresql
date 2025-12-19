@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import date
 import utils
 import os
+import base64
 from data_models import worker_model, dormitory_model, vendor_model
 
 def render():
@@ -439,64 +440,69 @@ def render_sub_documents(worker_id):
             else:
                 st.warning("請選擇類型與檔案")
 
-    # --- 2. 列表區塊 ---
-    st.markdown("##### 📚 已上傳文件")
+    # --- 2. 列表與預覽區塊 ---
+    st.markdown("##### 📚 已上傳文件 (點擊 👁️ 可在下方預覽)")
     docs_df = worker_model.get_worker_documents(worker_id)
     
     if not docs_df.empty:
-        # 【重要修正 1】資料清洗：過濾掉 ID 欄位中的非數字內容 (例如字串 "id")
-        # 這能防止資料庫報錯 invalid input syntax for type integer
+        # 資料清洗 (防止 ID 報錯)
         docs_df['id'] = pd.to_numeric(docs_df['id'], errors='coerce')
-        docs_df = docs_df.dropna(subset=['id']) # 移除無法轉成數字的行
-        docs_df['id'] = docs_df['id'].astype(int) # 轉為純整數
+        docs_df = docs_df.dropna(subset=['id']) 
+        docs_df['id'] = docs_df['id'].astype(int)
 
-        # --- 自動偵測失聯檔案 ---
-        missing_ids = [row['id'] for _, row in docs_df.iterrows() if not os.path.exists(row['file_path'])]
-        if missing_ids:
-            st.warning(f"⚠️ 偵測到 {len(missing_ids)} 筆紀錄的原始檔案已遺失。")
-            if st.button("🧹 一鍵清理所有失聯紀錄", key=f"clean_missing_{worker_id}"):
-                for mid in missing_ids:
-                    worker_model.delete_worker_document(int(mid))
-                st.cache_data.clear()
-                st.success("失聯紀錄已清除")
-                st.rerun()
-
-        # 使用清洗後的資料進行渲染
+        # 遍歷顯示文件列表
         for i, (_, row) in enumerate(docs_df.iterrows(), start=1):
-            # 使用序號 i 確保 Streamlit Key 唯一
             safe_key = f"{worker_id}_f_{i}"
-            file_exists = os.path.exists(row['file_path'])
-            title_prefix = "📄" if file_exists else "🚨 [檔案遺失]"
+            f_path = row['file_path']
+            file_exists = os.path.exists(f_path)
+            ext = os.path.splitext(f_path)[1].lower()
             
-            with st.expander(f"{title_prefix} {row['category']} - {row['file_name']}"):
+            title = f"📄 {row['category']} - {row['file_name']}" if file_exists else f"🚨 [檔案遺失] {row['category']}"
+            
+            with st.expander(title):
                 st.write(f"上傳時間: {row['uploaded_at']}")
-                c_dl, c_del = st.columns([1, 1])
+                c_dl, c_view, c_del = st.columns([1, 1, 1])
                 
                 with c_dl:
                     if file_exists:
-                        try:
-                            with open(row['file_path'], "rb") as f:
-                                st.download_button("⬇️ 下載檔案", f, file_name=row['file_name'], key=f"dl_{safe_key}")
-                        except:
-                            st.error("讀取錯誤")
+                        with open(f_path, "rb") as f:
+                            st.download_button("⬇️ 下載", f, file_name=row['file_name'], key=f"dl_{safe_key}")
                     else:
-                        st.error("檔案不存在，無法下載。")
+                        st.error("找不到檔案")
+                
+                with c_view:
+                    # 【核心功能】預覽按鈕
+                    show_preview = st.checkbox("👁️ 預覽", key=f"view_{safe_key}")
                 
                 with c_del:
-                    # 無論檔案在不在，都要能刪除「紀錄」
-                    if st.button("🗑️ 刪除此紀錄", key=f"del_{safe_key}", type="secondary", use_container_width=True):
-                        # 【重要修正 2】強制轉為整數 int()，確保傳給資料庫的是 12 而不是 'id'
-                        real_db_id = int(row['id'])
-                        success, msg = worker_model.delete_worker_document(real_db_id)
-                        
+                    if st.button("🗑️ 刪除", key=f"del_{safe_key}", type="secondary"):
+                        success, msg = worker_model.delete_worker_document(int(row['id']))
                         if success:
-                            if file_exists:
-                                utils.delete_file(row['file_path'])
-                            st.toast("紀錄已成功削掉")
+                            if file_exists: utils.delete_file(f_path)
                             st.cache_data.clear()
                             st.rerun()
-                        else:
-                            st.error(f"刪除失敗：{msg}")
+
+                # --- 執行預覽邏輯 ---
+                if show_preview and file_exists:
+                    st.markdown("---")
+                    # 1. 處理圖片
+                    if ext in [".jpg", ".jpeg", ".png", ".webp"]:
+                        st.image(f_path, use_container_width=True)
+                    
+                    # 2. 處理 PDF
+                    elif ext == ".pdf":
+                        try:
+                            with open(f_path, "rb") as f:
+                                base64_pdf = base64.b64encode(f.read()).decode('utf-8')
+                            pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600" type="application/pdf"></iframe>'
+                            st.markdown(pdf_display, unsafe_allow_html=True)
+                        except Exception as e:
+                            st.error(f"預覽 PDF 失敗: {e}")
+                    
+                    # 3. 其他類型
+                    else:
+                        st.warning(f"目前不支援直接預覽 {ext} 格式，請使用下載功能。")
+
     else:
         st.info("目前尚無上傳文件。")
 
