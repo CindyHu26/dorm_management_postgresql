@@ -16,16 +16,21 @@ def get_all_logs_for_selection():
 # -----------------------------------------------------------------------------
 
 def render_add_new_record(dorm_options, vendor_options, item_type_options, status_options):
-    """渲染：新增維修紀錄 (無 Form，緊湊排版，支援連動)"""
+    """渲染：新增維修紀錄 (修改版：解決成功訊息閃退問題)"""
     st.subheader("➕ 新增維修紀錄")
-    
+
+    # --- 【修改點 1】檢查是否有「待顯示」的成功訊息 (放在最前面) ---
+    if "maint_success_msg" in st.session_state:
+        st.success(st.session_state.maint_success_msg)
+        # 顯示完後刪除，避免下次進來還一直顯示
+        del st.session_state["maint_success_msg"]
+
     # -------------------------------------------------------
     # 第一排：基本資訊 (5欄)
     # -------------------------------------------------------
     c1, c2, c3, c4, c5 = st.columns(5)
     
     with c1:
-        # 【連動關鍵 1】宿舍：選完後會自動 Rerun
         dorm_keys = list(dorm_options.keys())
         new_dorm_id = st.selectbox(
             "宿舍 (連動設備)*", 
@@ -35,7 +40,6 @@ def render_add_new_record(dorm_options, vendor_options, item_type_options, statu
         )
 
     with c2:
-        # 【連動關鍵 2】設備：根據上方選的宿舍，動態撈取設備
         if new_dorm_id:
             equipment_in_dorm = equipment_model.get_equipment_for_view({"dorm_id": new_dorm_id})
             if not equipment_in_dorm.empty:
@@ -59,7 +63,16 @@ def render_add_new_record(dorm_options, vendor_options, item_type_options, statu
         new_status = st.selectbox("案件狀態*", options=status_options, key="add_m_status")
     
     with c5:
-        new_category = st.selectbox("維修類別", options=item_type_options, key="add_m_cat")
+        new_category_sel = st.selectbox("維修類別", options=item_type_options, key="add_m_cat")
+        
+        custom_category = None
+        if new_category_sel == "其他(手動輸入)":
+            custom_category = st.text_input(
+                "請輸入自訂類型*", 
+                placeholder="例如: 網路費",
+                help="請輸入具體的維修或費用項目名稱",
+                key="add_m_cat_custom"
+            )
 
     # -------------------------------------------------------
     # 第二排：費用與廠商 (5欄)
@@ -75,12 +88,12 @@ def render_add_new_record(dorm_options, vendor_options, item_type_options, statu
     with c9:
         new_finish_date = st.date_input("完成日期", value=None, key="add_m_finish")
     with c10:
-        st.write("") # 排版用空行
+        st.write("") 
         st.write("")
         new_is_paid_check = st.checkbox("已付款?", value=False, key="add_m_paid_check")
 
     # -------------------------------------------------------
-    # 詳細說明 (大框)
+    # 詳細說明
     # -------------------------------------------------------
     new_description = st.text_area(
         "修理細項說明* (可換行)", 
@@ -90,7 +103,7 @@ def render_add_new_record(dorm_options, vendor_options, item_type_options, statu
     )
     
     # -------------------------------------------------------
-    # 其他細項欄位 (獨立分開 4 欄)
+    # 其他細項欄位
     # -------------------------------------------------------
     c_sub1, c_sub2, c_sub3, c_sub4 = st.columns(4)
     new_reporter = c_sub1.text_input("提報人", placeholder="內部人員", key="add_m_reporter")
@@ -113,8 +126,12 @@ def render_add_new_record(dorm_options, vendor_options, item_type_options, statu
     # -------------------------------------------------------
     if st.button("💾 儲存維修案件", type="primary", use_container_width=True):
         
+        final_category = custom_category if new_category_sel == "其他(手動輸入)" else new_category_sel
+
         if not new_dorm_id or not new_description:
             st.error("「宿舍」和「修理細項說明」為必填欄位！")
+        elif new_category_sel == "其他(手動輸入)" and not custom_category:
+            st.error("您選擇了「其他(手動輸入)」，請務必填寫自訂類型名稱！")
         else:
             # 1. 處理檔案
             file_paths = []
@@ -123,7 +140,7 @@ def render_add_new_record(dorm_options, vendor_options, item_type_options, statu
                     "date": new_report_date.strftime('%Y%m%d'),
                     "address": dorm_options.get(new_dorm_id, 'UnknownAddr'),
                     "reporter": new_reporter,
-                    "type": new_category
+                    "type": final_category
                 }
                 for file in uploaded_files:
                     path = maintenance_model.save_uploaded_photo(file, file_info_dict)
@@ -131,7 +148,6 @@ def render_add_new_record(dorm_options, vendor_options, item_type_options, statu
             
             # 2. 準備資料
             final_status = new_status
-            # 自動轉待付款邏輯
             if new_finish_date and new_status in ["待處理", "待尋廠商", "進行中"]:
                 final_status = "待付款"
             
@@ -142,19 +158,16 @@ def render_add_new_record(dorm_options, vendor_options, item_type_options, statu
                 'status': final_status,
                 'notification_date': new_report_date,
                 'reported_by': new_reporter, 
-                'item_type': new_category, 
+                'item_type': final_category,
                 'description': new_description,
                 'contacted_vendor_date': None, 
                 'completion_date': new_finish_date,
-                
-                # 【修正】將分開的欄位分別填入
-                'key_info': new_key_info,    # 鑰匙
+                'key_info': new_key_info,    
                 'cost': new_cost, 
                 'payer': new_payer, 
-                'invoice_date': None,        # 新增時暫不填請款日，通常是編輯時填
-                'invoice_info': new_invoice_info, # 發票
-                'notes': new_notes,          # 備註
-                
+                'invoice_date': None,        
+                'invoice_info': new_invoice_info, 
+                'notes': new_notes,          
                 'photo_paths': file_paths 
             }
             
@@ -162,21 +175,22 @@ def render_add_new_record(dorm_options, vendor_options, item_type_options, statu
             success, message = maintenance_model.add_log(details)
             
             if success:
-                st.success(message)
+                # --- 【修改點 2】存入 Session State，而不是直接顯示 ---
+                st.session_state.maint_success_msg = f"儲存成功！ {message}"
                 st.cache_data.clear()
                 
-                # 4. 手動清空 Session State (包含拆分後的新欄位)
+                # 4. 手動清空欄位
                 keys_to_clear = [
                     "add_m_dorm", "add_m_equip", "add_m_date", "add_m_status", "add_m_cat",
                     "add_m_cost", "add_m_vendor", "add_m_payer", "add_m_finish", "add_m_paid_check",
-                    "add_m_desc", "add_m_uploader",
-                    # 新增的 Key
-                    "add_m_reporter", "add_m_key_info", "add_m_invoice", "add_m_notes"
+                    "add_m_desc", "add_m_uploader", "add_m_reporter", "add_m_key_info", 
+                    "add_m_invoice", "add_m_notes", "add_m_cat_custom"
                 ]
                 for k in keys_to_clear:
                     if k in st.session_state:
                         del st.session_state[k]
                 
+                # 刷新頁面 (刷新後會自動執行上面的 【修改點 1】 來顯示訊息)
                 st.rerun()
             else:
                 st.error(message)
@@ -360,7 +374,7 @@ def render_edit_delete(dorm_options, vendor_options, item_type_options, status_o
                 
                 success, message = maintenance_model.update_log(selected_log_id, update_data, paths_to_delete=files_to_delete)
                 if success:
-                    st.success(message)
+                    st.success(f"儲存成功！ {message}")
                     st.cache_data.clear()
                     st.rerun()
                 else:
@@ -487,7 +501,7 @@ def render():
     vendor_options = {v['id']: f"{v['服務項目']} - {v['廠商名稱']}" for _, v in vendors.iterrows()} if not vendors.empty else {}
     
     status_options = ["待處理", "待尋廠商", "進行中", "待付款", "已完成"]
-    item_type_options = ["維修", "定期保養", "更換耗材", "水電", "包通", "飲水機", "冷氣", "消防", "金城", "監視器", "水質檢測", "清運", "裝潢", "其他", "其他(手動輸入)"]
+    item_type_options = ["維修", "定期保養", "更換耗材", "水電", "包通", "飲水機", "冷氣", "消防", "金城", "監視器", "水質檢測", "清運", "裝潢", "油漆", "蝦皮", "其他(手動輸入)"]
 
     # =========================================================================
     # 導覽列：直接列出 5 個模組 (單層 Radio)

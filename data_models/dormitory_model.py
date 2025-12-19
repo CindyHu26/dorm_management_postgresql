@@ -460,7 +460,8 @@ def get_rooms_for_editor(dorm_id: int):
 
 def batch_sync_rooms(dorm_id: int, edited_df: pd.DataFrame):
     """
-    【v2.6 新增】在單一交易中，批次同步 (新增、更新、刪除) 宿舍的房間。
+    【v2.7 修正版】在單一交易中，批次同步宿舍的房間。
+    修正重點：加入 clean_val 函式，防止 data_editor 回傳 list 導致資料庫報錯。
     """
     conn = database.get_db_connection()
     if not conn: 
@@ -472,7 +473,6 @@ def batch_sync_rooms(dorm_id: int, edited_df: pd.DataFrame):
         original_ids = set(original_df['id'].dropna())
         
         # 2. 取得 data_editor 編輯後的狀態
-        # 處理 NaN/NaT (例如新行)
         edited_df = edited_df.replace({pd.NaT: None, np.nan: None})
         edited_ids = set(edited_df['id'].dropna())
 
@@ -480,6 +480,13 @@ def batch_sync_rooms(dorm_id: int, edited_df: pd.DataFrame):
         ids_to_delete = original_ids - edited_ids
         new_rows_df = edited_df[edited_df['id'].isnull()]
         updated_rows_df = edited_df[edited_df['id'].isin(original_ids)]
+
+        # --- 【核心修正】內部 helper: 解包 Streamlit 可能回傳的 list ---
+        def clean_val(val):
+            if isinstance(val, list):
+                # 如果是清單 (如 [4])，取出第一個值；若是空清單則回傳 None
+                return val[0] if len(val) > 0 else None
+            return val
 
         with conn.cursor() as cursor:
             
@@ -489,7 +496,7 @@ def batch_sync_rooms(dorm_id: int, edited_df: pd.DataFrame):
                     # 取得房號用於錯誤訊息
                     room_number_to_delete = original_df[original_df['id'] == room_id_to_delete]['room_number'].iloc[0]
                     
-                    # 安全檢查：裡面是否還有在住人員？
+                    # 安全檢查
                     check_sql = """
                         SELECT COUNT(id) as count 
                         FROM "AccommodationHistory" 
@@ -499,43 +506,43 @@ def batch_sync_rooms(dorm_id: int, edited_df: pd.DataFrame):
                     result = cursor.fetchone()
                     
                     if result and result['count'] > 0:
-                        # 如果有人住，拋出錯誤並中斷整個交易
                         raise Exception(f"無法刪除房號 {room_number_to_delete} (ID: {room_id_to_delete})，因為裡面還有 {result['count']} 位在住人員。")
                     
-                    # 執行刪除
                     cursor.execute('DELETE FROM "Rooms" WHERE id = %s', (room_id_to_delete,))
 
             # --- 動作 B：處理新增 ---
             if not new_rows_df.empty:
                 for _, row in new_rows_df.iterrows():
-                    if not row['room_number'] or pd.isna(row['room_number']):
+                    # 解包房號
+                    room_num = clean_val(row['room_number'])
+                    if not room_num or pd.isna(room_num):
                         raise Exception("新增失敗：『房號』為必填欄位，不可為空。")
                     
                     insert_sql = """
                         INSERT INTO "Rooms" (dorm_id, room_number, capacity, gender_policy, nationality_policy, room_notes, area_sq_meters)
                         VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """
+                    # 【這裡套用 clean_val 解包所有欄位】
                     cursor.execute(insert_sql, (
                         dorm_id,
-                        row['room_number'],
-                        row.get('capacity'),
-                        row.get('gender_policy', '可混住'),
-                        row.get('nationality_policy', '不限'),
-                        row.get('room_notes'),
-                        row.get('area_sq_meters')
+                        room_num,
+                        clean_val(row.get('capacity')),  # 修正 capacity 報錯的問題
+                        clean_val(row.get('gender_policy')) or '可混住', # 解包並給預設值
+                        clean_val(row.get('nationality_policy')) or '不限',
+                        clean_val(row.get('room_notes')),
+                        clean_val(row.get('area_sq_meters'))
                     ))
 
             # --- 動作 C：處理更新 ---
             if not updated_rows_df.empty:
-                # 為了比對，我們需要原始資料
                 original_indexed = original_df.set_index('id')
                 for _, row in updated_rows_df.iterrows():
                     room_id_to_update = row['id']
                     original_row = original_indexed.loc[room_id_to_update]
                     
-                    # 比較是否有變更
                     if not row.equals(original_row):
-                        if not row['room_number'] or pd.isna(row['room_number']):
+                        room_num = clean_val(row['room_number'])
+                        if not room_num or pd.isna(room_num):
                              raise Exception(f"更新失敗 (ID: {room_id_to_update})：『房號』不可改為空值。")
 
                         update_sql = """
@@ -544,23 +551,22 @@ def batch_sync_rooms(dorm_id: int, edited_df: pd.DataFrame):
                                 nationality_policy = %s, room_notes = %s, area_sq_meters = %s
                             WHERE id = %s
                         """
+                        # 【這裡套用 clean_val 解包所有欄位】
                         cursor.execute(update_sql, (
-                            row['room_number'],
-                            row.get('capacity'),
-                            row.get('gender_policy', '可混住'),
-                            row.get('nationality_policy', '不限'),
-                            row.get('room_notes'),
-                            row.get('area_sq_meters'),
+                            room_num,
+                            clean_val(row.get('capacity')), # 修正 capacity 報錯的問題
+                            clean_val(row.get('gender_policy')) or '可混住',
+                            clean_val(row.get('nationality_policy')) or '不限',
+                            clean_val(row.get('room_notes')),
+                            clean_val(row.get('area_sq_meters')),
                             room_id_to_update
                         ))
         
-        # 如果所有操作都沒出錯，提交交易
         conn.commit()
         return True, "房間資料已成功同步。"
 
     except Exception as e:
-        if conn: conn.rollback() # 發生任何錯誤，復原所有操作
-        # 處理違反唯一約束的錯誤
+        if conn: conn.rollback()
         if isinstance(e, database.psycopg2.IntegrityError) and "unique constraint" in str(e).lower():
             return False, f"儲存失敗：房號重複。請確保您新增或修改的房號在這間宿舍中是唯一的。"
         return False, f"儲存時發生錯誤: {e}"
