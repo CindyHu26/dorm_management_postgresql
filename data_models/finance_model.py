@@ -22,6 +22,12 @@ def safe_int(val):
     """安全地將各種型態轉為 int，失敗回傳 0 (用於金額)"""
     if pd.isna(val) or val is None or str(val).strip() == '':
         return 0
+    # 如果是 list，嘗試取第一個元素
+    if isinstance(val, list):
+        if len(val) > 0:
+            val = val[0]
+        else:
+            return 0
     try:
         # 先轉 float 再轉 int，可以處理 "100.0" 這種字串或浮點數
         return int(float(val))
@@ -32,6 +38,12 @@ def safe_float(val):
     """安全地將各種型態轉為 float，失敗回傳 None (用於用量)"""
     if pd.isna(val) or val is None or str(val).strip() == '':
         return None
+    # 如果是 list，嘗試取第一個元素
+    if isinstance(val, list):
+        if len(val) > 0:
+            val = val[0]
+        else:
+            return None
     try:
         return float(val)
     except:
@@ -132,10 +144,7 @@ def batch_update_annual_expenses(edited_df: pd.DataFrame):
                     continue
                 
                 # 轉換數值 (確保金額是整數)
-                try:
-                    amount = int(row['總金額'])
-                except:
-                    amount = 0
+                amount = safe_int(row.get('總金額'))
                 
                 sql = """
                     UPDATE "AnnualExpenses"
@@ -473,8 +482,6 @@ def add_bill_record(details: dict):
                 return False, f"新增失敗：此錶號在該日期已存在相同的費用紀錄。", None
             
             # 確保 keys 包含新欄位 (如果前端沒傳，預設為 None)
-            # 這邊不需要特別改 code，只要前端傳進來的 details 字典包含 'peak_usage' 即可
-            # 但為了保險，可以在這裡做個處理：
             if 'peak_usage' not in details: details['peak_usage'] = None
             if 'sat_half_peak_usage' not in details: details['sat_half_peak_usage'] = None
             if 'off_peak_usage' not in details: details['off_peak_usage'] = None
@@ -817,6 +824,13 @@ def batch_sync_bills(meter_id: int, dorm_id: int, edited_df: pd.DataFrame):
                     
                     final_bill_type = row['bill_type']
                     
+                    # 【安全轉換】
+                    amount_val = safe_int(row['amount'])
+                    usage_val = safe_float(row.get('usage_amount'))
+                    peak_val = safe_float(row.get('peak_usage'))
+                    off_peak_val = safe_float(row.get('off_peak_usage'))
+                    sat_half_peak_val = safe_float(row.get('sat_half_peak_usage'))
+                    
                     # 【修改】加入 peak_usage 和 off_peak_usage
                     insert_sql = """
                         INSERT INTO "UtilityBills" (
@@ -828,8 +842,8 @@ def batch_sync_bills(meter_id: int, dorm_id: int, edited_df: pd.DataFrame):
                     """
                     cursor.execute(insert_sql, (
                         dorm_id, meter_id, final_bill_type,
-                        row['amount'], row.get('usage_amount'),
-                        row.get('peak_usage'), row.get('off_peak_usage'), row.get('sat_half_peak_usage'), 
+                        amount_val, usage_val,
+                        peak_val, off_peak_val, sat_half_peak_val, 
                         start_date_obj,
                         end_date_obj,
                         row.get('payer', '我司'),
@@ -857,6 +871,13 @@ def batch_sync_bills(meter_id: int, dorm_id: int, edited_df: pd.DataFrame):
                         if start_date_obj_upd > end_date_obj_upd:
                              raise Exception(f"更新失敗 (ID: {bill_id_to_update})：『起始日』不可晚於『結束日』。")
 
+                        # 【安全轉換】
+                        amount_val_upd = safe_int(row['amount'])
+                        usage_val_upd = safe_float(row.get('usage_amount'))
+                        peak_val = safe_float(row.get('peak_usage'))
+                        off_peak_val = safe_float(row.get('off_peak_usage'))
+                        sat_half_peak_val = safe_float(row.get('sat_half_peak_usage'))
+
                         # 更新 SQL
                         update_sql = """
                             UPDATE "UtilityBills" SET 
@@ -867,8 +888,8 @@ def batch_sync_bills(meter_id: int, dorm_id: int, edited_df: pd.DataFrame):
                             WHERE id = %s
                         """
                         cursor.execute(update_sql, (
-                            row['bill_type'], row['amount'], row.get('usage_amount'),
-                            row.get('peak_usage'), row.get('off_peak_usage'), row.get('sat_half_peak_usage'),
+                            row['bill_type'], amount_val_upd, usage_val_upd,
+                            peak_val, off_peak_val, sat_half_peak_val,
                             start_date_obj_upd,
                             end_date_obj_upd,
                             row.get('payer', '我司'),
@@ -928,7 +949,8 @@ def batch_sync_dorm_bills(dorm_id: int, edited_df: pd.DataFrame):
         
         # 清理 meter_id：確保來自新空行 (NaN) 的值被存為 None
         if 'meter_id' in edited_df.columns:
-             edited_df['meter_id'] = edited_df['meter_id'].apply(lambda x: int(x) if pd.notna(x) and x != 0 else None)
+             # 【安全轉換】meter_id
+             edited_df['meter_id'] = edited_df['meter_id'].apply(lambda x: safe_int(x) if pd.notna(x) and x != 0 else None)
 
         edited_ids = set(edited_df['id'].dropna())
 
@@ -965,18 +987,26 @@ def batch_sync_dorm_bills(dorm_id: int, edited_df: pd.DataFrame):
                         raise Exception(f"新增失敗 (類型 {row['bill_type']})：『起始日』不可晚於『結束日』。")
                     # --- 【修改結束】 ---
                     
+                    # 【安全轉換】
+                    amount_val = safe_int(row['amount'])
+                    usage_val = safe_float(row.get('usage_amount'))
+                    peak_val = safe_float(row.get('peak_usage'))
+                    off_peak_val = safe_float(row.get('off_peak_usage'))
+                    sat_half_peak_val = safe_float(row.get('sat_half_peak_usage'))
+                    meter_id_val = safe_int(row.get('meter_id')) if pd.notna(row.get('meter_id')) else None
+
                     insert_sql = """
                         INSERT INTO "UtilityBills" (
                             dorm_id, meter_id, bill_type, amount, usage_amount, 
-                            peak_usage, off_peak_usage, -- 新增
+                            peak_usage, off_peak_usage, sat_half_peak_usage, -- 新增
                             bill_start_date, bill_end_date, payer, 
                             is_pass_through, is_invoiced, notes
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """
                     cursor.execute(insert_sql, (
-                        dorm_id, row.get('meter_id'), row['bill_type'],
-                        row['amount'], row.get('usage_amount'),
-                        row.get('peak_usage'), row.get('off_peak_usage'), # 新增參數
+                        dorm_id, meter_id_val, row['bill_type'],
+                        amount_val, usage_val,
+                        peak_val, off_peak_val, sat_half_peak_val, # 新增參數
                         start_date_obj, end_date_obj,
                         row.get('payer', '我司'), bool(row.get('is_pass_through')), bool(row.get('is_invoiced')), row.get('notes')
                     ))
@@ -998,18 +1028,14 @@ def batch_sync_dorm_bills(dorm_id: int, edited_df: pd.DataFrame):
                         start_date_obj_upd = pd.to_datetime(raw_start_date_upd).date()
                         end_date_obj_upd = pd.to_datetime(raw_end_date_upd).date()
 
-                        # 【核心修正】強制轉換並印出數值以便除錯
+                        # 【核心修正】使用 safe_int/safe_float 避免 list 錯誤
                         try:
-                            amount_val_upd = int(row['amount'])
-                            usage_val_upd = float(row['usage_amount']) if pd.notna(row.get('usage_amount')) else None
-                            peak_val = float(row['peak_usage']) if pd.notna(row.get('peak_usage')) else None
-                            off_peak_val = float(row['off_peak_usage']) if pd.notna(row.get('off_peak_usage')) else None
-                            sat_half_peak_val = float(row['sat_half_peak_usage']) if pd.notna(row.get('sat_half_peak_usage')) else None
-                            meter_id_val_upd = int(row['meter_id']) if pd.notna(row.get('meter_id')) else None
-                            
-                            # 除錯訊息：如果金額很大，印出來看看
-                            # if amount_val_upd > 30000:
-                            #     print(f"DEBUG: Updating ID {bill_id_to_update} - Amount: {amount_val_upd} (Type: {type(amount_val_upd)})")
+                            amount_val_upd = safe_int(row['amount'])
+                            usage_val_upd = safe_float(row.get('usage_amount'))
+                            peak_val = safe_float(row.get('peak_usage'))
+                            off_peak_val = safe_float(row.get('off_peak_usage'))
+                            sat_half_peak_val = safe_float(row.get('sat_half_peak_usage'))
+                            meter_id_val_upd = safe_int(row.get('meter_id')) if pd.notna(row.get('meter_id')) else None
 
                         except ValueError as ve:
                              raise Exception(f"數值格式錯誤 (ID: {bill_id_to_update}): {ve}")
@@ -1017,7 +1043,7 @@ def batch_sync_dorm_bills(dorm_id: int, edited_df: pd.DataFrame):
                         update_sql = """
                             UPDATE "UtilityBills" SET 
                                 meter_id = %s, bill_type = %s, amount = %s, 
-                                usage_amount = %s, peak_usage = %s, off_peak_usage = %s, -- 新增
+                                usage_amount = %s, peak_usage = %s, off_peak_usage = %s, sat_half_peak_usage = %s, -- 新增
                                 bill_start_date = %s, bill_end_date = %s, payer = %s,
                                 is_pass_through = %s, is_invoiced = %s, notes = %s
                             WHERE id = %s
