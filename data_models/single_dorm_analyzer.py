@@ -470,7 +470,7 @@ def get_dorm_analysis_data(dorm_ids: list, year_month: str):
 
 def get_monthly_financial_trend(dorm_ids: list, end_date_str: str = None):
     """
-    【v2.4 截止日修正版】
+    【v2.5 透明化版】增加顯示「工人月費收入」與「其他收入」欄位，方便核對。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -585,6 +585,10 @@ def get_monthly_financial_trend(dorm_ids: list, end_date_str: str = None):
             )
             SELECT
                 TO_CHAR(dp.month_start, 'YYYY-MM') AS "月份",
+                -- 【新增】將細項選出來
+                COALESCE(mi.total_worker_income, 0) AS "工人月費收入",
+                COALESCE(omi.total_other_income, 0) AS "其他收入",
+                
                 COALESCE(mi.total_worker_income, 0) + COALESCE(omi.total_other_income, 0) AS "總收入",
                 COALESCE(mc.contract_expense, 0) AS "長期合約支出",
                 COALESCE(mu.utility_expense, 0) AS "變動雜費",
@@ -603,7 +607,8 @@ def get_monthly_financial_trend(dorm_ids: list, end_date_str: str = None):
         """
         df = _execute_query_to_dataframe(conn, query, params)
         if not df.empty:
-            num_cols = ["總收入", "長期合約支出", "變動雜費", "代收代付雜費", "長期攤銷", "總支出", "淨損益"]
+            # 【新增】將新欄位加入轉型列表
+            num_cols = ["工人月費收入", "其他收入", "總收入", "長期合約支出", "變動雜費", "代收代付雜費", "長期攤銷", "總支出", "淨損益"]
             for col in num_cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).round().astype(int)
@@ -611,7 +616,7 @@ def get_monthly_financial_trend(dorm_ids: list, end_date_str: str = None):
 
     finally:
         if conn: conn.close()
-
+        
 def calculate_financial_summary_for_period(dorm_ids: list, start_date: date, end_date: date):
     """
     【v1.5 修正版】計算自訂區間平均損益。

@@ -39,6 +39,7 @@ from views import (
     accounting_scraper_view,
     unassigned_worker_view,
     guide_view,
+    finance_dashboard_view,
 )
 
 def load_config():
@@ -87,7 +88,8 @@ PAGES = {
         "長期合約 (房租/網/清潔等)": lease_view,            # 輸入固定租金
         "合約項目總覽": contract_view,               # 看合約列表
         "其他收入管理": income_view,                 # 輸入雜項收入/補貼
-        "工人房租設定": rent_view                    # 設定跟工人收多少錢
+        "工人房租設定": rent_view,                   # 設定跟工人收多少錢
+        "宿舍別財務收支總覽": finance_dashboard_view,
     },
 
     "⚙️ 資料與系統維護": {

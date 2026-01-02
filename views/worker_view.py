@@ -1,11 +1,11 @@
 import streamlit as st
 import pandas as pd
 import os
+import base64
 from datetime import date
 from data_models import worker_model, dormitory_model
 import utils
 
-# --- 常數定義 ---
 # --- 常數定義 ---
 TAB_CORE = "核心資料"
 TAB_ACCOM = "🏠 住宿歷史管理"
@@ -606,10 +606,28 @@ def render_worker_management_section(workers_df, pre_selected_worker_id=None):
                                 file_path = row['file_path']
                                 if os.path.exists(file_path):
                                     ext = os.path.splitext(file_path)[1].lower()
+                                    
+                                    # --- 圖片預覽 ---
                                     if ext in ['.jpg', '.jpeg', '.png']:
                                         st.image(file_path, caption=row['file_name'], use_container_width=True)
+                                    
+                                    # --- PDF 預覽 (新增功能) ---
+                                    elif ext == '.pdf':
+                                        st.markdown(f"**檔案路徑**: `{file_path}`")
+                                        # 使用 checkbox 來控制是否展開預覽，避免畫面過於雜亂
+                                        if st.checkbox("👁️ 預覽 PDF 文件", key=f"view_pdf_{row['id']}"):
+                                            try:
+                                                with open(file_path, "rb") as f:
+                                                    base64_pdf = base64.b64encode(f.read()).decode('utf-8')
+                                                # 使用 iframe 嵌入 PDF
+                                                pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600" type="application/pdf"></iframe>'
+                                                st.markdown(pdf_display, unsafe_allow_html=True)
+                                            except Exception as e:
+                                                st.error(f"PDF 預覽失敗: {e}")
+                                    
+                                    # --- 其他格式 ---
                                     else:
-                                        st.markdown(f"**檔案路徑**: `{file_path}` (非圖片格式，暫無法預覽)")
+                                        st.markdown(f"**檔案路徑**: `{file_path}` (非圖片/PDF 格式，暫無法預覽)")
                                 else:
                                     st.error("檔案已遺失 (找不到路徑)。")
 

@@ -225,7 +225,7 @@ def render():
                     area_info = f" | 總面積 {room_area} m²"
 
             # --- 3. 組合標題字串 ---
-            room_title = f"{dorm_address} - {room_number} (容量: {room_capacity}, 空床: {vacancies}){area_info}"
+            room_title = f"{dorm_address} - {room_number} (容量: {room_capacity}, 在住: {num_occupants}, 外住: {num_external}, 空床: {vacancies}){area_info}"
             
             if vacancies == 0:
                 room_title = f"🔴 {room_title} (已滿)"
