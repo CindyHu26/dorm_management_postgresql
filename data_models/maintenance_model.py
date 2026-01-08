@@ -178,7 +178,9 @@ def archive_log_as_annual_expense(log_id: int):
             if not log_details: return False, "找不到指定的維修紀錄。"
             if log_details.get('is_archived_as_expense'): return False, "此筆紀錄已經轉入過年度費用，無法重複操作。"
             if not log_details.get('cost') or log_details.get('cost') <= 0: return False, "維修費用為 0 或未設定，無法轉入年度費用。"
+            
             payment_date = log_details.get('completion_date') or log_details.get('notification_date') or date.today()
+            
             annual_expense_details = {
                 "dorm_id": log_details['dorm_id'],
                 "expense_item": f"維修-{log_details.get('item_type') or '項目未分類'}",
@@ -190,12 +192,20 @@ def archive_log_as_annual_expense(log_id: int):
             }
             columns = ', '.join(f'"{k}"' for k in annual_expense_details.keys())
             placeholders = ', '.join(['%s'] * len(annual_expense_details))
+            
             sql = f'INSERT INTO "AnnualExpenses" ({columns}) VALUES ({placeholders}) RETURNING id'
             cursor.execute(sql, tuple(annual_expense_details.values()))
             new_expense_id = cursor.fetchone()['id']
-            cursor.execute('UPDATE "MaintenanceLog" SET is_archived_as_expense = TRUE WHERE id = %s', (log_id,))
+            
+            # 【核心修改】轉入費用後，順便將狀態改為 '已完成'
+            cursor.execute("""
+                UPDATE "MaintenanceLog" 
+                SET is_archived_as_expense = TRUE, status = '已完成' 
+                WHERE id = %s
+            """, (log_id,))
+            
         conn.commit()
-        return True, f"成功將維修紀錄轉入年度費用 (新費用ID: {new_expense_id})！您可至「年度費用」頁面調整攤銷期間。"
+        return True, f"成功轉入年度費用並結案 (費用ID: {new_expense_id})！"
     except Exception as e:
         if conn: conn.rollback()
         return False, f"操作失敗: {e}"
@@ -206,14 +216,18 @@ def get_unfinished_maintenance_logs():
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
+        # 【修改】多抓取 dorm_id 和 vendor_id，以便前端製作下拉選單
         query = """
             SELECT 
+                l.id,
+                l.dorm_id,   -- 新增
+                l.vendor_id, -- 新增
                 l.status AS "狀態",
                 l.notification_date AS "通報日期",
-                d.original_address AS "宿舍地址",
+                d.original_address AS "宿舍地址", -- 僅供參考，實際編輯會用 dorm_id 轉換
                 l.item_type AS "項目類型",
                 l.description AS "細項說明",
-                v.vendor_name AS "維修廠商",
+                v.vendor_name AS "維修廠商", -- 僅供參考
                 l.reported_by AS "提報人"
             FROM "MaintenanceLog" l
             JOIN "Dormitories" d ON l.dorm_id = d.id
@@ -222,6 +236,43 @@ def get_unfinished_maintenance_logs():
             ORDER BY l.notification_date ASC;
         """
         return _execute_query_to_dataframe(conn, query)
+    finally:
+        if conn: conn.close()
+
+def batch_update_logs_all_fields(updates: list):
+    """
+    updates: list of dict, e.g. [{'id': 1, 'status': '...', 'dorm_id': 2}, ...]
+    """
+    if not updates: return True, "無資料需更新"
+    
+    conn = database.get_db_connection()
+    if not conn: return False, "資料庫連線失敗"
+    
+    try:
+        updated_count = 0
+        with conn.cursor() as cursor:
+            for item in updates:
+                log_id = item.pop('id', None)
+                if not log_id or not item: continue 
+
+                # 動態組合 SQL SET 子句
+                set_clauses = []
+                values = []
+                for col, val in item.items():
+                    set_clauses.append(f'"{col}" = %s')
+                    values.append(val)
+                
+                values.append(log_id)
+                
+                sql = f'UPDATE "MaintenanceLog" SET {", ".join(set_clauses)} WHERE id = %s'
+                cursor.execute(sql, tuple(values))
+                updated_count += 1
+                
+        conn.commit()
+        return True, f"成功更新 {updated_count} 筆資料"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"更新失敗: {e}"
     finally:
         if conn: conn.close()
 
