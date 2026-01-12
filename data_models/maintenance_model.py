@@ -339,3 +339,21 @@ def batch_archive_logs(log_ids: list):
             failure_count += 1
             
     return success_count, failure_count
+
+def get_rooms_for_selector(dorm_id: int):
+    """
+    取得指定宿舍的所有房號 (id, room_number)，用於下拉選單。
+    """
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        # 排除 '[未分配房間]' 這種系統保留房號，只抓實際房間
+        query = """
+            SELECT id, room_number 
+            FROM "Rooms" 
+            WHERE dorm_id = %s AND room_number != '[未分配房間]'
+            ORDER BY room_number ASC
+        """
+        return _execute_query_to_dataframe(conn, query, (dorm_id,))
+    finally:
+        if conn: conn.close()

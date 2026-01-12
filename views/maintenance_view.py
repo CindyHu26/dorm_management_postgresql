@@ -533,6 +533,141 @@ def render_batch_archive():
         st.cache_data.clear()
         st.rerun()
 
+# -----------------------------------------------------------------------------
+# 新增功能：新增改善建議 (連續輸入模式)
+# -----------------------------------------------------------------------------
+def render_add_improvement_suggestion(dorm_options, vendor_options, item_type_options, status_options):
+    """渲染：新增改善建議 (支援選定宿舍後連續新增，並可選房號)"""
+    st.subheader("💡 新增改善建議 / 待辦事項")
+    st.info("此模式用於快速建立「待改善」項目。選擇宿舍後，可連續輸入多筆資料，無需重複選擇宿舍。")
+
+    # --- 1. 宿舍選擇 (放在 Form 外層以保持狀態) ---
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        dorm_keys = list(dorm_options.keys())
+        # 使用 session_state key 讓選單狀態在按鈕按下後保留
+        selected_dorm_id = st.selectbox(
+            "請先選擇宿舍*", 
+            options=dorm_keys, 
+            format_func=lambda x: dorm_options.get(x, "未選擇"), 
+            key="improve_dorm_select"
+        )
+    
+    # 根據選到的宿舍抓取房號資料
+    room_options = {}
+    if selected_dorm_id:
+        rooms_df = maintenance_model.get_rooms_for_selector(selected_dorm_id)
+        if not rooms_df.empty:
+            room_options = {row['id']: row['room_number'] for _, row in rooms_df.iterrows()}
+
+    # --- 2. 輸入表單 (設定 clear_on_submit=True 讓送出後自動清空欄位，方便下一筆) ---
+    with st.form("improvement_form", clear_on_submit=True):
+        st.markdown(f"**正在新增：{dorm_options.get(selected_dorm_id, '')}**")
+        
+        c_row1_1, c_row1_2, c_row1_3 = st.columns(3)
+        
+        # 房號選擇 (選填)
+        with c_row1_1:
+            # 增加 None 選項代表公共區域
+            r_keys = [None] + list(room_options.keys())
+            selected_room_id = st.selectbox(
+                "房號 (若為公共區域可留空)", 
+                options=r_keys, 
+                format_func=lambda x: "公共區域 / 無特定房號" if x is None else f"房號: {room_options.get(x)}",
+            )
+        
+        # 狀態 (預設為 '待改善')
+        with c_row1_2:
+            # 確保 '待改善' 在選項中，並設為預設
+            default_status = "待改善"
+            st_idx = status_options.index(default_status) if default_status in status_options else 0
+            new_status = st.selectbox("案件狀態*", options=status_options, index=st_idx)
+            
+        # 類型
+        with c_row1_3:
+            new_category_sel = st.selectbox("項目類別", options=item_type_options)
+
+        # 說明與備註
+        new_description = st.text_area("改善建議 / 缺失說明*", height=100, placeholder="請描述需要改善的項目...")
+        
+        c_row2_1, c_row2_2 = st.columns(2)
+        new_reporter = c_row2_1.text_input("提報人", placeholder="您的姓名")
+        new_notes = c_row2_2.text_input("備註 (可選)", placeholder="例如: 急件")
+
+        # 照片上傳
+        uploaded_files = st.file_uploader("📷 上傳照片 (可多選)", type=['jpg', 'jpeg', 'png', 'pdf'], accept_multiple_files=True)
+
+        # 送出按鈕
+        submit_btn = st.form_submit_button("💾 儲存並新增下一筆", type="primary")
+
+        if submit_btn:
+            if not selected_dorm_id or not new_description:
+                st.error("「宿舍」和「說明」為必填欄位！")
+            else:
+                # 組合說明文字：如果有選房號，把房號加在說明最前面
+                final_description = new_description
+                if selected_room_id:
+                    room_num = room_options.get(selected_room_id)
+                    final_description = f"【房號: {room_num}】 {new_description}"
+
+                # 處理檔案
+                file_paths = []
+                if uploaded_files:
+                    file_info_dict = {
+                        "date": date.today().strftime('%Y%m%d'), 
+                        "address": dorm_options.get(selected_dorm_id, 'Unknown'), 
+                        "reporter": new_reporter, 
+                        "type": new_category_sel
+                    }
+                    for file in uploaded_files:
+                        path = maintenance_model.save_uploaded_photo(file, file_info_dict)
+                        file_paths.append(path)
+                
+                # 建立資料物件
+                details = {
+                    'dorm_id': selected_dorm_id, 
+                    'equipment_id': None, # 改善建議通常不強制綁定既有設備資料庫
+                    'vendor_id': None, 
+                    'status': new_status,
+                    'notification_date': date.today(), 
+                    'reported_by': new_reporter, 
+                    'item_type': new_category_sel, 
+                    'description': final_description,
+                    'contacted_vendor_date': None, 
+                    'completion_date': None, 
+                    'key_info': "",    
+                    'cost': 0, 
+                    'payer': "", 
+                    'invoice_date': None, 
+                    'invoice_info': "", 
+                    'notes': new_notes, 
+                    'photo_paths': file_paths 
+                }
+                
+                success, message = maintenance_model.add_log(details)
+                
+                if success:
+                    # 顯示成功訊息 (因為 form clear_on_submit=True，表單會清空，但外面的宿舍選擇會保留)
+                    st.success(f"✅ 已新增：{final_description}")
+                    # 強制刷新快取，讓下方的「近期紀錄」能看到 (可選)
+                    st.cache_data.clear()
+                else:
+                    st.error(message)
+
+    # (選用) 在下方顯示該宿舍最近幾筆待改善項目，方便確認
+    if selected_dorm_id:
+        st.markdown("---")
+        st.caption(f"📋 {dorm_options.get(selected_dorm_id)} - 近期新增項目：")
+        # 這裡簡單抓取並顯示，讓使用者有回饋感
+        # 使用現有的 get_logs_for_view 進行篩選
+        logs = maintenance_model.get_logs_for_view({"dorm_id": selected_dorm_id, "status": "待改善"})
+        if not logs.empty:
+            st.dataframe(
+                logs[['id', '細項說明', '通報日期', '狀態']].head(5), 
+                hide_index=True,
+                use_container_width=True
+            )
+
 def render():
     st.header("維修追蹤管理")
     st.info("用於登記、追蹤和管理宿舍的各項維修申報與進度，並可上傳現場照片、報價單(PDF)等相關文件。")
@@ -543,12 +678,12 @@ def render():
     vendors = vendor_model.get_vendors_for_view()
     vendor_options = {v['id']: f"{v['服務項目']} - {v['廠商名稱']}" for _, v in vendors.iterrows()} if not vendors.empty else {}
     
-    status_options = ["待處理", "待尋廠商", "進行中", "待付款", "已完成"]
-    item_type_options = ["維修", "定期保養", "更換耗材", "水電", "包通", "飲水機", "冷氣", "消防", "金城", "監視器", "水質檢測", "清運", "裝潢", "油漆", "蝦皮", "其他(手動輸入)"]
+    status_options = ["待處理", "待改善","待尋廠商", "進行中", "待付款", "已完成"]
+    item_type_options = ["維修", "定期保養", "更換耗材", "水電", "包通", "飲水機", "冷氣", "消防", "金城", "監視器", "水質檢測", "清運", "裝潢", "油漆", "蝦皮", "宣導", "其他(手動輸入)"]
 
     app_mode = st.radio(
         "請選擇操作項目：",
-        ["➕ 新增維修紀錄", "⏳ 未完成案件追蹤", "✏️ 編輯 / 刪除單筆維修紀錄", "📊 維修紀錄總覽", "📦 批次轉入年度費用"],
+        ["➕ 新增維修紀錄", "➕ 新增改善建議", "⏳ 未完成案件追蹤", "✏️ 編輯 / 刪除單筆維修紀錄", "📊 維修紀錄總覽", "📦 批次轉入年度費用"],
         horizontal=True,
         key="maintenance_main_nav"
     )
@@ -556,6 +691,8 @@ def render():
 
     if app_mode == "➕ 新增維修紀錄":
         render_add_new_record(dorm_options, vendor_options, item_type_options, status_options)
+    elif app_mode == "➕ 新增改善建議":
+        render_add_improvement_suggestion(dorm_options, vendor_options, item_type_options, status_options)
     elif app_mode == "⏳ 未完成案件追蹤":
         # 傳入 item_type_options
         render_progress_tracking(dorm_options, vendor_options, item_type_options, status_options)

@@ -443,13 +443,14 @@ def get_rooms_for_editor(dorm_id: int):
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
     try:
-        # 查詢原始欄位名稱，不過濾 [未分配房間]
+        # 【修改】調整 SELECT 順序：鑰匙 -> 冷氣 -> 房間配備 -> 問題 (最後一個)
         query = """
             SELECT 
                 id, room_number, capacity, 
                 gender_policy, nationality_policy, 
                 room_notes,
-                area_sq_meters
+                area_sq_meters,
+                key_status, air_conditioner, room_equipment, issue
             FROM "Rooms" 
             WHERE dorm_id = %s
             ORDER BY room_number
@@ -513,24 +514,32 @@ def batch_sync_rooms(dorm_id: int, edited_df: pd.DataFrame):
             # --- 動作 B：處理新增 ---
             if not new_rows_df.empty:
                 for _, row in new_rows_df.iterrows():
-                    # 解包房號
                     room_num = clean_val(row['room_number'])
                     if not room_num or pd.isna(room_num):
                         raise Exception("新增失敗：『房號』為必填欄位，不可為空。")
                     
+                    # 加入新欄位
                     insert_sql = """
-                        INSERT INTO "Rooms" (dorm_id, room_number, capacity, gender_policy, nationality_policy, room_notes, area_sq_meters)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        INSERT INTO "Rooms" (
+                            dorm_id, room_number, capacity, gender_policy, nationality_policy, 
+                            room_notes, area_sq_meters,
+                            key_status, air_conditioner, room_equipment, issue
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """
-                    # 【這裡套用 clean_val 解包所有欄位】
                     cursor.execute(insert_sql, (
                         dorm_id,
                         room_num,
-                        clean_val(row.get('capacity')),  # 修正 capacity 報錯的問題
-                        clean_val(row.get('gender_policy')) or '可混住', # 解包並給預設值
+                        clean_val(row.get('capacity')),
+                        clean_val(row.get('gender_policy')) or '可混住',
                         clean_val(row.get('nationality_policy')) or '不限',
                         clean_val(row.get('room_notes')),
-                        clean_val(row.get('area_sq_meters'))
+                        clean_val(row.get('area_sq_meters')),
+                        # 【新增】傳入新欄位的值
+                        clean_val(row.get('key_status')),
+                        clean_val(row.get('air_conditioner')),
+                        clean_val(row.get('room_equipment')),
+                        clean_val(row.get('issue')),
                     ))
 
             # --- 動作 C：處理更新 ---
@@ -545,20 +554,26 @@ def batch_sync_rooms(dorm_id: int, edited_df: pd.DataFrame):
                         if not room_num or pd.isna(room_num):
                              raise Exception(f"更新失敗 (ID: {room_id_to_update})：『房號』不可改為空值。")
 
+                        # 【修改】加入新欄位更新
                         update_sql = """
                             UPDATE "Rooms" SET 
                                 room_number = %s, capacity = %s, gender_policy = %s, 
-                                nationality_policy = %s, room_notes = %s, area_sq_meters = %s
+                                nationality_policy = %s, room_notes = %s, area_sq_meters = %s,
+                                key_status = %s, air_conditioner = %s, room_equipment = %s, issue = %s
                             WHERE id = %s
                         """
-                        # 【這裡套用 clean_val 解包所有欄位】
                         cursor.execute(update_sql, (
                             room_num,
-                            clean_val(row.get('capacity')), # 修正 capacity 報錯的問題
+                            clean_val(row.get('capacity')),
                             clean_val(row.get('gender_policy')) or '可混住',
                             clean_val(row.get('nationality_policy')) or '不限',
                             clean_val(row.get('room_notes')),
                             clean_val(row.get('area_sq_meters')),
+                            # 傳入新欄位的值
+                            clean_val(row.get('key_status')),
+                            clean_val(row.get('air_conditioner')),
+                            clean_val(row.get('room_equipment')),
+                            clean_val(row.get('issue')),
                             room_id_to_update
                         ))
         

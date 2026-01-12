@@ -15,7 +15,7 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def get_leases_for_view(dorm_id_filter=None):
     """
-    【v1.2 支付方修改版】查詢合約，並顯示合約項目與支付方。
+    【v1.3 日期修正版】查詢合約，並強制轉換日期格式以修正顯示問題。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -44,7 +44,19 @@ def get_leases_for_view(dorm_id_filter=None):
             
         query += " ORDER BY d.original_address, l.lease_start_date DESC"
         
-        return _execute_query_to_dataframe(conn, query, params)
+        df = _execute_query_to_dataframe(conn, query, params)
+
+        # --- 【核心修正】處理日期格式 ---
+        if not df.empty:
+            # 將 datetime.date 物件強制轉為 YYYY-MM-DD 字串
+            # fillna('') 用於處理無截止日的情況，避免顯示為 NaT 或 None
+            if '合約起始日' in df.columns:
+                df['合約起始日'] = pd.to_datetime(df['合約起始日']).dt.strftime('%Y-%m-%d').fillna('')
+            
+            if '合約截止日' in df.columns:
+                df['合約截止日'] = pd.to_datetime(df['合約截止日']).dt.strftime('%Y-%m-%d').fillna('')
+
+        return df
     finally:
         if conn: conn.close()
 

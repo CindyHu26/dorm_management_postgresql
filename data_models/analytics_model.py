@@ -59,9 +59,7 @@ def get_bill_history_for_meter(meter_id: int):
         df = _execute_query_to_dataframe(conn, query, {"meter_id": meter_id})
         
         if not df.empty:
-            # --- 【核心修正點】---
             # 在資料回傳給前端之前，就先將所有數字欄位轉換為標準的 float 格式
-            df['帳單結束日'] = pd.to_datetime(df['帳單結束日'])
             if "用量(度/噸)" in df.columns:
                 df["用量(度/噸)"] = pd.to_numeric(df["用量(度/噸)"], errors='coerce')
             if "帳單金額" in df.columns:

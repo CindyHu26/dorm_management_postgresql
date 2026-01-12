@@ -193,12 +193,20 @@ def render():
                         st.markdown("##### 宿舍照片紀錄")
                         current_photos = dorm_details.get('photo_paths') or []
                         
+                        # 【修正重點】先初始化變數，避免沒照片時報錯
+                        photos_to_delete = [] 
+
                         # 顯示現有照片
                         if current_photos:
-                            st.image(current_photos, width=150, caption=[os.path.basename(p) for p in current_photos])
+                            # 改用 Grid 方式顯示，一行 4 張
+                            cols_count = 4
+                            cols = st.columns(cols_count)
+                            for idx, photo_path in enumerate(current_photos):
+                                with cols[idx % cols_count]:
+                                    st.image(photo_path, caption=os.path.basename(photo_path))
+                            
+                            # 這裡再讓使用者選擇要刪除的
                             photos_to_delete = st.multiselect("勾選要刪除的舊照片", options=current_photos, format_func=lambda x: os.path.basename(x))
-                        else:
-                            photos_to_delete = []
 
                         # 上傳新照片 使用動態 key
                         uploader_key = f"dorm_uploader_{st.session_state.dorm_upload_reset_key}"
@@ -336,6 +344,31 @@ def render():
                                     "約幾坪", 
                                     format="%.2f 坪",
                                     disabled=True 
+                                ),
+                                # === 【修改】新欄位設定 ===
+                                "key_status": st.column_config.SelectboxColumn(
+                                    "鑰匙",
+                                    options=["有", "無"],  # 設定選項
+                                    required=False,       # 允許不選(None)
+                                    width="small",
+                                    help="是否有鑰匙"
+                                ),
+                                "air_conditioner": st.column_config.NumberColumn(
+                                    "冷氣",
+                                    min_value=0,
+                                    step=1,
+                                    format="%d 台",      # 顯示格式，例如 "1 台"
+                                    help="冷氣數量"
+                                ),
+                                "room_equipment": st.column_config.TextColumn(
+                                    "房間配備",
+                                    width="small",
+                                    help="床位、桌椅等"
+                                ),
+                                "issue": st.column_config.TextColumn(
+                                    "問題",
+                                    width="medium",        # 設定寬一點
+                                    help="待修繕或特殊狀況"
                                 ),
                             }
                         )

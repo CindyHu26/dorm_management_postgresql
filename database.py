@@ -138,13 +138,17 @@ def create_all_tables_and_indexes():
                 FOREIGN KEY ("landlord_id") REFERENCES "Vendors" ("id") ON DELETE SET NULL
             );
             """
-
+            
             TABLES['Rooms'] = """
             CREATE TABLE IF NOT EXISTS "Rooms" (
                 "id" SERIAL PRIMARY KEY, "dorm_id" INTEGER NOT NULL, "room_number" VARCHAR(50) NOT NULL,
                 "capacity" INTEGER, "gender_policy" VARCHAR(50) DEFAULT '可混住',
                 "nationality_policy" VARCHAR(50) DEFAULT '不限', "room_notes" TEXT,
                 "area_sq_meters" NUMERIC(10, 2),
+                "issue" TEXT,
+                "key_status" TEXT,
+                "air_conditioner" INTEGER,
+                "room_equipment" TEXT,
                 FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE
             );
             """
