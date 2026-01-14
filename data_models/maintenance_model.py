@@ -70,9 +70,10 @@ def get_logs_for_view(filters: dict = None):
         query = """
             SELECT 
                 l.id, 
+                l.dorm_id,
                 l.status AS "狀態",
                 d.original_address AS "宿舍地址",
-                e.equipment_name AS "關聯設備", -- 【核心修改】
+                e.equipment_name AS "關聯設備",
                 l.notification_date AS "通報日期",
                 l.item_type AS "項目類型",
                 l.description AS "細項說明",
@@ -80,7 +81,8 @@ def get_logs_for_view(filters: dict = None):
                 l.cost AS "維修費用",
                 l.payer AS "付款人",
                 l.completion_date AS "完成日期",
-                l.reported_by AS "內部提報人"
+                l.reported_by AS "內部提報人",
+                l.photo_paths  -- 新增此欄位
             FROM "MaintenanceLog" l
             JOIN "Dormitories" d ON l.dorm_id = d.id
             LEFT JOIN "Vendors" v ON l.vendor_id = v.id

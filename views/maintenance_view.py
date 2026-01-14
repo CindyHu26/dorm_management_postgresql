@@ -4,11 +4,68 @@ import numpy as np
 from datetime import date
 from data_models import maintenance_model, dormitory_model, vendor_model, equipment_model
 import os
+import io
+import re
+import base64  # 新增：用於圖片編碼
+from urllib.parse import quote, unquote # 新增 unquote
+
+try:
+    from docx import Document
+    from docx.shared import Inches, Pt, Cm
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn
+    from docx.enum.section import WD_ORIENT
+    from docx.oxml import OxmlElement
+except ImportError:
+    pass
 
 # 用於高效取得所有維修紀錄
 @st.cache_data
 def get_all_logs_for_selection():
     return maintenance_model.get_logs_for_view(filters=None)
+
+# -----------------------------------------------------------------------------
+# 輔助函式：圖片轉 Base64 (用於 HTML 報表)
+# -----------------------------------------------------------------------------
+def image_to_base64(image_path):
+    """將本地圖片轉為 HTML 可用的 Base64 字串"""
+    if not os.path.exists(image_path):
+        return None
+    try:
+        with open(image_path, "rb") as img_file:
+            encoded = base64.b64encode(img_file.read()).decode()
+            # 判斷副檔名
+            ext = os.path.splitext(image_path)[1].lower().replace('.', '')
+            if ext == 'jpg': ext = 'jpeg'
+            return f"data:image/{ext};base64,{encoded}"
+    except Exception:
+        return None
+
+# -----------------------------------------------------------------------------
+# 輔助函式：設定 Word 中文字型 (避免亂碼或字型跑掉)
+# -----------------------------------------------------------------------------
+def set_cell_font(cell, text, font_name='Microsoft JhengHei', font_size=10, bold=False):
+    paragraph = cell.paragraphs[0]
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    run = paragraph.add_run(str(text) if text else "")
+    run.font.name = font_name
+    run.font.size = Pt(font_size)
+    run.bold = bold
+    # 設定中文字型
+    r = run._element
+    r.rPr.rFonts.set(qn('w:eastAsia'), font_name)
+
+# -----------------------------------------------------------------------------
+# 輔助函式：從說明中提取房號
+# -----------------------------------------------------------------------------
+def extract_room_number(description):
+    """從 '【房號: 201】 說明...' 格式中提取 201"""
+    if not isinstance(description, str):
+        return ""
+    match = re.search(r"【房號:\s*(.+?)】", description)
+    if match:
+        return match.group(1)
+    return ""
 
 # -----------------------------------------------------------------------------
 # 共用元件：完整編輯表單 (封裝後可供「進度追蹤」與「編輯紀錄」共用)
@@ -29,9 +86,23 @@ def _render_full_edit_form(selected_log_id, dorm_options, vendor_options, item_t
     st.markdown("##### 📂 檔案管理")
     existing_files = details.get('photo_paths') or []
     
-    # 顯示圖片預覽
-    if valid_images := [f for f in existing_files if os.path.exists(f) and f.lower().endswith(('.png', '.jpg', '.jpeg'))]:
-        st.image(valid_images, width=150, caption=[os.path.basename(f) for f in valid_images])
+# 顯示圖片預覽 (【修改】改用 columns 網格排列，解決照片黏在一起的問題)
+    valid_images = [f for f in existing_files if os.path.exists(f) and f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+    
+    if valid_images:
+        st.write("###### 🖼️ 現場照片預覽：")
+        # 設定每行顯示 4 張照片
+        cols_per_row = 4
+        cols = st.columns(cols_per_row)
+        
+        for idx, img_path in enumerate(valid_images):
+            # 透過餘數運算決定放在第幾個欄位 (會自動換行)
+            with cols[idx % cols_per_row]:
+                st.image(
+                    img_path, 
+                    width=150, # 保持縮圖大小
+                    caption=os.path.basename(img_path)
+                )
     
     # 顯示 PDF 下載
     if pdf_files := [f for f in existing_files if os.path.exists(f) and f.lower().endswith('.pdf')]:
@@ -200,12 +271,17 @@ def render_add_new_record(dorm_options, vendor_options, item_type_options, statu
         new_category_sel = st.selectbox("維修類別", options=item_type_options, key="add_m_cat")
         custom_category = st.text_input("請輸入自訂類型*", placeholder="例如: 網路費", key="add_m_cat_custom") if new_category_sel == "其他(手動輸入)" else None
 
-    c6, c7, c8, c9, c10 = st.columns(5)
+    # 【修改點 1】 改為 6 個欄位 (c6~c11)，加入聯繫廠商日期
+    c6, c7, c8, c9, c10, c11 = st.columns(6)
     with c6: new_cost = st.number_input("維修費用", min_value=0, step=100, key="add_m_cost")
     with c7: new_vendor = st.selectbox("廠商", options=[None]+list(vendor_options.keys()), format_func=lambda x: "未指定" if x is None else vendor_options.get(x), key="add_m_vendor")
-    with c8: new_payer = st.selectbox("付款人", ["", "我司", "工人", "雇主"], key="add_m_payer")
-    with c9: new_finish_date = st.date_input("完成日期", value=None, key="add_m_finish")
-    with c10: 
+    
+    # 【新增】聯繫廠商日期
+    with c8: new_contact_date = st.date_input("聯繫廠商日期", value=None, key="add_m_contact_date")
+    
+    with c9: new_payer = st.selectbox("付款人", ["", "我司", "工人", "雇主"], key="add_m_payer")
+    with c10: new_finish_date = st.date_input("完成日期", value=None, key="add_m_finish")
+    with c11: 
         st.write(""); st.write("")
         new_is_paid_check = st.checkbox("已付款?", value=False, key="add_m_paid_check")
 
@@ -239,7 +315,9 @@ def render_add_new_record(dorm_options, vendor_options, item_type_options, statu
             details = {
                 'dorm_id': new_dorm_id, 'equipment_id': new_equipment_id, 'vendor_id': new_vendor, 'status': final_status,
                 'notification_date': new_report_date, 'reported_by': new_reporter, 'item_type': final_category, 'description': new_description,
-                'contacted_vendor_date': None, 'completion_date': new_finish_date, 'key_info': new_key_info,    
+                # 【修改點 2】 將 None 改為 new_contact_date
+                'contacted_vendor_date': new_contact_date, 
+                'completion_date': new_finish_date, 'key_info': new_key_info,    
                 'cost': new_cost, 'payer': new_payer, 'invoice_date': None, 'invoice_info': new_invoice_info, 
                 'notes': new_notes, 'photo_paths': file_paths 
             }
@@ -247,14 +325,15 @@ def render_add_new_record(dorm_options, vendor_options, item_type_options, statu
             if success:
                 st.session_state.maint_success_msg = f"儲存成功！ {message}"
                 st.cache_data.clear()
-                keys_to_clear = ["add_m_dorm", "add_m_equip", "add_m_date", "add_m_status", "add_m_cat", "add_m_cost", "add_m_vendor", "add_m_payer", "add_m_finish", "add_m_paid_check", "add_m_desc", "add_m_uploader", "add_m_reporter", "add_m_key_info", "add_m_invoice", "add_m_notes", "add_m_cat_custom"]
+                # 【修改點 3】 加入 add_m_contact_date 以便重置
+                keys_to_clear = ["add_m_dorm", "add_m_equip", "add_m_date", "add_m_status", "add_m_cat", "add_m_cost", "add_m_vendor", "add_m_contact_date", "add_m_payer", "add_m_finish", "add_m_paid_check", "add_m_desc", "add_m_uploader", "add_m_reporter", "add_m_key_info", "add_m_invoice", "add_m_notes", "add_m_cat_custom"]
                 for k in keys_to_clear:
                     if k in st.session_state: del st.session_state[k]
                 st.rerun()
             else:
                 st.error(message)
 
-def render_progress_tracking(dorm_options, vendor_options, item_type_options, status_options):
+def render_progress_tracking(dorm_options, vendor_options, item_type_options, status_options, default_dorm_filter=None):
     """渲染：進度追蹤 (混合模式：快速表格 + 完整詳細編輯)"""
     st.subheader("⏳ 進度追蹤 (未完成案件)")
     
@@ -280,7 +359,13 @@ def render_progress_tracking(dorm_options, vendor_options, item_type_options, st
         available_vendors = sorted(list(raw_df['廠商'].dropna().unique()))
         available_types = sorted(list(raw_df['項目類型'].dropna().unique()))
 
-        selected_dorms = f_col1.multiselect("🏠 宿舍地址", options=available_dorms, placeholder="全部")
+        # 【核心修改】：設定預設篩選值
+        # 如果 URL 傳來 target_dorm，且該宿舍在目前的可用列表中，就預選它
+        pre_selected = []
+        if default_dorm_filter and default_dorm_filter in available_dorms:
+            pre_selected = [default_dorm_filter]
+
+        selected_dorms = f_col1.multiselect("🏠 宿舍地址", options=available_dorms, default=pre_selected, placeholder="全部")
         selected_vendors = f_col2.multiselect("🛠️ 維修廠商", options=available_vendors, placeholder="全部")
         selected_types = f_col3.multiselect("📋 項目類型", options=available_types, placeholder="全部")
 
@@ -534,7 +619,7 @@ def render_batch_archive():
         st.rerun()
 
 # -----------------------------------------------------------------------------
-# 新增功能：新增改善建議 (連續輸入模式)
+# 新增改善建議 (連續輸入模式)
 # -----------------------------------------------------------------------------
 def render_add_improvement_suggestion(dorm_options, vendor_options, item_type_options, status_options):
     """渲染：新增改善建議 (支援選定宿舍後連續新增，並可選房號)"""
@@ -545,7 +630,6 @@ def render_add_improvement_suggestion(dorm_options, vendor_options, item_type_op
     c1, c2 = st.columns([1, 2])
     with c1:
         dorm_keys = list(dorm_options.keys())
-        # 使用 session_state key 讓選單狀態在按鈕按下後保留
         selected_dorm_id = st.selectbox(
             "請先選擇宿舍*", 
             options=dorm_keys, 
@@ -560,31 +644,34 @@ def render_add_improvement_suggestion(dorm_options, vendor_options, item_type_op
         if not rooms_df.empty:
             room_options = {row['id']: row['room_number'] for _, row in rooms_df.iterrows()}
 
-    # --- 2. 輸入表單 (設定 clear_on_submit=True 讓送出後自動清空欄位，方便下一筆) ---
+    # --- 2. 輸入表單 ---
     with st.form("improvement_form", clear_on_submit=True):
         st.markdown(f"**正在新增：{dorm_options.get(selected_dorm_id, '')}**")
         
-        c_row1_1, c_row1_2, c_row1_3 = st.columns(3)
+        # 【修改】改為 4 欄，加入日期選擇
+        c_row1_1, c_row1_2, c_row1_3, c_row1_4 = st.columns(4)
         
-        # 房號選擇 (選填)
         with c_row1_1:
-            # 增加 None 選項代表公共區域
+            # 新增：通報日期 (預設為今天)
+            new_notify_date = st.date_input("通報日期*", value=date.today())
+
+        with c_row1_2:
+            # 房號選擇
             r_keys = [None] + list(room_options.keys())
             selected_room_id = st.selectbox(
-                "房號 (若為公共區域可留空)", 
+                "房號 (選填)", 
                 options=r_keys, 
-                format_func=lambda x: "公共區域 / 無特定房號" if x is None else f"房號: {room_options.get(x)}",
+                format_func=lambda x: "公共區域" if x is None else f"{room_options.get(x)}",
             )
         
-        # 狀態 (預設為 '待改善')
-        with c_row1_2:
-            # 確保 '待改善' 在選項中，並設為預設
+        with c_row1_3:
+            # 狀態
             default_status = "待改善"
             st_idx = status_options.index(default_status) if default_status in status_options else 0
             new_status = st.selectbox("案件狀態*", options=status_options, index=st_idx)
             
-        # 類型
-        with c_row1_3:
+        with c_row1_4:
+            # 類型
             new_category_sel = st.selectbox("項目類別", options=item_type_options)
 
         # 說明與備註
@@ -604,17 +691,15 @@ def render_add_improvement_suggestion(dorm_options, vendor_options, item_type_op
             if not selected_dorm_id or not new_description:
                 st.error("「宿舍」和「說明」為必填欄位！")
             else:
-                # 組合說明文字：如果有選房號，把房號加在說明最前面
                 final_description = new_description
                 if selected_room_id:
                     room_num = room_options.get(selected_room_id)
                     final_description = f"【房號: {room_num}】 {new_description}"
 
-                # 處理檔案
                 file_paths = []
                 if uploaded_files:
                     file_info_dict = {
-                        "date": date.today().strftime('%Y%m%d'), 
+                        "date": new_notify_date.strftime('%Y%m%d'), # 使用選取的日期
                         "address": dorm_options.get(selected_dorm_id, 'Unknown'), 
                         "reporter": new_reporter, 
                         "type": new_category_sel
@@ -623,13 +708,12 @@ def render_add_improvement_suggestion(dorm_options, vendor_options, item_type_op
                         path = maintenance_model.save_uploaded_photo(file, file_info_dict)
                         file_paths.append(path)
                 
-                # 建立資料物件
                 details = {
                     'dorm_id': selected_dorm_id, 
-                    'equipment_id': None, # 改善建議通常不強制綁定既有設備資料庫
+                    'equipment_id': None, 
                     'vendor_id': None, 
                     'status': new_status,
-                    'notification_date': date.today(), 
+                    'notification_date': new_notify_date, # 【修改】使用選取的日期
                     'reported_by': new_reporter, 
                     'item_type': new_category_sel, 
                     'description': final_description,
@@ -647,28 +731,309 @@ def render_add_improvement_suggestion(dorm_options, vendor_options, item_type_op
                 success, message = maintenance_model.add_log(details)
                 
                 if success:
-                    # 顯示成功訊息 (因為 form clear_on_submit=True，表單會清空，但外面的宿舍選擇會保留)
                     st.success(f"✅ 已新增：{final_description}")
-                    # 強制刷新快取，讓下方的「近期紀錄」能看到 (可選)
                     st.cache_data.clear()
                 else:
                     st.error(message)
 
-    # (選用) 在下方顯示該宿舍最近幾筆待改善項目，方便確認
     if selected_dorm_id:
         st.markdown("---")
         st.caption(f"📋 {dorm_options.get(selected_dorm_id)} - 近期新增項目：")
-        # 這裡簡單抓取並顯示，讓使用者有回饋感
-        # 使用現有的 get_logs_for_view 進行篩選
         logs = maintenance_model.get_logs_for_view({"dorm_id": selected_dorm_id, "status": "待改善"})
         if not logs.empty:
+            # 這裡也可以多顯示通報日期
             st.dataframe(
-                logs[['id', '細項說明', '通報日期', '狀態']].head(5), 
+                logs[['id', '通報日期', '細項說明', '狀態']].head(5), 
                 hide_index=True,
                 use_container_width=True
             )
 
+# -----------------------------------------------------------------------------
+# 渲染匯出報表頁面
+# -----------------------------------------------------------------------------
+def render_export_report(dorm_options, status_options):
+    st.subheader("📑 匯出改善/維修報表")
+    st.info("支援匯出 Excel (連結用)、HTML (檢視用) 或 Word (現場簽核/手寫用)。")
+
+    # --- 1. 篩選條件 ---
+    c1, c2 = st.columns(2)
+    selected_dorm_ids = c1.multiselect(
+        "1. 選擇宿舍 (留空則全選)", 
+        options=list(dorm_options.keys()), 
+        format_func=lambda x: dorm_options.get(x)
+    )
+    
+    default_statuses = [s for s in ["待改善", "待處理"] if s in status_options]
+    selected_statuses = c2.multiselect(
+        "2. 選擇案件狀態/類型 (留空則全選)",
+        options=status_options,
+        default=default_statuses,
+        key="export_status_filter"
+    )
+
+    df = maintenance_model.get_logs_for_view(filters=None)
+    
+    if not df.empty:
+        if selected_dorm_ids:
+            df = df[df['dorm_id'].isin(selected_dorm_ids)]
+        if selected_statuses:
+            df = df[df['狀態'].isin(selected_statuses)]
+
+    if df.empty:
+        st.warning("⚠️ 目前條件下無任何資料。")
+        return
+
+    # --- 排序邏輯 ---
+    df['sort_room'] = df['細項說明'].apply(extract_room_number)
+    df = df.sort_values(by=['宿舍地址', '項目類型', 'sort_room', '通報日期'], ascending=[True, True, True, False])
+
+    st.success(f"已篩選出 {len(df)} 筆資料。")
+
+    col_dl1, col_dl2, col_dl3 = st.columns(3)
+
+    # === 選項 A: Excel 報表 ===
+    with col_dl1:
+        if st.button("📥 Excel 報表 (含連結)", use_container_width=True):
+            export_df = pd.DataFrame()
+            export_df['地址'] = df['宿舍地址']
+            export_df['房號'] = df['細項說明'].apply(extract_room_number)
+            export_df['通報日期'] = df['通報日期']
+            export_df['項目類別'] = df['項目類型']
+            export_df['改善建議/缺失說明'] = df['細項說明']
+            export_df['案件狀態'] = df['狀態']
+            export_df['照片'] = df['photo_paths'].apply(lambda x: f"有 ({len(x)})" if x and len(x) > 0 else "")
+
+            # 建立連結
+            base_url = "http://192.168.1.116:8501/" 
+            page_param = "page=" + quote("維修追蹤與費用")
+            
+            def create_link(row):
+                dorm_name = row['地址']
+                full_url = f"{base_url}?{page_param}&view_mode=tracking&target_dorm={quote(dorm_name)}"
+                return full_url
+
+            export_df['系統連結'] = export_df.apply(create_link, axis=1)
+
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                export_df.to_excel(writer, index=False, sheet_name='報表')
+                workbook = writer.book
+                worksheet = writer.sheets['報表']
+                link_format = workbook.add_format({'font_color': 'blue', 'underline': 1})
+                worksheet.set_column('A:A', 20)
+                worksheet.set_column('B:B', 8)
+                worksheet.set_column('C:C', 12)
+                worksheet.set_column('E:E', 45)
+                
+                col_idx = 7
+                for row_idx, url in enumerate(export_df['系統連結']):
+                    if url:
+                        worksheet.write_url(row_idx + 1, col_idx, url, link_format, string='前往系統處理')
+
+            st.download_button(
+                label="📄 下載 Excel",
+                data=output.getvalue(),
+                file_name=f"維修報表_{date.today().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="btn_dl_excel"
+            )
+
+    # === 選項 B: HTML 報表 ===
+    with col_dl2:
+        if st.button("🖼️ HTML 報表 (含照片)", use_container_width=True):
+            # ... (HTML 生成代碼保持不變，為節省篇幅此處省略，請保留原有的 HTML 邏輯) ...
+             # 建立 HTML 字串
+            html_content = f"""
+            <html>
+            <head>
+                <meta charset="utf-8">
+                <style>
+                    body {{ font-family: "Microsoft JhengHei", Arial, sans-serif; padding: 20px; }}
+                    h2 {{ color: #333; }}
+                    table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+                    th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; vertical-align: top; }}
+                    th {{ background-color: #f2f2f2; }}
+                    .photo-cell img {{ max-width: 150px; max-height: 150px; margin: 2px; border: 1px solid #ccc; }}
+                    .status-tag {{ font-weight: bold; color: #d9534f; }}
+                </style>
+            </head>
+            <body>
+                <h2>🔍 改善/維修建議報表</h2>
+                <p>匯出日期: {date.today()} | 篩選條件: {", ".join(selected_statuses) if selected_statuses else "全部"}</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width: 12%">地址 / 房號</th>
+                            <th style="width: 10%">通報日期</th>
+                            <th style="width: 10%">類別</th>
+                            <th style="width: 10%">狀態</th>
+                            <th style="width: 30%">說明</th>
+                            <th style="width: 28%">照片證明</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            """
+            
+            for _, row in df.iterrows():
+                dorm_addr = row['宿舍地址']
+                room_no = extract_room_number(row['細項說明'])
+                addr_display = f"{dorm_addr}<br><b>{room_no}</b>" if room_no else dorm_addr
+                
+                photos_html = ""
+                if row['photo_paths'] and isinstance(row['photo_paths'], list):
+                    for path in row['photo_paths']:
+                        b64_str = image_to_base64(path)
+                        if b64_str:
+                            photos_html += f'<a href="{b64_str}" target="_blank"><img src="{b64_str}"></a>'
+                
+                if not photos_html: photos_html = "<span style='color:#ccc'>無照片</span>"
+
+                html_content += f"""
+                        <tr>
+                            <td>{addr_display}</td>
+                            <td>{row['通報日期']}</td>
+                            <td>{row['項目類型']}</td>
+                            <td><span class="status-tag">{row['狀態']}</span></td>
+                            <td>{row['細項說明']}</td>
+                            <td class="photo-cell">{photos_html}</td>
+                        </tr>
+                """
+            
+            html_content += """
+                    </tbody>
+                </table>
+            </body>
+            </html>
+            """
+            
+            st.download_button(
+                label="📄 下載 HTML",
+                data=html_content,
+                file_name=f"維修照片報表_{date.today().strftime('%Y%m%d')}.html",
+                mime="text/html",
+                key="btn_dl_html"
+            )
+
+    # === 選項 C: Word 簽核單 (優化排版版) ===
+    with col_dl3:
+        if st.button("📝 Word 簽核單 (手寫用)", type="primary", use_container_width=True):
+            try:
+                # 建立文件
+                doc = Document()
+                section = doc.sections[0]
+                section.orientation = WD_ORIENT.LANDSCAPE
+                section.page_width = Inches(11.69) 
+                section.page_height = Inches(8.27) 
+                
+                # 【修改】極大化版面，邊界縮小至 1 cm
+                section.left_margin = Cm(1.0)
+                section.right_margin = Cm(1.0)
+                section.top_margin = Cm(1.0)
+                section.bottom_margin = Cm(1.0)
+
+                # 標題
+                heading = doc.add_heading(f'宿舍改善/維修執行簽核單', 0)
+                heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                
+                # 【修改】移除篩選條件的段落 (依需求刪除)
+                # p = doc.add_paragraph(...) 
+
+                # 建立表格
+                table = doc.add_table(rows=1, cols=8)
+                table.style = 'Table Grid'
+                
+                # 【修改】設定標題列重複 (Repeat Header Rows)
+                hdr_tr = table.rows[0]._tr
+                hdr_trPr = hdr_tr.get_or_add_trPr()
+                tblHeader = OxmlElement('w:tblHeader')
+                hdr_trPr.append(tblHeader)
+
+                # 設定表頭內容
+                hdr_cells = table.rows[0].cells
+                headers = ["地址/房號", "日期", "類別", "說明", "現況照片", "改善時間", "改善說明", "改善後相片"]
+                
+                for i, h in enumerate(headers):
+                    set_cell_font(hdr_cells[i], h, bold=True, font_size=11)
+
+                # 填入資料
+                for _, row in df.iterrows():
+                    # 新增一列
+                    new_row = table.add_row()
+                    
+                    # 【修改】設定「列不中斷」(Keep lines together)，避免資料跨頁切斷
+                    tr = new_row._tr
+                    trPr = tr.get_or_add_trPr()
+                    cantSplit = OxmlElement('w:cantSplit')
+                    trPr.append(cantSplit)
+                    
+                    row_cells = new_row.cells
+                    
+                    # 1. 地址/房號
+                    room_no = extract_room_number(row['細項說明'])
+                    addr_text = f"{row['宿舍地址']}\n{room_no}" if room_no else row['宿舍地址']
+                    set_cell_font(row_cells[0], addr_text)
+                    
+                    # 2. 日期
+                    set_cell_font(row_cells[1], str(row['通報日期']))
+                    
+                    # 3. 類別
+                    set_cell_font(row_cells[2], row['項目類型'])
+                    
+                    # 4. 說明
+                    desc_clean = re.sub(r"【房號: .+?】", "", row['細項說明']).strip()
+                    set_cell_font(row_cells[3], desc_clean)
+                    
+                    # 5. 現況照片
+                    photo_paragraph = row_cells[4].paragraphs[0]
+                    if row['photo_paths'] and isinstance(row['photo_paths'], list):
+                        count = 0
+                        for path in row['photo_paths']:
+                            if os.path.exists(path) and count < 2:
+                                try:
+                                    run = photo_paragraph.add_run()
+                                    run.add_picture(path, width=Cm(3.5))
+                                    run.add_text("\n")
+                                    count += 1
+                                except Exception:
+                                    pass
+                        if count == 0:
+                            photo_paragraph.add_run("無照片")
+                    else:
+                        photo_paragraph.add_run("無照片")
+
+                    # 6, 7, 8 留空欄位
+                    set_cell_font(row_cells[5], "\n\n\n") 
+                    set_cell_font(row_cells[6], "") 
+                    set_cell_font(row_cells[7], "") 
+
+                # 儲存
+                doc_io = io.BytesIO()
+                doc.save(doc_io)
+                doc_io.seek(0)
+
+                st.download_button(
+                    label="📄 下載 Word",
+                    data=doc_io,
+                    file_name=f"維修簽核單_{date.today().strftime('%Y%m%d')}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key="btn_dl_word"
+                )
+
+            except NameError:
+                st.error("請先安裝 python-docx 套件： pip install python-docx")
+            except Exception as e:
+                st.error(f"Word 匯出失敗: {e}")
+
 def render():
+    # 處理 URL 參數
+    query_params = st.query_params
+    default_nav_mode = "➕ 新增維修紀錄"
+    tracking_target_dorm = None
+
+    if query_params.get("view_mode") == "tracking":
+        default_nav_mode = "⏳ 未完成案件追蹤"
+        tracking_target_dorm = query_params.get("target_dorm")
+
     st.header("維修追蹤管理")
     st.info("用於登記、追蹤和管理宿舍的各項維修申報與進度，並可上傳現場照片、報價單(PDF)等相關文件。")
     
@@ -678,12 +1043,19 @@ def render():
     vendors = vendor_model.get_vendors_for_view()
     vendor_options = {v['id']: f"{v['服務項目']} - {v['廠商名稱']}" for _, v in vendors.iterrows()} if not vendors.empty else {}
     
-    status_options = ["待處理", "待改善","待尋廠商", "進行中", "待付款", "已完成"]
-    item_type_options = ["維修", "定期保養", "更換耗材", "水電", "包通", "飲水機", "冷氣", "消防", "金城", "監視器", "水質檢測", "清運", "裝潢", "油漆", "蝦皮", "宣導", "其他(手動輸入)"]
+    status_options = ["待處理", "待改善", "待尋廠商", "進行中", "待付款", "已完成"]
+    item_type_options = ["維修", "定期保養", "更換耗材", "水電", "包通", "飲水機", "冷氣", "消防", "金城", "監視器", "水質檢測", "清運", "裝潢", "油漆", "蝦皮", "泥作", "宣導", "其他(手動輸入)"]
+
+    nav_options = ["➕ 新增維修紀錄", "➕ 新增改善建議", "⏳ 未完成案件追蹤", "✏️ 編輯 / 刪除單筆維修紀錄", "📊 維修紀錄總覽", "📦 批次轉入年度費用", "📑 匯出改善/維修報表"]
+    try:
+        default_idx = nav_options.index(default_nav_mode)
+    except ValueError:
+        default_idx = 0
 
     app_mode = st.radio(
         "請選擇操作項目：",
-        ["➕ 新增維修紀錄", "➕ 新增改善建議", "⏳ 未完成案件追蹤", "✏️ 編輯 / 刪除單筆維修紀錄", "📊 維修紀錄總覽", "📦 批次轉入年度費用"],
+        nav_options,
+        index=default_idx,
         horizontal=True,
         key="maintenance_main_nav"
     )
@@ -692,13 +1064,18 @@ def render():
     if app_mode == "➕ 新增維修紀錄":
         render_add_new_record(dorm_options, vendor_options, item_type_options, status_options)
     elif app_mode == "➕ 新增改善建議":
-        render_add_improvement_suggestion(dorm_options, vendor_options, item_type_options, status_options)
+        if 'render_add_improvement_suggestion' in globals():
+            render_add_improvement_suggestion(dorm_options, vendor_options, item_type_options, status_options)
+        else:
+            st.warning("請確認程式碼是否包含 render_add_improvement_suggestion 函式")
     elif app_mode == "⏳ 未完成案件追蹤":
-        # 傳入 item_type_options
-        render_progress_tracking(dorm_options, vendor_options, item_type_options, status_options)
+        render_progress_tracking(dorm_options, vendor_options, item_type_options, status_options, default_dorm_filter=tracking_target_dorm)
     elif app_mode == "✏️ 編輯 / 刪除單筆維修紀錄":
         render_edit_delete(dorm_options, vendor_options, item_type_options, status_options)
     elif app_mode == "📊 維修紀錄總覽":
         render_overview(dorm_options, vendor_options, status_options)
     elif app_mode == "📦 批次轉入年度費用":
         render_batch_archive()
+    elif app_mode == "📑 匯出改善/維修報表":
+        # 【修正】這裡必須傳入 status_options
+        render_export_report(dorm_options, status_options)

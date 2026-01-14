@@ -189,11 +189,11 @@ def render():
                         management_notes = st.text_area("管理模式備註", value=dorm_details.get('management_notes', ''))
                         utility_bill_notes_edit = st.text_area("變動費用備註", value=dorm_details.get('utility_bill_notes', ''))
 
-                        # === 【新增】照片管理區塊 ===
+                        # === 照片管理區塊 ===
                         st.markdown("##### 宿舍照片紀錄")
                         current_photos = dorm_details.get('photo_paths') or []
                         
-                        # 【修正重點】先初始化變數，避免沒照片時報錯
+                        # 先初始化變數，避免沒照片時報錯
                         photos_to_delete = [] 
 
                         # 顯示現有照片
