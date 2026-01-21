@@ -789,6 +789,29 @@ def render_export_report(dorm_options, status_options):
 
     st.success(f"已篩選出 {len(df)} 筆資料。")
 
+    # === 【新增】檔案名稱產生邏輯 ===
+    today_str = date.today().strftime('%Y%m%d')
+    # 預設檔名 (多選或未選特定宿舍時)
+    file_name_base = f"維修報表_彙總_{today_str}"
+    
+    # 若只選擇了一間宿舍，則依照要求格式化檔名: 編號_地址_日期
+    if selected_dorm_ids and len(selected_dorm_ids) == 1:
+        did = selected_dorm_ids[0]
+        # 從資料庫取得詳細資料 (確保有編號)
+        d_info = dormitory_model.get_dorm_details_by_id(did)
+        if d_info:
+            d_code = d_info.get('legacy_dorm_code') or "無編號"
+            d_addr = d_info.get('original_address') or "未知地址"
+            
+            # 移除檔名不允許的字元 (如 / \ 等)
+            safe_code = str(d_code).replace("/", "_").replace("\\", "_").strip()
+            safe_addr = str(d_addr).replace("/", "_").replace("\\", "_").strip()
+            
+            file_name_base = f"{safe_code}_{safe_addr}_{today_str}"
+    
+    st.caption(f"ℹ️ 預計存檔名稱：`{file_name_base}.xxx` (實際存檔位置請於跳出的視窗中選擇)")
+    # =================================
+
     col_dl1, col_dl2, col_dl3 = st.columns(3)
 
     # === 選項 A: Excel 報表 ===
@@ -833,7 +856,7 @@ def render_export_report(dorm_options, status_options):
             st.download_button(
                 label="📄 下載 Excel",
                 data=output.getvalue(),
-                file_name=f"維修報表_{date.today().strftime('%Y%m%d')}.xlsx",
+                file_name=f"{file_name_base}.xlsx", # 套用新檔名
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="btn_dl_excel"
             )
@@ -841,7 +864,6 @@ def render_export_report(dorm_options, status_options):
     # === 選項 B: HTML 報表 ===
     with col_dl2:
         if st.button("🖼️ HTML 報表 (含照片)", use_container_width=True):
-            # ... (HTML 生成代碼保持不變，為節省篇幅此處省略，請保留原有的 HTML 邏輯) ...
              # 建立 HTML 字串
             html_content = f"""
             <html>
@@ -909,7 +931,7 @@ def render_export_report(dorm_options, status_options):
             st.download_button(
                 label="📄 下載 HTML",
                 data=html_content,
-                file_name=f"維修照片報表_{date.today().strftime('%Y%m%d')}.html",
+                file_name=f"{file_name_base}.html", # 套用新檔名
                 mime="text/html",
                 key="btn_dl_html"
             )
@@ -925,7 +947,6 @@ def render_export_report(dorm_options, status_options):
                 section.page_width = Inches(11.69) 
                 section.page_height = Inches(8.27) 
                 
-                # 【修改】極大化版面，邊界縮小至 1 cm
                 section.left_margin = Cm(1.0)
                 section.right_margin = Cm(1.0)
                 section.top_margin = Cm(1.0)
@@ -935,14 +956,10 @@ def render_export_report(dorm_options, status_options):
                 heading = doc.add_heading(f'宿舍改善/維修執行簽核單', 0)
                 heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 
-                # 【修改】移除篩選條件的段落 (依需求刪除)
-                # p = doc.add_paragraph(...) 
-
                 # 建立表格
                 table = doc.add_table(rows=1, cols=8)
                 table.style = 'Table Grid'
                 
-                # 【修改】設定標題列重複 (Repeat Header Rows)
                 hdr_tr = table.rows[0]._tr
                 hdr_trPr = hdr_tr.get_or_add_trPr()
                 tblHeader = OxmlElement('w:tblHeader')
@@ -957,10 +974,8 @@ def render_export_report(dorm_options, status_options):
 
                 # 填入資料
                 for _, row in df.iterrows():
-                    # 新增一列
                     new_row = table.add_row()
                     
-                    # 【修改】設定「列不中斷」(Keep lines together)，避免資料跨頁切斷
                     tr = new_row._tr
                     trPr = tr.get_or_add_trPr()
                     cantSplit = OxmlElement('w:cantSplit')
@@ -1014,7 +1029,7 @@ def render_export_report(dorm_options, status_options):
                 st.download_button(
                     label="📄 下載 Word",
                     data=doc_io,
-                    file_name=f"維修簽核單_{date.today().strftime('%Y%m%d')}.docx",
+                    file_name=f"{file_name_base}.docx", # 套用新檔名
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     key="btn_dl_word"
                 )

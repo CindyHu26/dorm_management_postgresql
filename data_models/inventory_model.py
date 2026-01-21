@@ -381,3 +381,71 @@ def delete_inventory_log(log_id: int):
         if conn: conn.rollback(); return False, f"刪除異動紀錄時發生錯誤: {e}"
     finally:
         if conn: conn.close()
+
+def get_pending_accounting_logs():
+    """
+    【v2.0 新增】取得所有尚未轉入費用或收入的「發放」或「售出」紀錄。
+    用於批次帳務處理頁面。
+    """
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        query = """
+            SELECT 
+                l.id, 
+                l.transaction_date AS "異動日期", 
+                i.item_name AS "品項名稱",
+                l.transaction_type AS "異動類型",
+                ABS(l.quantity) AS "數量", 
+                d.original_address AS "關聯宿舍",
+                l.person_in_charge AS "經手人",
+                i.unit_cost AS "成本",
+                i.selling_price AS "售價"
+            FROM "InventoryLog" l
+            JOIN "InventoryItems" i ON l.item_id = i.id
+            LEFT JOIN "Dormitories" d ON l.dorm_id = d.id
+            WHERE 
+                (l.transaction_type = '發放' OR l.transaction_type = '售出')
+                AND l.related_expense_id IS NULL 
+                AND l.related_income_id IS NULL
+            ORDER BY l.transaction_date DESC, l.id DESC
+        """
+        return _execute_query_to_dataframe(conn, query)
+    finally:
+        if conn: conn.close()
+
+def batch_process_logs_to_expense(log_ids: list):
+    """
+    【v2.0 新增】批次將庫存紀錄轉為年度費用。
+    """
+    if not log_ids: return 0, 0
+    success_count = 0
+    fail_count = 0
+    
+    for log_id in log_ids:
+        # 重用既有的單筆處理邏輯
+        success, _ = archive_inventory_log_as_annual_expense(log_id)
+        if success:
+            success_count += 1
+        else:
+            fail_count += 1
+            
+    return success_count, fail_count
+
+def batch_process_logs_to_income(log_ids: list):
+    """
+    【v2.0 新增】批次將庫存紀錄轉為其他收入。
+    """
+    if not log_ids: return 0, 0
+    success_count = 0
+    fail_count = 0
+    
+    for log_id in log_ids:
+        # 重用既有的單筆處理邏輯
+        success, _ = archive_log_as_other_income(log_id)
+        if success:
+            success_count += 1
+        else:
+            fail_count += 1
+            
+    return success_count, fail_count

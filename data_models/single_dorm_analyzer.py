@@ -470,7 +470,8 @@ def get_dorm_analysis_data(dorm_ids: list, year_month: str):
 
 def get_monthly_financial_trend(dorm_ids: list, end_date_str: str = None):
     """
-    【v2.5 透明化版】增加顯示「工人月費收入」與「其他收入」欄位，方便核對。
+    【v2.6 修正版】修復工人月費收入為 0 的問題。
+    修正邏輯：使用 LEFT JOIN LATERAL 獨立查詢各項費用，避免因缺少某項費用紀錄導致人員被排除。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -504,6 +505,7 @@ def get_monthly_financial_trend(dorm_ids: list, end_date_str: str = None):
                     dp.month_start,
                     dp.month_end,
                     dp.days_in_cal_month,
+                    -- 計算該月實際居住天數 (入住日與月初取大，離住日與月底取小)
                     (LEAST(COALESCE(ah.end_date, dp.month_end), dp.month_end)::date - GREATEST(ah.start_date, dp.month_start)::date + 1) as days_lived_in_month
                 FROM "AccommodationHistory" ah
                 JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
@@ -512,38 +514,43 @@ def get_monthly_financial_trend(dorm_ids: list, end_date_str: str = None):
                 WHERE r.dorm_id = ANY(%(dorm_ids)s)
                   AND (w.special_status IS NULL OR w.special_status NOT ILIKE '%%掛宿外住%%')
             ),
-            LatestFeeHistory AS (
-                SELECT
-                    worker_unique_id, fee_type, amount, effective_date,
-                    ROW_NUMBER() OVER(PARTITION BY worker_unique_id, fee_type ORDER BY effective_date DESC) as rn
-                FROM "FeeHistory" fh
-                JOIN DateParams dp ON fh.effective_date <= dp.month_end
-            ),
             WorkerMonthlyFees AS (
                 SELECT
                     wadim.worker_unique_id, wadim.dorm_id, wadim.month_start,
                     wadim.days_lived_in_month, wadim.days_in_cal_month,
+                    -- 使用 COALESCE 確保若無該項費用紀錄則為 0
                     COALESCE(rent.amount, 0) AS monthly_fee,
                     COALESCE(util.amount, 0) AS utilities_fee,
                     COALESCE(clean.amount, 0) AS cleaning_fee,
                     COALESCE(resto.amount, 0) AS restoration_fee,
                     COALESCE(charge.amount, 0) AS charging_cleaning_fee
                 FROM WorkerActiveDaysInMonth wadim
-                LEFT JOIN (SELECT worker_unique_id, effective_date, amount FROM LatestFeeHistory WHERE fee_type = '房租' AND rn = 1) rent
-                    ON wadim.worker_unique_id = rent.worker_unique_id AND rent.effective_date <= wadim.month_end
-                LEFT JOIN (SELECT worker_unique_id, effective_date, amount FROM LatestFeeHistory WHERE fee_type = '水電費' AND rn = 1) util
-                    ON wadim.worker_unique_id = util.worker_unique_id AND util.effective_date <= wadim.month_end
-                LEFT JOIN (SELECT worker_unique_id, effective_date, amount FROM LatestFeeHistory WHERE fee_type = '清潔費' AND rn = 1) clean
-                    ON wadim.worker_unique_id = clean.worker_unique_id AND clean.effective_date <= wadim.month_end
-                LEFT JOIN (SELECT worker_unique_id, effective_date, amount FROM LatestFeeHistory WHERE fee_type = '宿舍復歸費' AND rn = 1) resto
-                    ON wadim.worker_unique_id = resto.worker_unique_id AND resto.effective_date <= wadim.month_end
-                LEFT JOIN (SELECT worker_unique_id, effective_date, amount FROM LatestFeeHistory WHERE fee_type = '充電清潔費' AND rn = 1) charge
-                    ON wadim.worker_unique_id = charge.worker_unique_id AND charge.effective_date <= wadim.month_end
-                 WHERE rent.effective_date = (SELECT MAX(effective_date) FROM LatestFeeHistory sub WHERE sub.worker_unique_id = wadim.worker_unique_id AND sub.fee_type = '房租' AND sub.effective_date <= wadim.month_end)
-                   AND util.effective_date = (SELECT MAX(effective_date) FROM LatestFeeHistory sub WHERE sub.worker_unique_id = wadim.worker_unique_id AND sub.fee_type = '水電費' AND sub.effective_date <= wadim.month_end)
-                   AND clean.effective_date = (SELECT MAX(effective_date) FROM LatestFeeHistory sub WHERE sub.worker_unique_id = wadim.worker_unique_id AND sub.fee_type = '清潔費' AND sub.effective_date <= wadim.month_end)
-                   AND resto.effective_date = (SELECT MAX(effective_date) FROM LatestFeeHistory sub WHERE sub.worker_unique_id = wadim.worker_unique_id AND sub.fee_type = '宿舍復歸費' AND sub.effective_date <= wadim.month_end)
-                   AND charge.effective_date = (SELECT MAX(effective_date) FROM LatestFeeHistory sub WHERE sub.worker_unique_id = wadim.worker_unique_id AND sub.fee_type = '充電清潔費' AND sub.effective_date <= wadim.month_end)
+                -- 【核心修正】使用 LATERAL 獨立查找每種費用的最新紀錄
+                LEFT JOIN LATERAL (
+                    SELECT amount FROM "FeeHistory"
+                    WHERE worker_unique_id = wadim.worker_unique_id AND fee_type = '房租' AND effective_date <= wadim.month_end
+                    ORDER BY effective_date DESC LIMIT 1
+                ) rent ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT amount FROM "FeeHistory"
+                    WHERE worker_unique_id = wadim.worker_unique_id AND fee_type = '水電費' AND effective_date <= wadim.month_end
+                    ORDER BY effective_date DESC LIMIT 1
+                ) util ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT amount FROM "FeeHistory"
+                    WHERE worker_unique_id = wadim.worker_unique_id AND fee_type = '清潔費' AND effective_date <= wadim.month_end
+                    ORDER BY effective_date DESC LIMIT 1
+                ) clean ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT amount FROM "FeeHistory"
+                    WHERE worker_unique_id = wadim.worker_unique_id AND fee_type = '宿舍復歸費' AND effective_date <= wadim.month_end
+                    ORDER BY effective_date DESC LIMIT 1
+                ) resto ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT amount FROM "FeeHistory"
+                    WHERE worker_unique_id = wadim.worker_unique_id AND fee_type = '充電清潔費' AND effective_date <= wadim.month_end
+                    ORDER BY effective_date DESC LIMIT 1
+                ) charge ON TRUE
             ),
             MonthlyIncome AS (
                  SELECT
@@ -585,7 +592,6 @@ def get_monthly_financial_trend(dorm_ids: list, end_date_str: str = None):
             )
             SELECT
                 TO_CHAR(dp.month_start, 'YYYY-MM') AS "月份",
-                -- 【新增】將細項選出來
                 COALESCE(mi.total_worker_income, 0) AS "工人月費收入",
                 COALESCE(omi.total_other_income, 0) AS "其他收入",
                 
@@ -607,7 +613,6 @@ def get_monthly_financial_trend(dorm_ids: list, end_date_str: str = None):
         """
         df = _execute_query_to_dataframe(conn, query, params)
         if not df.empty:
-            # 【新增】將新欄位加入轉型列表
             num_cols = ["工人月費收入", "其他收入", "總收入", "長期合約支出", "變動雜費", "代收代付雜費", "長期攤銷", "總支出", "淨損益"]
             for col in num_cols:
                 if col in df.columns:

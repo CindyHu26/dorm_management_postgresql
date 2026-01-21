@@ -13,7 +13,7 @@ def render():
     dorms = dormitory_model.get_dorms_for_selection()
     dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms} if dorms else {}
 
-    tab1, tab2 = st.tabs(["📦 品項總覽與庫存管理", "📜 歷史異動紀錄"])
+    tab1, tab2, tab3 = st.tabs(["📦 品項總覽與庫存管理", "📜 歷史異動紀錄", "⚡ 批次帳務處理"])
 
     with tab1:
         with st.expander("➕ 新增庫存品項"):
@@ -225,3 +225,75 @@ def render():
                             success, message = inventory_model.delete_inventory_log(selected_log_id)
                             if success: st.success(message); st.cache_data.clear(); st.rerun()
                             else: st.error(message)
+
+    with tab3:
+        st.subheader("⚡ 批次轉入費用/收入")
+        st.info("此處列出尚未歸檔的「發放」與「售出」紀錄，可勾選後一次性轉入帳務系統。")
+        
+        # 1. 取得資料
+        pending_df = inventory_model.get_pending_accounting_logs()
+        
+        if pending_df.empty:
+            st.success("目前沒有待處理的庫存帳務紀錄。")
+        else:
+            # 2. 設定預設勾選邏輯
+            # 邏輯：如果是「發放」且「有關聯宿舍」(original_address非空)，則預設 True，否則 False
+            pending_df['選取'] = pending_df.apply(
+                lambda row: True if (row['異動類型'] == '發放' and pd.notna(row['關聯宿舍']) and row['關聯宿舍'] != "") else False, 
+                axis=1
+            )
+            
+            # 3. 顯示 Data Editor
+            edited_df = st.data_editor(
+                pending_df,
+                column_config={
+                    "選取": st.column_config.CheckboxColumn(required=True),
+                    "id": st.column_config.NumberColumn(disabled=True),
+                    "異動日期": st.column_config.DateColumn(disabled=True),
+                    "品項名稱": st.column_config.TextColumn(disabled=True),
+                    "異動類型": st.column_config.TextColumn(disabled=True),
+                    "數量": st.column_config.NumberColumn(disabled=True),
+                    "關聯宿舍": st.column_config.TextColumn(disabled=True),
+                    "成本": st.column_config.NumberColumn(format="NT$ %d", disabled=True),
+                    "售價": st.column_config.NumberColumn(format="NT$ %d", disabled=True),
+                },
+                hide_index=True,
+                use_container_width=True,
+                key="batch_inventory_editor"
+            )
+            
+            # 4. 篩選出被選取的行
+            selected_rows = edited_df[edited_df['選取']]
+            
+            c_btn1, c_btn2 = st.columns(2)
+            
+            # 5. 按鈕邏輯
+            with c_btn1:
+                # 篩選出「發放」類型的 ID
+                expense_ids = selected_rows[selected_rows['異動類型'] == '發放']['id'].tolist()
+                btn_expense_label = f"💸 將選取項目轉入「年度費用」 ({len(expense_ids)} 筆)"
+                
+                if st.button(btn_expense_label, type="primary", disabled=len(expense_ids)==0):
+                    with st.spinner("正在批次處理費用..."):
+                        s_count, f_count = inventory_model.batch_process_logs_to_expense(expense_ids)
+                    if f_count == 0:
+                        st.success(f"成功轉入 {s_count} 筆費用！")
+                    else:
+                        st.warning(f"完成 {s_count} 筆，失敗 {f_count} 筆 (請檢查是否缺少關聯宿舍或成本設定)。")
+                    st.cache_data.clear()
+                    st.rerun()
+            
+            with c_btn2:
+                # 篩選出「售出」類型的 ID
+                income_ids = selected_rows[selected_rows['異動類型'] == '售出']['id'].tolist()
+                btn_income_label = f"💰 將選取項目轉入「其他收入」 ({len(income_ids)} 筆)"
+                
+                if st.button(btn_income_label, disabled=len(income_ids)==0):
+                    with st.spinner("正在批次處理收入..."):
+                        s_count, f_count = inventory_model.batch_process_logs_to_income(income_ids)
+                    if f_count == 0:
+                        st.success(f"成功轉入 {s_count} 筆收入！")
+                    else:
+                        st.warning(f"完成 {s_count} 筆，失敗 {f_count} 筆 (請檢查售價設定)。")
+                    st.cache_data.clear()
+                    st.rerun()
