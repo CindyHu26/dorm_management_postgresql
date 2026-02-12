@@ -16,6 +16,7 @@ from views import (
     scraper_view, 
     dormitory_view,
     placement_view,  
+    compliance_overview_view,
     room_assignment_view,
     worker_view, 
     photo_upload_view,
@@ -76,6 +77,7 @@ PAGES = {
         "設備資產管理": equipment_view,          # 管冷氣/飲水機
         "庫存物品管理": inventory_view,          # 管備品/鑰匙
         "清掃排程管理": cleaning_schedule_view,  # 管打掃
+        "合規資料與費用總覽": compliance_overview_view,
         "電水錶號管理": meter_view,               # 管錶號 (非費用)
         "廠商資料管理": vendor_view,                 # 建房東/廠商
     },

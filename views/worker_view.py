@@ -5,7 +5,12 @@ import base64
 from datetime import date
 from data_models import worker_model, dormitory_model
 import utils
-
+# --- 嘗試匯入 PDF 檢視器套件 (解決白底問題) ---
+try:
+    from streamlit_pdf_viewer import pdf_viewer
+    HAS_PDF_VIEWER = True
+except ImportError:
+    HAS_PDF_VIEWER = False
 # --- 常數定義 ---
 TAB_CORE = "核心資料"
 TAB_ACCOM = "🏠 住宿歷史管理"
@@ -611,21 +616,33 @@ def render_worker_management_section(workers_df, pre_selected_worker_id=None):
                                     if ext in ['.jpg', '.jpeg', '.png']:
                                         st.image(file_path, caption=row['file_name'], use_container_width=True)
                                     
-                                    # --- PDF 預覽 (新增功能) ---
+                                    # --- PDF 預覽 (更新版) ---
                                     elif ext == '.pdf':
                                         st.markdown(f"**檔案路徑**: `{file_path}`")
-                                        # 使用 checkbox 來控制是否展開預覽，避免畫面過於雜亂
+                                        
+                                        # 1. 下載按鈕 (最穩)
+                                        with open(file_path, "rb") as f:
+                                            pdf_data = f.read()
+                                        
+                                        st.download_button(
+                                            label=f"📥 下載 PDF",
+                                            data=pdf_data,
+                                            file_name=row['file_name'],
+                                            mime="application/pdf",
+                                            key=f"dl_doc_{row['id']}"
+                                        )
+
+                                        # 2. 預覽區域
                                         if st.checkbox("👁️ 預覽 PDF 文件", key=f"view_pdf_{row['id']}"):
-                                            try:
-                                                with open(file_path, "rb") as f:
-                                                    base64_pdf = base64.b64encode(f.read()).decode('utf-8')
-                                                # 使用 iframe 嵌入 PDF
-                                                pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600" type="application/pdf"></iframe>'
-                                                st.markdown(pdf_display, unsafe_allow_html=True)
-                                            except Exception as e:
-                                                st.error(f"PDF 預覽失敗: {e}")
-                                    
-                                    # --- 其他格式 ---
+                                            if HAS_PDF_VIEWER:
+                                                # 使用專用套件直接讀取路徑，解決白底問題
+                                                pdf_viewer(file_path, height=600)
+                                            else:
+                                                st.warning("⚠️ 您的環境尚未安裝 `streamlit-pdf-viewer` 套件，預覽可能呈現空白。")
+                                                # 備用方案
+                                                base64_pdf = base64.b64encode(pdf_data).decode('utf-8')
+                                                pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600" type="application/pdf" style="border: none;"></iframe>'
+                                                st.markdown(pdf_display, unsafe_allow_html=True)                                    # --- 其他格式 ---
                                     else:
                                         st.markdown(f"**檔案路徑**: `{file_path}` (非圖片/PDF 格式，暫無法預覽)")
                                 else:

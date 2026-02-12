@@ -1,10 +1,27 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+import json
+from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 from data_models import finance_model, dormitory_model, vendor_model 
 
 def render():
+    st.title("💰 年度/攤銷費用管理")
+
+    # === 新增：模式切換 ===
+    mode = st.radio(
+        "檢視模式", 
+        ["🏢 依宿舍檢視/管理 (原始功能)", "📋 依項目彙總檢視 (跨宿舍)"], 
+        horizontal=True
+    )
+    st.markdown("---")
+
+    if mode == "🏢 依宿舍檢視/管理 (原始功能)":
+        render_by_dorm_view() # 呼叫原本的邏輯
+    else:
+        render_by_item_view() # 呼叫新功能
+
+def render_by_dorm_view():
     """渲染「年度費用管理」頁面"""
     st.header("我司管理宿舍 - 長期攤銷費用管理")
 
@@ -468,3 +485,203 @@ def render():
                 success, message, _ = finance_model.add_compliance_record('保險', record_details, expense_details)
                 if success: st.success(message); st.cache_data.clear(); st.rerun()
                 else: st.error(message)
+
+def render_by_item_view():
+    """
+    新功能：以項目為中心，並支援 JSON/JSONB 欄位展開與中文對照
+    """
+    st.subheader("📋 跨宿舍項目檢視與編輯")
+    
+    # === 1. 定義欄位中英對照表 (您可以隨時在此擴充) ===
+    field_mapping = {
+        # 建物/消防申報相關
+        "declaration_item": "申報項目",
+        "architect_name": "檢查人/代辦",
+        "area_legal": "合法面積(㎡)",
+        "area_total": "總面積(㎡)",
+        "amount_pre_tax": "未稅金額",
+        "submission_date": "申報日期",
+        "registered_mail_date": "掛號日期",
+        "certificate_received_date": "合格標章取得日",
+        "approval_start_date": "核准有效起日",
+        "approval_end_date": "核准有效迄日",
+        "next_declaration_start": "下次申報起日",
+        "next_declaration_end": "下次申報迄日",
+        "invoice_date": "發票日期",
+        
+        # 證件/文件勾選 (Boolean)
+        "usage_license_exists": "有使用執照?",
+        "property_deed_exists": "有建物權狀?",
+        "landlord_id_exists": "有房東身分證?",
+        "insurance_exists": "有公共意外險?",
+        "gov_document_exists": "有市府公文?",
+        "improvements_made": "改善事項已完成?",
+        
+        # 其他通用
+        "notes": "備註",
+        "vendor": "廠商",
+        "contact_person": "聯絡人"
+    }
+
+    # 2. 篩選區
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        all_items = finance_model.get_unique_expense_items()
+        selected_item = st.selectbox("請選擇費用項目", ["(全部)"] + all_items)
+    
+    # 3. 抓取資料
+    filters = {}
+    if selected_item != "(全部)":
+        filters['expense_item'] = selected_item
+    
+    raw_df = finance_model.get_all_annual_expenses(filters)
+    
+    if raw_df.empty:
+        st.warning("查無相關資料。")
+        return
+
+    # === 4. JSON 展開邏輯 ===
+    json_columns = []
+    expanded_data = []
+    
+    # 預設固定欄位
+    fixed_cols = ["id", "宿舍地址", "費用項目", "總金額", "支付日期", "攤提起", "攤提迄", "dorm_id"]
+    
+    for idx, row in raw_df.iterrows():
+        note_content = row.get('備註')
+        row_json_data = {}
+        
+        # 情況 A: 資料庫欄位是 JSONB，讀出來已經是 dict
+        if isinstance(note_content, dict):
+            row_json_data = note_content
+            
+        # 情況 B: 資料庫欄位是 Text，但內容是 JSON 字串
+        elif isinstance(note_content, str):
+            try:
+                clean_content = note_content.strip()
+                if clean_content.startswith('{'):
+                    parsed = json.loads(clean_content)
+                    if isinstance(parsed, dict):
+                        row_json_data = parsed
+            except Exception:
+                pass 
+
+        expanded_data.append(row_json_data)
+    
+    # 建立 JSON 資料的 DataFrame
+    json_df = pd.DataFrame(expanded_data)
+    
+    # 合併資料
+    if not json_df.empty and len(json_df.columns) > 0:
+        json_columns = list(json_df.columns)
+        # 簡單排序：讓布林值(exists/made)排在後面，日期排前面
+        json_columns.sort(key=lambda x: (1 if 'exists' in x or 'made' in x else 0, x))
+        
+        st.info(f"💡 偵測到結構化資料，已展開 {len(json_columns)} 個詳細欄位。")
+        display_df = pd.concat([raw_df.reset_index(drop=True), json_df.reset_index(drop=True)], axis=1)
+    else:
+        display_df = raw_df.copy()
+        fixed_cols.append("備註") 
+
+    # === 5. 設定編輯器欄位格式 (套用中文標題) ===
+    column_config = {
+        "id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
+        "宿舍地址": st.column_config.TextColumn("宿舍", disabled=True, width="medium"),
+        "費用項目": st.column_config.TextColumn("項目", required=True),
+        "總金額": st.column_config.NumberColumn("總金額", min_value=0, format="$%d"),
+        "支付日期": st.column_config.DateColumn("支付日期", format="YYYY-MM-DD"),
+        "攤提起": st.column_config.TextColumn("攤提起", help="格式: YYYY-MM"),
+        "攤提迄": st.column_config.TextColumn("攤提迄", help="格式: YYYY-MM"),
+        "dorm_id": None, 
+        "備註": None if json_columns else st.column_config.TextColumn("備註") 
+    }
+
+    # 為 JSON 展開的欄位設定格式與中文標題
+    for col in json_columns:
+        # 取得中文名稱 (若無對照則顯示原英文)
+        chinese_label = field_mapping.get(col, col)
+        
+        col_lower = col.lower()
+        if 'exists' in col_lower or 'made' in col_lower or 'is_' in col_lower:
+             column_config[col] = st.column_config.CheckboxColumn(label=chinese_label)
+        
+        elif 'date' in col_lower:
+             column_config[col] = st.column_config.TextColumn(label=chinese_label, help="格式: YYYY-MM-DD") 
+        
+        elif 'amount' in col_lower or 'area' in col_lower:
+             column_config[col] = st.column_config.NumberColumn(label=chinese_label)
+        
+        else:
+             column_config[col] = st.column_config.TextColumn(label=chinese_label)
+
+    # 6. 顯示 Data Editor
+    edited_df = st.data_editor(
+        display_df,
+        column_config=column_config,
+        hide_index=True,
+        use_container_width=True,
+        num_rows="dynamic",
+        key="annual_expense_json_editor"
+    )
+
+    # 7. 儲存邏輯 (維持不變)
+    if st.button("💾 儲存表格變更", type="primary"):
+        updates = []
+        original_df_idx = raw_df.set_index("id")
+        
+        for index, row in edited_df.iterrows():
+            row_id = row.get('id')
+            if not row_id or row_id not in original_df_idx.index: continue
+                
+            orig_row = original_df_idx.loc[row_id]
+            changes = {}
+            
+            # 固定欄位
+            if row['費用項目'] != orig_row['費用項目']: changes['expense_item'] = row['費用項目']
+            if row['總金額'] != orig_row['總金額']: changes['total_amount'] = row['總金額']
+            
+            new_pay_date = pd.to_datetime(row['支付日期']).date() if pd.notnull(row['支付日期']) else None
+            orig_pay_date = pd.to_datetime(orig_row['支付日期']).date() if pd.notnull(orig_row['支付日期']) else None
+            if new_pay_date != orig_pay_date: changes['payment_date'] = new_pay_date
+
+            if row['攤提起'] != orig_row['攤提起']: changes['amortization_start_month'] = row['攤提起']
+            if row['攤提迄'] != orig_row['攤提迄']: changes['amortization_end_month'] = row['攤提迄']
+
+            # JSON 欄位打包
+            if json_columns:
+                current_json_data = {}
+                for col in json_columns:
+                    val = row.get(col)
+                    if pd.isna(val): val = None
+                    elif hasattr(val, 'item'): val = val.item()
+                    if val is not None: current_json_data[col] = val
+                
+                new_note_str = json.dumps(current_json_data, ensure_ascii=False)
+                
+                orig_note_obj = {}
+                orig_raw = orig_row.get('備註')
+                if isinstance(orig_raw, dict): orig_note_obj = orig_raw
+                elif isinstance(orig_raw, str):
+                    try: orig_note_obj = json.loads(orig_raw)
+                    except: pass
+                
+                if current_json_data != orig_note_obj:
+                    changes['notes'] = new_note_str
+            else:
+                if row.get('備註') != orig_row.get('備註'):
+                    changes['notes'] = row.get('備註')
+
+            if changes:
+                changes['id'] = int(row_id)
+                updates.append(changes)
+        
+        if updates:
+            success, msg = finance_model.batch_update_annual_expenses(updates)
+            if success:
+                st.success(f"✅ {msg}")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.error(f"❌ {msg}")
+        else:
+            st.info("沒有偵測到任何變更。")

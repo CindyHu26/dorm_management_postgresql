@@ -3,6 +3,7 @@
 import streamlit as st
 import pandas as pd
 from data_models import reminder_model
+from datetime import datetime
 
 def render():
     """渲染「智慧提醒」儀表板"""
@@ -99,3 +100,24 @@ def render():
     else:
         st.success("在指定範圍內，沒有相關的移工工作期限。")
 
+    # --- 建物申報專屬區塊 ---
+    df = reminders.get('building_safety', pd.DataFrame())
+    
+    # 標題顯示筆數
+    st.subheader(f"🏢 建物申報提醒 ({len(df)} 筆)")
+    
+    if not df.empty:
+        # 轉換日期格式確保顯示漂亮
+        df['截止日期'] = pd.to_datetime(df['截止日期'], errors='coerce').dt.date
+        
+        st.dataframe(
+            df, 
+            width="stretch", 
+            hide_index=True,
+            column_config={
+                "截止日期": st.column_config.DateColumn("截止日期", format="YYYY-MM-DD"),
+                "上次申報日": st.column_config.DateColumn("上次申報日", format="YYYY-MM-DD"),
+            }
+        )
+    else:
+        st.success("在指定範圍內，沒有相關的建物申報項目。")

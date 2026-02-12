@@ -1290,3 +1290,87 @@ def get_fee_config():
         except Exception:
             return default_config
     return default_config
+
+
+# ==========================================
+# 新增：支援「以項目為中心」的檢視與編輯功能
+# ==========================================
+
+def get_unique_expense_items():
+    """取得所有不重複的費用項目名稱 (例如: 消防安檢, 建物申報...)"""
+    conn = database.get_db_connection()
+    if not conn: return []
+    try:
+        query = 'SELECT DISTINCT expense_item FROM "AnnualExpenses" ORDER BY expense_item'
+        with conn.cursor() as cursor:
+            cursor.execute(query)
+            res = cursor.fetchall()
+            # 確保回傳的是列表
+            return [r['expense_item'] for r in res] if res else []
+    finally:
+        if conn: conn.close()
+
+def get_all_annual_expenses(filters=None):
+    """取得所有年度費用 (支援依項目篩選，跨宿舍)"""
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        # 抓取包含 ID 以便後續更新
+        query = """
+            SELECT
+                ae.id,
+                d.original_address AS "宿舍地址",
+                ae.expense_item AS "費用項目",
+                ae.total_amount AS "總金額",
+                ae.payment_date AS "支付日期",
+                ae.amortization_start_month AS "攤提起",
+                ae.amortization_end_month AS "攤提迄",
+                ae.notes AS "備註",
+                ae.dorm_id -- 隱藏欄位，可用於辨識
+            FROM "AnnualExpenses" ae
+            JOIN "Dormitories" d ON ae.dorm_id = d.id
+            WHERE 1=1
+        """
+        params = []
+        if filters:
+            if filters.get('expense_item'):
+                query += ' AND ae.expense_item = %s'
+                params.append(filters['expense_item'])
+        
+        query += ' ORDER BY ae.payment_date DESC, d.original_address'
+        
+        return _execute_query_to_dataframe(conn, query, params)
+    finally:
+        if conn: conn.close()
+
+def batch_update_annual_expenses(updates: list):
+    """
+    批次更新年度費用
+    updates: list of dict, e.g. [{'id': 1, 'total_amount': 2000, 'notes': '修正'}]
+    """
+    if not updates: return True, "無資料需更新"
+    
+    conn = database.get_db_connection()
+    if not conn: return False, "DB Connection Failed"
+    try:
+        updated_count = 0
+        with conn.cursor() as cursor:
+            for item in updates:
+                # 取出 id，剩下的 key-value 就是要更新的欄位
+                row_id = item.pop('id')
+                if not item: continue
+                
+                # 動態組建 update query
+                set_clause = ", ".join([f'"{k}" = %s' for k in item.keys()])
+                values = list(item.values()) + [row_id]
+                
+                sql = f'UPDATE "AnnualExpenses" SET {set_clause} WHERE id = %s'
+                cursor.execute(sql, tuple(values))
+                updated_count += 1
+        conn.commit()
+        return True, f"成功更新 {updated_count} 筆資料"
+    except Exception as e:
+        if conn: conn.rollback()
+        return False, f"更新失敗: {e}"
+    finally:
+        if conn: conn.close()

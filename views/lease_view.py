@@ -4,9 +4,74 @@ import os
 import base64
 import streamlit as st
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from dateutil.relativedelta import relativedelta
 from data_models import lease_model, dormitory_model, vendor_model
+
+# --- 嘗試匯入 PDF 檢視器套件 ---
+try:
+    from streamlit_pdf_viewer import pdf_viewer
+    HAS_PDF_VIEWER = True
+except ImportError:
+    HAS_PDF_VIEWER = False
+
+def update_payer_default():
+    """當新增表單的宿舍改變時，自動更新預設支付方"""
+    new_dorm_id = st.session_state.get('add_lease_dorm_id')
+    if new_dorm_id:
+        dorm_details = dormitory_model.get_dorm_details_by_id(new_dorm_id)
+        if dorm_details:
+            st.session_state['add_lease_payer'] = dorm_details.get('rent_payer', '我司')
+
+def prefill_lease_form(details):
+    """
+    續約按鈕的 Callback：將舊資料寫入 Session State 以便預填表單。
+    """
+    # 1. 設定宿舍
+    st.session_state['add_lease_dorm_id'] = details['dorm_id']
+    
+    # 2. 設定合約項目
+    item_ops = ["房租", "清運費", "其他(手動輸入)"]
+    c_item = details.get('contract_item', '')
+    if c_item in item_ops:
+        st.session_state['add_lease_item'] = c_item
+        st.session_state['add_lease_custom'] = ""
+    else:
+        st.session_state['add_lease_item'] = "其他(手動輸入)"
+        st.session_state['add_lease_custom'] = c_item
+
+    # 3. 設定其他數值
+    st.session_state['add_lease_rent'] = int(details.get('monthly_rent') or 0)
+    st.session_state['add_lease_vendor'] = details.get('vendor_id')
+    st.session_state['add_lease_payer'] = details.get('payer')
+    st.session_state['add_lease_deposit'] = int(details.get('deposit') or 0)
+    st.session_state['add_lease_utilities'] = bool(details.get('utilities_included', False))
+    st.session_state['add_lease_notes'] = details.get('notes', '')
+
+    # 4. 計算新日期 (舊結束日 + 1天)
+    old_end = details.get('lease_end_date')
+    if old_end:
+        # 確保格式為 date 物件
+        if isinstance(old_end, str):
+            try:
+                old_end_date = datetime.strptime(old_end, '%Y-%m-%d').date()
+            except:
+                old_end_date = date.today()
+        else:
+            old_end_date = old_end
+        
+        st.session_state['add_lease_start'] = old_end_date + timedelta(days=1)
+    else:
+        st.session_state['add_lease_start'] = date.today()
+        
+    st.session_state['add_lease_end'] = None # 新合約結束日預設留空
+
+    # 5. 設定旗標，觸發 UI 展開與提示
+    st.session_state['expand_add_lease'] = True
+    st.session_state['show_renewal_msg'] = True # 顯示提示訊息的旗標
+    
+    # 6. 彈出 Toast 提示
+    st.toast("✅ 資料已帶入上方「新增合約」表單，請確認後按下儲存！", icon="📋")
 
 def render():
     """渲染「長期合約管理」頁面"""
@@ -17,7 +82,19 @@ def render():
     thirty_years_ago = today - relativedelta(years=30)
     thirty_years_from_now = today + relativedelta(years=30)
 
-    with st.expander("➕ 新增長期合約"):
+    # 檢查是否需要自動展開新增區塊
+    is_expanded = st.session_state.get('expand_add_lease', False)
+
+    with st.expander("➕ 新增長期合約", expanded=is_expanded):
+        # 如果已經展開，下次重整時歸位
+        if is_expanded:
+            st.session_state['expand_add_lease'] = False
+
+        # 續約成功後的明顯提示
+        if st.session_state.get('show_renewal_msg'):
+            st.success("⬇️ 已載入舊合約資料！請檢查「合約起始日」與「金額」，確認無誤後按下底部的【儲存新合約】。", icon="✅")
+            st.session_state['show_renewal_msg'] = False # 顯示一次後關閉
+
         dorms = dormitory_model.get_dorms_for_selection() or []
         dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms}
         
@@ -25,22 +102,13 @@ def render():
             "選擇宿舍地址*", 
             options=dorm_options.keys(), 
             format_func=lambda x: dorm_options.get(x, "未知宿舍"),
-            index=None, # 預設不選
-            placeholder="請先選擇宿舍..."
+            index=None, 
+            placeholder="請先選擇宿舍...",
+            key='add_lease_dorm_id',
+            on_change=update_payer_default
         )
         
-        # --- 【核心修改 2】計算預設值的邏輯移到 Form 外面 ---
-        default_payer = '我司' # 預設值
-        if selected_dorm_id:
-            dorm_details = dormitory_model.get_dorm_details_by_id(selected_dorm_id)
-            if dorm_details:
-                default_payer = dorm_details.get('rent_payer', '我司')
-
         payer_options = ["我司", "雇主", "工人"]
-        try:
-            default_payer_index = payer_options.index(default_payer)
-        except ValueError:
-            default_payer_index = 0
 
         # 只有在選了宿舍後才顯示表單
         if selected_dorm_id:
@@ -49,35 +117,42 @@ def render():
                 vendors = vendor_model.get_vendors_for_view()
                 vendor_options = {v['id']: f"{v['服務項目']} - {v['廠商名稱']}" for _, v in vendors.iterrows()} if not vendors.empty else {}
                 
-                # --- 【核心修改 3】將支付方 selectbox 的 index 設為 default_payer_index ---
                 c1_item, c2_item, c3_item, c4_item = st.columns(4) 
                 item_options = ["房租", "清運費", "其他(手動輸入)"]
-                selected_item = c1_item.selectbox("合約項目*", options=item_options)
-                custom_item = c1_item.text_input("自訂項目名稱", help="若上方選擇「其他(手動輸入)」，請在此處填寫")
                 
-                monthly_rent = c2_item.number_input("每月固定金額*", min_value=0, step=1000)
-                selected_vendor_id = c3_item.selectbox("房東/廠商 (選填)", options=[None] + list(vendor_options.keys()), format_func=lambda x: "未指定" if x is None else vendor_options.get(x))
+                selected_item = c1_item.selectbox("合約項目*", options=item_options, key='add_lease_item')
+                custom_item = c1_item.text_input("自訂項目名稱", help="若上方選擇「其他(手動輸入)」，請在此處填寫", key='add_lease_custom')
+                
+                monthly_rent = c2_item.number_input("每月固定金額*", min_value=0, step=1000, key='add_lease_rent')
+                selected_vendor_id = c3_item.selectbox(
+                    "房東/廠商 (選填)", 
+                    options=[None] + list(vendor_options.keys()), 
+                    format_func=lambda x: "未指定" if x is None else vendor_options.get(x),
+                    key='add_lease_vendor'
+                )
+                
                 payer = c4_item.selectbox(
                     "支付方*", 
                     payer_options, 
-                    index=default_payer_index # <-- 使用計算好的索引
+                    key='add_lease_payer'
                 )
+                
                 c1, c2 = st.columns(2)
-                lease_start_date = c1.date_input("合約起始日", value=None, min_value=thirty_years_ago, max_value=thirty_years_from_now)
+                lease_start_date = c1.date_input("合約起始日", min_value=thirty_years_ago, max_value=thirty_years_from_now, key='add_lease_start')
                 with c2:
-                    lease_end_date = st.date_input("合約截止日 (可留空)", value=None, min_value=thirty_years_ago, max_value=thirty_years_from_now)
+                    lease_end_date = st.date_input("合約截止日 (可留空)", value=None, min_value=thirty_years_ago, max_value=thirty_years_from_now, key='add_lease_end')
                     st.write("若為長期合約，此處請留空。")
                 
                 c3, c4 = st.columns([1, 3])
-                deposit = c3.number_input("押金", min_value=0, step=1000)
-                utilities_included = c4.checkbox("費用是否包含水電 (通常用於房租)")
+                deposit = c3.number_input("押金", min_value=0, step=1000, key='add_lease_deposit')
+                utilities_included = c4.checkbox("費用是否包含水電 (通常用於房租)", key='add_lease_utilities')
 
-                notes = st.text_area("合約備註")
+                notes = st.text_area("合約備註", key='add_lease_notes')
                 st.markdown("##### 📎 上傳合約附件")
                 uploaded_files = st.file_uploader(
                     "可一次上傳多個檔案 (支援 JPG, PNG, PDF)", 
                     type=['jpg', 'png', 'jpeg', 'pdf'], 
-                    accept_multiple_files=True  # <--- 關鍵參數：允許同事選取多個檔案
+                    accept_multiple_files=True 
                 )
 
                 submitted = st.form_submit_button("儲存新合約")
@@ -91,11 +166,10 @@ def render():
                         saved_photo_paths = []
                         if uploaded_files:
                             dorm_name = dorm_options.get(selected_dorm_id, "Unknown")
-                            # 檔名範例: 宿舍名_合約_2024-01-01_a1b2c3.pdf
                             prefix = f"{dorm_name}_合約_{lease_start_date}"
                             saved_photo_paths = utils.save_uploaded_files(uploaded_files, "lease", prefix)
                         details = {
-                            "dorm_id": selected_dorm_id, # selected_dorm_id 現在來自 Form 外部
+                            "dorm_id": selected_dorm_id,
                             "vendor_id": selected_vendor_id,
                             "payer": payer,
                             "contract_item": final_item,
@@ -110,7 +184,7 @@ def render():
                         success, message, _ = lease_model.add_lease(details)
                         if success:
                             st.success(message)
-                            st.cache_data.clear()
+                            st.cache_data.clear() # 成功後清除快取
                             st.rerun()
                         else:
                             st.error(message)
@@ -129,7 +203,6 @@ def render():
 
     leases_df = get_leases(dorm_id_filter)
     
-    # --- 顯示的欄位名稱 ---
     st.dataframe(leases_df, width="stretch", hide_index=True, column_config={
         "月費金額": st.column_config.NumberColumn(format="NT$ %d")
     })
@@ -141,7 +214,6 @@ def render():
     if leases_df.empty:
         st.info("目前沒有可供操作的合約紀錄。")
     else:
-        # --- 預先載入廠商列表以供編輯表單使用 ---
         if 'vendor_options' not in locals():
             vendors = vendor_model.get_vendors_for_view()
             vendor_options = {v['id']: f"{v['服務項目']} - {v['廠商名稱']}" for _, v in vendors.iterrows()} if not vendors.empty else {}
@@ -166,13 +238,24 @@ def render():
             if not lease_details:
                 st.error("找不到選定的合約資料。")
             else:
-                # --- 【核心修改】使用 Tabs 將表單與文件管理分開 ---
                 tab_basic, tab_files = st.tabs(["📝 基本資料編輯", "📂 附件與照片管理"])
                 
                 # ==========================================
-                # Tab 1: 基本資料編輯 (保留 st.form)
+                # Tab 1: 基本資料編輯
                 # ==========================================
                 with tab_basic:
+                    col_renew_info, col_renew_btn = st.columns([3, 1])
+                    with col_renew_info:
+                        st.info("💡 提示：若此合約即將到期，可點擊右側按鈕。它會將此合約的資料帶入上方的「新增表單」，方便您快速建立下一期合約。")
+                    with col_renew_btn:
+                        st.button(
+                            "📋 續約 (帶入上方表單)", 
+                            on_click=prefill_lease_form, 
+                            args=(lease_details,)
+                        )
+
+                    st.markdown("---")
+
                     with st.form(f"edit_lease_form_{selected_lease_id}"):
                         st.caption(f"正在編輯合約 ID: {selected_lease_id}")
                         st.text_input("宿舍地址", value=dorm_options.get(lease_details['dorm_id'], "未知"), disabled=True)
@@ -223,7 +306,6 @@ def render():
 
                         e_notes = st.text_area("合約備註", value=lease_details.get('notes', ''))
                         
-                        # 送出按鈕 (只儲存基本資料)
                         if st.form_submit_button("💾 儲存基本資料變更"):
                             final_end_date = None
                             if not clear_end_date:
@@ -231,7 +313,6 @@ def render():
                             
                             e_final_item = e_custom_item if e_selected_item == "其他(手動輸入)" and e_custom_item else e_selected_item
                             
-                            # 注意：這裡不更新 photo_paths，避免覆蓋掉文件管理的變更
                             updated_details = {
                                 "vendor_id": e_selected_vendor_id, 
                                 "payer": e_payer,
@@ -246,17 +327,17 @@ def render():
                             success, message = lease_model.update_lease(selected_lease_id, updated_details)
                             if success:
                                 st.success(message)
+                                st.cache_data.clear() # 成功後清除快取
                                 st.rerun()
                             else:
                                 st.error(message)
 
                 # ==========================================
-                # Tab 2: 附件與照片管理 (獨立於 Form 之外)
+                # Tab 2: 附件與照片管理
                 # ==========================================
                 with tab_files:
                     st.info("此處的上傳與刪除操作會「立即生效」。")
                     
-                    # 1. 上傳區塊 (使用獨立的小 Form)
                     with st.form("upload_lease_file_form", clear_on_submit=True):
                         st.markdown("###### 📤 上傳新文件")
                         new_files = st.file_uploader("支援 JPG, PNG, PDF (可多選)", type=['jpg', 'png', 'jpeg', 'pdf'], accept_multiple_files=True)
@@ -265,13 +346,13 @@ def render():
                                 prefix = f"{dorm_options.get(lease_details['dorm_id'])}_合約_{lease_details.get('lease_start_date')}"
                                 saved_paths = utils.save_uploaded_files(new_files, "lease", prefix)
                                 
-                                # 更新資料庫
                                 current_paths = lease_details.get('photo_paths') or []
                                 updated_paths = current_paths + saved_paths
                                 success, msg = lease_model.update_lease(selected_lease_id, {"photo_paths": updated_paths})
                                 
                                 if success:
                                     st.success(f"成功上傳 {len(saved_paths)} 個檔案")
+                                    st.cache_data.clear() # 成功後清除快取
                                     st.rerun()
                                 else:
                                     st.error(msg)
@@ -280,14 +361,12 @@ def render():
 
                     st.markdown("---")
                     
-                    # 2. 列表與管理區塊
                     current_photos = lease_details.get('photo_paths') or []
                     if not current_photos:
                         st.info("目前沒有附件檔案。")
                     else:
                         st.markdown(f"###### 📂 現有文件列表 ({len(current_photos)})")
                         
-                        # 逐一顯示檔案與操作按鈕
                         for p in current_photos:
                             if not os.path.exists(p):
                                 st.error(f"檔案遺失: {p}")
@@ -300,18 +379,14 @@ def render():
                                 col_view, col_del = st.columns([3, 1])
                                 
                                 with col_view:
-                                    # --- 圖片顯示 ---
                                     if ext in ['.jpg', '.jpeg', '.png', '.bmp']:
                                         st.image(p, width=300)
-                                    
-                                    # --- PDF 顯示 (這裡可以使用 download_button 了！) ---
                                     elif ext == '.pdf':
-                                        import base64
+                                        
+                                        # 1. 永遠提供下載按鈕 (最穩)
                                         with open(p, "rb") as f:
                                             pdf_bytes = f.read()
-                                            base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
                                         
-                                        # 下載按鈕 (Native Streamlit)
                                         st.download_button(
                                             label=f"📥 下載 {fname}",
                                             data=pdf_bytes,
@@ -320,23 +395,37 @@ def render():
                                             key=f"dl_btn_{fname}"
                                         )
                                         
-                                        # 預覽視窗 (Embed)
+                                        # 2. PDF 預覽區域
                                         if st.checkbox("預覽內容", key=f"prev_chk_{fname}"):
-                                            pdf_display = f'<embed src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600" type="application/pdf">'
-                                            st.markdown(pdf_display, unsafe_allow_html=True)
-                                    
+                                            if HAS_PDF_VIEWER:
+                                                # 使用專用套件直接讀取路徑，解決白底問題
+                                                pdf_viewer(p, height=800)
+                                            else:
+                                                st.warning("⚠️ 您的環境尚未安裝 `streamlit-pdf-viewer` 套件，預覽可能呈現空白。")
+                                                st.info("建議於終端機執行： `pip install streamlit-pdf-viewer` 以獲得最佳體驗。")
+                                                
+                                                # 備用方案 (雖然可能白底)
+                                                base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
+                                                pdf_display = f'''
+                                                    <iframe src="data:application/pdf;base64,{base64_pdf}" 
+                                                            width="100%" 
+                                                            height="800" 
+                                                            type="application/pdf"
+                                                            style="border: none;">
+                                                    </iframe>
+                                                '''
+                                                st.markdown(pdf_display, unsafe_allow_html=True)
                                     else:
                                         st.text(f"檔案路徑: {p}")
 
                                 with col_del:
-                                    st.write("") # Spacer
+                                    st.write("") 
                                     if st.button("🗑️ 刪除檔案", key=f"del_btn_{fname}"):
-                                        # 1. 刪除實體檔
                                         utils.delete_file(p)
-                                        # 2. 更新資料庫 list
                                         new_paths = [x for x in current_photos if x != p]
                                         lease_model.update_lease(selected_lease_id, {"photo_paths": new_paths})
                                         st.success("已刪除")
+                                        st.cache_data.clear() # 成功後清除快取
                                         st.rerun()
 
                 st.markdown("---")

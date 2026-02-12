@@ -536,9 +536,11 @@ def render_edit_delete(dorm_options, vendor_options, item_type_options, status_o
                      st.cache_data.clear()
                      st.rerun()
 
-def render_overview(dorm_options, vendor_options, status_options):
-    """渲染：維修紀錄總覽"""
+def render_overview(dorm_options, vendor_options, item_type_options, status_options):
+    """渲染：維修紀錄總覽 (新增下方編輯功能)"""
     st.subheader("📊 維修紀錄總覽")
+    
+    # --- Part 1: 篩選條件 ---
     c1, c2, c3 = st.columns(3)
     f_status = c1.selectbox("狀態篩選", [""] + status_options, key="ov_status")
     f_dorm = c2.selectbox("宿舍篩選", [None] + list(dorm_options.keys()), format_func=lambda x: "全部" if x is None else dorm_options.get(x), key="ov_dorm")
@@ -555,12 +557,46 @@ def render_overview(dorm_options, vendor_options, status_options):
     if f_start: filters["start_date"] = f_start
     if f_end: filters["end_date"] = f_end
 
+    # 取得篩選後的資料
     log_df = maintenance_model.get_logs_for_view(filters)
     
+    # --- Part 2: 顯示資料表格 ---
     if not log_df.empty:
         if f_vendor or f_start or f_end:
              st.success(f"篩選總計: {len(log_df)} 筆, 費用總額: NT$ {log_df['維修費用'].sum():,}")
+        
+        # 顯示表格 (增加搜尋功能以便快速定位 ID)
         st.dataframe(log_df, width='stretch', hide_index=True)
+        
+        st.markdown("---")
+        
+        # --- Part 3: 下方編輯區 (新增) ---
+        st.subheader("🔍 檢視詳情與編輯")
+        st.info("請在下方選擇上方表格中的案件 ID，即可進行詳細內容編輯或查看照片。")
+        
+        # 準備下拉選單選項
+        edit_options = {
+            row['id']: f"[ID:{row['id']}] {row['宿舍地址']} - {row['細項說明'][:30]}..." 
+            for _, row in log_df.iterrows()
+        }
+        
+        selected_log_id = st.selectbox(
+            "選擇要編輯/檢視的案件：",
+            options=[None] + list(edit_options.keys()),
+            format_func=lambda x: "請選擇案件 ID..." if x is None else edit_options.get(x),
+            key="overview_edit_selector"
+        )
+        
+        if selected_log_id:
+            # 呼叫現有的共用編輯表單組件
+            _render_full_edit_form(
+                selected_log_id, 
+                dorm_options, 
+                vendor_options, 
+                item_type_options, 
+                status_options,
+                key_suffix="overview"
+            )
     else:
         st.info("無符合條件的資料")
 
@@ -1088,7 +1124,7 @@ def render():
     elif app_mode == "✏️ 編輯 / 刪除單筆維修紀錄":
         render_edit_delete(dorm_options, vendor_options, item_type_options, status_options)
     elif app_mode == "📊 維修紀錄總覽":
-        render_overview(dorm_options, vendor_options, status_options)
+        render_overview(dorm_options, vendor_options, item_type_options, status_options) # 補上後兩個參數
     elif app_mode == "📦 批次轉入年度費用":
         render_batch_archive()
     elif app_mode == "📑 匯出改善/維修報表":

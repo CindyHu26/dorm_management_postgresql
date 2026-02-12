@@ -121,11 +121,29 @@ def get_upcoming_reminders(days_ahead: int = 90):
         """
         cleaning_df = _execute_query_to_dataframe(conn, cleaning_query, (start_date, end_date))
 
+# --- 建築物公共安全申報 (整合您的查詢邏輯) ---
+        building_query = """
+            SELECT 
+                d.original_address AS "宿舍地址",
+                cr.record_type AS "申報類型",
+                cr.details->>'submission_date' AS "上次申報日",
+                cr.details->>'next_declaration_start' AS "下次開始日",
+                cr.details->>'next_declaration_end' AS "截止日期",
+                cr.details->>'architect_name' AS "配合廠商"
+            FROM "ComplianceRecords" cr
+            JOIN "Dormitories" d ON cr.dorm_id = d.id
+            WHERE cr.record_type IN ('建物申報', '建築物公共安全申報')
+              AND (cr.details->>'next_declaration_end')::date BETWEEN %s AND %s
+            ORDER BY (cr.details->>'next_declaration_end')::date ASC
+        """
+        building_df = _execute_query_to_dataframe(conn, building_query, (start_date, end_date))
+
         return {
             "leases": leases_df, "workers": workers_df,
             "equipment": equipment_df, "insurance": insurance_df,
             "compliance": compliance_df,
-            "cleaning_schedules": cleaning_df # 將查詢結果放入新鍵
+            "cleaning_schedules": cleaning_df,
+            "building_safety": building_df,
         }
         
     except Exception as e:
@@ -138,3 +156,30 @@ def get_upcoming_reminders(days_ahead: int = 90):
     finally:
         if conn:
             conn.close()
+
+def get_building_safety_reminders():
+    """專門獲取建築物公共安全申報的提醒資料，對齊 Google 同步欄位"""
+    conn = database.get_db_connection()
+    if not conn: return []
+    try:
+        with conn.cursor() as cursor:
+            # 1. 統一使用 next_declaration_end 作為截止日
+            # 2. 加入 submission_date (上次申報日) 與 architect_name (配合廠商)
+            query = """
+                SELECT 
+                    d.original_address,
+                    cr.record_type,
+                    cr.details->>'submission_date' AS last_declaration_date,
+                    cr.details->>'next_declaration_start' AS next_start_date,
+                    cr.details->>'next_declaration_end' AS deadline,
+                    cr.details->>'architect_name' AS vendor
+                FROM "ComplianceRecords" cr
+                JOIN "Dormitories" d ON cr.dorm_id = d.id
+                WHERE cr.record_type IN ('建物申報', '建築物公共安全申報')
+                  AND (cr.details->>'next_declaration_end') IS NOT NULL
+                ORDER BY cr.details->>'next_declaration_end' ASC
+            """
+            cursor.execute(query)
+            return cursor.fetchall()
+    finally:
+        conn.close()
