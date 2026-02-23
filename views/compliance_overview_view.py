@@ -14,7 +14,7 @@ def render():
         sel_dorm = c1.selectbox("篩選宿舍", options=[None] + list(dorm_options.keys()), 
                                 format_func=lambda x: "全部宿舍" if x is None else dorm_options[x])
         
-        type_options = ["建物申報", "消防安檢", "其他"]
+        type_options = ["建物申報", "消防安檢", "保險", "宿舍大掃除", "宿舍簡易掃除", "其他"]
         sel_type = c2.selectbox("資料類別", options=[None] + type_options,
                                 format_func=lambda x: "全部類別" if x is None else x)
 

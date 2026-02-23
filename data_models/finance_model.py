@@ -759,14 +759,7 @@ def get_bills_for_editor(meter_id: int):
     try:
         # 【修改】加入 peak_usage 和 off_peak_usage
         query = """
-            SELECT 
-                id, bill_type, amount,
-                usage_amount, peak_usage, sat_half_peak_usage, off_peak_usage, 
-                bill_start_date, bill_end_date,
-                payer, 
-                is_pass_through,
-                is_invoiced, 
-                notes
+            SELECT *
             FROM "UtilityBills"
             WHERE meter_id = %s
             ORDER BY bill_end_date DESC

@@ -473,3 +473,28 @@ def generate_cleaning_notice(dorm_address: str, cleaning_date: date):
     except Exception as e:
         print(f"產生 Word 公告時發生錯誤: {e}")
         return None
+    
+
+def get_cleaning_history(dorm_id=None):
+    """取得已完成的清掃歷史紀錄"""
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        query = """
+            SELECT 
+                cs.id, d.original_address AS "宿舍地址", 
+                cs.scheduled_date AS "預定日期", 
+                cs.actual_completion_date AS "實際完成日期",
+                cs.notes AS "備註"
+            FROM "CleaningSchedule" cs
+            JOIN "Dormitories" d ON cs.dorm_id = d.id
+            WHERE cs.status = '已完成'
+        """
+        params = []
+        if dorm_id:
+            query += " AND cs.dorm_id = %s"
+            params.append(dorm_id)
+        query += " ORDER BY cs.actual_completion_date DESC" # 由新到舊排序
+        return pd.read_sql(query, conn)
+    finally:
+        conn.close()
