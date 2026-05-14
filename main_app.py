@@ -10,6 +10,7 @@ from views import (
     dorm_analyzer_view, 
     employer_dashboard_view,
     analytics_view,
+    simple_finance_view,
     fee_dashboard_view,
     loss_analyzer_view,
     operations_analyzer_view,
@@ -55,6 +56,7 @@ def load_config():
 PAGES = {
     "📊 數據決策儀表板": {
         "系統總覽儀表板": dashboard_view,
+        "簡易財務分析": simple_finance_view,
         "費用基準與異常分析": fee_dashboard_view,      # 抓出收費異常
         "雇主損益分析": employer_dashboard_view, # 算雇主賺賠
         "虧損宿舍分析": loss_analyzer_view,      # 算宿舍賺賠
