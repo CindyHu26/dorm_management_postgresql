@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import os
 import base64
+import time
 from datetime import date
 from data_models import worker_model, dormitory_model
 import utils
@@ -661,14 +662,18 @@ def render_worker_management_section(workers_df, pre_selected_worker_id=None):
 def render_add_manual_worker():
     """
     新增手動管理人員的表單
+    符合格式：雇主_姓名_護照號碼 (無護照則自動產生)
     """
     st.subheader("➕ 新增手動管理人員 (他仲/特殊案例)")
-    st.info("在此新增的人員將被標記為『手動管理(他仲)』，系統不會自動同步其資料。")
+    st.info("在此新增的人員將被標記為『手動管理(他仲)』。")
     
     with st.form("add_manual_worker_form"):
+        # 護照/ID 改為選填
+        passport_input = st.text_input("護照號碼 (若無則留空，系統將自動產生識別碼)")
+        
         col1, col2 = st.columns(2)
         name = col1.text_input("姓名 (必填)")
-        employer = col2.text_input("雇主名稱")
+        employer = col2.text_input("雇主名稱 (必填)")
         
         col3, col4 = st.columns(2)
         nationality = col3.selectbox("國籍", ["越南", "印尼", "泰國", "菲律賓", "其他"])
@@ -677,20 +682,37 @@ def render_add_manual_worker():
         notes = st.text_area("備註")
         
         if st.form_submit_button("建立人員"):
-            if not name:
-                st.error("姓名為必填欄位")
+            if not name or not employer:
+                st.error("姓名與雇主名稱為必填欄位")
             else:
+                # --- 1. ID 命名邏輯：雇主_姓名_護照號碼 ---
+                # 若護照為空，則產生一個短隨機碼
+                id_part = passport_input.strip() if passport_input.strip() else f"TEMP{int(time.time()) % 100000}"
+                final_unique_id = f"{employer}_{name}_{id_part}"
+                
+                # 2. 準備人員資料
                 worker_data = {
+                    "unique_id": final_unique_id,
                     "worker_name": name,
                     "employer_name": employer,
                     "nationality": nationality,
                     "gender": gender,
                     "worker_notes": notes,
-                    "data_source": "手動管理(他仲)"
+                    "passport_number": passport_input.strip() if passport_input.strip() else None,
+                    "data_source": "手動管理(他仲)" # 保留您的關鍵標記
                 }
-                success, message = worker_model.create_manual_worker(worker_data)
+                
+                # 3. 初始狀態字典 (依要求不設定特殊狀態)
+                initial_status = {
+                    "status": None,
+                    "notes": "手動建立"
+                }
+                
+                # 4. 呼叫後端 Model
+                # 回傳值包含 success, message, unique_id
+                success, message, new_id = worker_model.add_manual_worker(worker_data, initial_status)
+                
                 if success:
-                    st.success(message)
+                    st.success(f"✅ 建立成功！系統編號為：{final_unique_id}")
                 else:
-                    st.error(message)
-
+                    st.error(f"建立失敗：{message}")

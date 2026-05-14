@@ -409,7 +409,16 @@ def get_dorm_analysis_data(dorm_ids: list, year_month: str):
 
     try:
         params = {"dorm_ids": dorm_ids, "year_month": year_month}
-        rooms_df = _execute_query_to_dataframe(conn, 'SELECT * FROM "Rooms" WHERE dorm_id = ANY(%(dorm_ids)s)', params)
+        # --- 使用 JOIN 抓取宿舍地址 ---
+        rooms_sql = """
+            SELECT 
+                r.*, 
+                d.original_address 
+            FROM "Rooms" r
+            JOIN "Dormitories" d ON r.dorm_id = d.id
+            WHERE r.dorm_id = ANY(%(dorm_ids)s)
+        """
+        rooms_df = _execute_query_to_dataframe(conn, rooms_sql, params)
         
         workers_query = """
             WITH DateParams AS (
@@ -455,8 +464,8 @@ def get_dorm_analysis_data(dorm_ids: list, year_month: str):
             special_rooms_df['目前住的人數'] = special_rooms_df['目前住的人數'].fillna(0).astype(int)
             special_rooms_df['獨立空床數'] = special_rooms_df['capacity'] - special_rooms_df['目前住的人數']
             
-        total_special_empty_beds = int(special_rooms_df['獨立空床數'].sum()) if not special_rooms_df.empty else 0
-        total_available_beds = total_capacity - total_actual_residents - total_special_empty_beds
+        # total_special_empty_beds = int(special_rooms_df['獨立空床數'].sum()) if not special_rooms_df.empty else 0
+        total_available_beds = total_capacity - total_actual_residents
         
         return {
             "total_capacity": total_capacity,
@@ -767,7 +776,8 @@ def get_amortized_expense_details(dorm_ids: list, year_month: str):
 
 def get_room_occupancy_view(dorm_ids: list, year_month: str):
     """
-    【v3.0 SQL 優化版】
+    【v4.1 合規優化版】整合房況、名單、特殊註記與合規面積計算。
+    直接計算「每人平均面積」，方便檢查是否符合法規。
     """
     conn = database.get_db_connection()
     if not conn or not dorm_ids: return pd.DataFrame()
@@ -784,8 +794,7 @@ def get_room_occupancy_view(dorm_ids: list, year_month: str):
                  SELECT DISTINCT ON (ah.worker_unique_id)
                     ah.worker_unique_id, 
                     ah.room_id,
-                    ah.bed_number,
-                    ah.end_date
+                    ah.bed_number
                 FROM "AccommodationHistory" ah
                 JOIN "Rooms" r ON ah.room_id = r.id
                 CROSS JOIN DateParams dp
@@ -800,12 +809,8 @@ def get_room_occupancy_view(dorm_ids: list, year_month: str):
                 r.room_number, 
                 r.capacity,
                 r.area_sq_meters,
-                
-                COALESCE(w.worker_name, '') as worker_name,
-                COALESCE(w.employer_name, '') as employer_name,
-                COALESCE(awm.bed_number, '') as bed_number,
-                COALESCE(w.special_status, '') as special_status,
-                awm.end_date AS accommodation_end
+                r.room_notes,
+                COALESCE(w.worker_name, '') as worker_name
             FROM "Rooms" r
             JOIN "Dormitories" d ON r.dorm_id = d.id
             LEFT JOIN ActiveWorkersInMonth awm ON r.id = awm.room_id
@@ -814,10 +819,35 @@ def get_room_occupancy_view(dorm_ids: list, year_month: str):
                 r.dorm_id = ANY(%(dorm_ids)s)
                 AND r.room_number != '[未分配房間]'
                 AND (r.capacity > 0 OR w.unique_id IS NOT NULL)
-                
             ORDER BY d.original_address, r.room_number
         """
-        return _execute_query_to_dataframe(conn, query, params)
+        raw_df = _execute_query_to_dataframe(conn, query, params)
+        
+        if raw_df.empty: return pd.DataFrame()
+
+        def aggregate_room_info(group):
+            names = [n for n in group['worker_name'].tolist() if n]
+            current_count = len(names)
+            total_area = group['area_sq_meters'].iloc[0] or 0
+            
+            # 計算：一人平均面積 (若沒人住則顯示為 0)
+            avg_area = round(total_area / current_count, 2) if current_count > 0 else 0
+            raw_capacity = group['capacity'].iloc[0]
+            capacity = int(raw_capacity) if pd.notnull(raw_capacity) else 0
+            return pd.Series({
+                '宿舍地址': group['original_address'].iloc[0],
+                '房號': group['room_number'].iloc[0],
+                '目前人數': current_count,
+                '總容量': group['capacity'].iloc[0],
+                '剩餘空床': capacity - current_count,
+                '總面積(㎡)': total_area,
+                '一人面積(㎡)': avg_area, # <--- 直接計算出來
+                '在住名單': "、".join(names) if names else "(空房)",
+                '特殊備註': group['room_notes'].iloc[0] or ""
+            })
+
+        summary_df = raw_df.groupby('room_id').apply(aggregate_room_info).reset_index(drop=True)
+        return summary_df
 
     finally:
         if conn: conn.close()

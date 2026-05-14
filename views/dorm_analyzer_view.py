@@ -9,7 +9,7 @@ from data_models import dormitory_model, single_dorm_analyzer, analytics_model
 
 def render():
     """渲染「宿舍深度分析」頁面"""
-    st.header("宿舍深度分析儀表板")
+    # st.header("宿舍深度分析儀表板")
     if st.button("🔄 重新整理數據 (若資料未更新請點此)"):
         st.cache_data.clear()
         st.rerun()
@@ -132,156 +132,68 @@ def render():
         b_col3.metric("一般可住空床數 (彙總)", f"{ab['total']} 床", help="計算方式：[總容量] - [實際住宿人數] - [特殊房間獨立空床數]。代表可自由安排的床位。")
         st.markdown(f"**實際住宿性別比 (彙總)**：男 {ar['male']} 人 / 女 {ar['female']} 人")
         st.markdown(f"**掛宿外住性別比 (彙總)**：男 {er['male']} 人 / 女 {er['female']} 人")
-        st.markdown("##### Ｃ. 特殊房間註記與獨立空床 (彙總)")
-        special_rooms_df = analysis_data['special_rooms']
-        if special_rooms_df.empty:
-            st.info("所選宿舍沒有任何註記特殊備註的房間。")
-        else:
-            st.warning("注意：下方所列房間的空床位『不』計入上方的一般可住空床數，需獨立評估安排。")
-            st.dataframe(
-                special_rooms_df[['room_number', 'room_notes', 'capacity', '目前住的人數', '獨立空床數']],
-                 width="stretch", hide_index=True
-            )
             
     st.markdown("---")
     # --- 房況總覽區塊 ---
-    st.subheader(f"{year_month_str} 宿舍房況總覽 (彙總)")
+    st.subheader(f"{year_month_str} 宿舍房況與合規檢查總覽 (彙總)")
     
     @st.cache_data
     def get_room_view_data(dorm_ids, year_month):
+        # 這裡會呼叫我們剛剛在 single_dorm_analyzer.py 寫好的 v4.1 版本
         return single_dorm_analyzer.get_room_occupancy_view(list(dorm_ids), year_month)
     
-    # 將 dorm_ids 轉為 tuple 才能被快取
     room_view_df = get_room_view_data(tuple(selected_dorm_ids), year_month_str)
     
     if room_view_df.empty:
         st.info("所選宿舍中沒有建立房間 (或僅有 [未分配房間])。")
     else:
-        # --- 【修正 1】引入 calendar 計算月底日期 ---
-        import calendar
-        # 計算該月份的最後一天 (例如 2025-11-30)
-        last_day = calendar.monthrange(selected_year, selected_month)[1]
-        month_end_date = pd.Timestamp(datetime(selected_year, selected_month, last_day).date())
-
-        # 依照宿舍地址和房號排序
-        room_view_df.sort_values(by=['original_address', 'room_number'], inplace=True)
-        
-        # 確保日期欄位格式正確 (轉為 datetime 以便比較)
-        if 'accommodation_end' in room_view_df.columns:
-            room_view_df['accommodation_end'] = pd.to_datetime(room_view_df['accommodation_end'], errors='coerce')
-
-        # 讀取法規標準 (預設 3.6)
-        general_config = database.get_general_config()
-        min_area_standard = float(general_config.get('min_area_per_person', 3.6))
-
-        # 依照 (宿舍, 房號) 進行分組
-        for (dorm_address, room_number), occupants in room_view_df.groupby(['original_address', 'room_number']):
+        # 1. 直接將數值轉為文字：大於 0 的加上 ㎡，等於 0 或沒資料的顯示 "-"
+        if '總面積(㎡)' in room_view_df.columns:
+            room_view_df['總面積(㎡)'] = room_view_df['總面積(㎡)'].apply(lambda x: f"{x:.1f} ㎡" if pd.notna(x) and x > 0 else "-")
             
-            room_capacity = occupants['capacity'].iloc[0]
-            # 讀取房間面積 (處理可能的空值)
-            room_area = occupants['area_sq_meters'].iloc[0]
-            room_area = float(room_area) if pd.notna(room_area) else 0
+        if '一人面積(㎡)' in room_view_df.columns:
+            room_view_df['一人面積(㎡)'] = room_view_df['一人面積(㎡)'].apply(lambda x: f"{x:.2f} ㎡" if pd.notna(x) and x > 0 else "-")
+
+        # 2. 動態樣式邏輯
+        def style_compliance(row):
+            styles = [''] * len(row)
             
-            # --- 【修正 2】修正「實際佔床」邏輯：排除月底前已離住者 ---
-            # 條件 A: 有人名
-            # 條件 B: 狀態不含 "掛宿外住"
-            # 條件 C: (在住) OR (離住日 > 月底) --> 代表月底那天他還在
-
-            # --- 1. 計算「掛宿外住」人數 ---
-            # 使用 fillna('') 避免空值報錯，並計算包含 "掛宿外住" 的列數
-            num_external = occupants['special_status'].fillna('').str.contains('掛宿外住').sum()
-
-            # --- 2. 計算「實際佔床」人數 (排除掛宿外住 & 已搬離) ---
-            def check_occupancy(row):
-                if not row['worker_name']: return False # 空資料
-                if "掛宿外住" in str(row['special_status']): return False # 掛宿不佔床
+            # --- 條件一：有床位時醒目標示 (綠色) ---
+            if row.get('剩餘空床', 0) > 0:
+                if '剩餘空床' in room_view_df.columns:
+                    bed_idx = list(room_view_df.columns).index('剩餘空床')
+                    styles[bed_idx] += '; color: #16a34a; font-weight: bold;'
+            
+            # --- 條件二：合規性檢查 (紅字警告) ---
+            # 把文字 (如 "3.20 ㎡") 去除 " ㎡" 後轉回數字來做判斷
+            area_str = str(row.get('一人面積(㎡)', ''))
+            try:
+                area_val = float(area_str.replace(' ㎡', ''))
+            except ValueError:
+                area_val = 0 # 如果遇到 "-" 轉換失敗，就當作 0 處理
                 
-                end_date = row.get('accommodation_end') # 使用 get 避免 KeyError
-                # 如果有離住日，且離住日 <= 月底，代表月底時已不在，不佔床
-                if pd.notna(end_date) and end_date <= month_end_date:
-                    return False
-                return True
-
-            # 計算佔床人數
-            num_occupants = occupants.apply(check_occupancy, axis=1).sum()
-            vacancies = room_capacity - num_occupants
-
-            # 讀取房間面積 (SQL 新增的欄位)
-            room_area = occupants['area_sq_meters'].iloc[0] if 'area_sq_meters' in occupants.columns else 0
-            room_area = float(room_area) if pd.notna(room_area) else 0
-
-            # --- 人均面積檢核邏輯 ---
-            area_info = ""
-            if room_area > 0:
-                if num_occupants > 0:
-                    avg_area = room_area / num_occupants
-                    area_info = f" | {avg_area:.2f} m²/人"
+            # 判斷：如果有人住，且算出來的數字大於 0 又小於標準值
+            if row.get('目前人數', 0) > 0 and area_val > 0 and area_val < min_area_standard:
+                if '一人面積(㎡)' in room_view_df.columns:
+                    area_idx = list(room_view_df.columns).index('一人面積(㎡)')
+                    styles[area_idx] += '; color: red; font-weight: bold;'
                     
-                    # 判斷是否違規 (紅色警告)
-                    if avg_area < min_area_standard:
-                        area_info += " ⚠️ 空間不足"
-                else:
-                    # 若無人居住，只顯示總面積
-                    area_info = f" | 總面積 {room_area} m²"
+            return styles
 
-            # --- 3. 組合標題字串 ---
-            room_title = f"{dorm_address} - {room_number} (容量: {room_capacity}, 在住: {num_occupants}, 外住: {num_external}, 空床: {vacancies}){area_info}"
-            
-            if vacancies == 0:
-                room_title = f"🔴 {room_title} (已滿)"
-            elif vacancies < 0:
-                room_title = f"⚠️ {room_title} (超住?)"
-            elif vacancies > 0:
-                room_title = f"🟢 {room_title}"
-            
-            if num_external > 0:
-                room_title += f"，掛住: {num_external}人"
+        # 3. 渲染表格 (程式碼變得更乾淨，不需再 drop 輔助欄位)
+        st.dataframe(
+            room_view_df.style.apply(style_compliance, axis=1),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "一人面積(㎡)": st.column_config.TextColumn("一人面積"),
+                "總面積(㎡)": st.column_config.TextColumn("總面積"),
+                "在住名單": st.column_config.TextColumn("在住名單", width="large"),
+                "目前人數": st.column_config.NumberColumn("目前人數", format="%d 人"),
+                "總容量": st.column_config.NumberColumn("總容量", format="%d 床"),
+            }
+        )
 
-            with st.expander(room_title):
-                has_data = occupants['worker_name'] != ''
-                if not has_data.any():
-                    st.text("此房間目前無人居住。")
-                else:
-                    # 取出要顯示的資料
-                    occupant_details = occupants[has_data][['worker_name', 'employer_name', 'bed_number', 'special_status', 'accommodation_end']].copy()
-                    
-                    # --- 在表格中標記已離住者 ---
-                    def format_status_display(row):
-                        status = str(row['special_status']) if pd.notna(row['special_status']) else ""
-                        end_date = row['accommodation_end']
-                        
-                        # 如果在這個月結束前離住
-                        if pd.notna(end_date) and end_date <= month_end_date:
-                            date_str = end_date.strftime('%m/%d')
-                            return f"❌ 已於 {date_str} 搬離"
-                        
-                        return status
-
-                    occupant_details['狀態/備註'] = occupant_details.apply(format_status_display, axis=1)
-
-                    occupant_details.rename(columns={
-                        'worker_name': '姓名', 
-                        'employer_name': '雇主', 
-                        'bed_number': '床位'
-                    }, inplace=True)
-                    
-                    # 顯示表格 (隱藏原始日期欄位，改顯示處理過的狀態)
-                    final_view = occupant_details[['姓名', '雇主', '床位', '狀態/備註']]
-
-                    # 樣式設定：將「已搬離」的列標示為灰色文字
-                    def highlight_leavers(row):
-                        val = str(row['狀態/備註'])
-                        if "已於" in val and "搬離" in val:
-                            return ['color: #999999; font-style: italic;'] * len(row)
-                        elif "掛宿外住" in val:
-                            return ['color: #FFBF00; font-weight: bold;'] * len(row)
-                        return [''] * len(row)
-
-                    st.dataframe(
-                        final_view.style.apply(highlight_leavers, axis=1), 
-                        hide_index=True, 
-                        width="stretch"
-                    )
     # --- 房況總覽區塊結束 ---
     st.markdown("---")
     st.subheader(f"{year_month_str} 財務分析 (我司視角 - 彙總)")

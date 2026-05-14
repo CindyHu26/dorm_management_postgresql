@@ -194,7 +194,7 @@ def _render_full_edit_form(selected_log_id, dorm_options, vendor_options, item_t
         ec9, ec10, ec11, ec12 = st.columns(4)
         e_cost = ec9.number_input("維修費用", min_value=0, step=100, value=details.get('cost') or 0)
         
-        payer_opts = ["", "我司", "工人", "雇主"]
+        payer_opts = ["", "我司", "工人", "雇主", "房東"]
         payer_idx = payer_opts.index(details.get('payer')) if details.get('payer') in payer_opts else 0
         e_payer = ec10.selectbox("付款人", payer_opts, index=payer_idx)
         e_invoice_date = ec11.date_input("請款日期", value=details.get('invoice_date'))

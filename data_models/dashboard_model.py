@@ -309,8 +309,7 @@ def get_seasonal_expense_forecast(year_month: str):
 
 def get_annual_financial_dashboard_data(year: int):
     """
-    【v3.5 修正版】計算指定年度的財務收支總覽。
-    修正：UtilityBills 部分改回使用 CTE 結構，並正確篩選 payer = '我司'。
+    【v3.6 詳情強化版】計算指定年度的財務收支總覽，並加入當前租金收入與房租支出明細。
     """
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -333,7 +332,7 @@ def get_annual_financial_dashboard_data(year: int):
                     %(start_date)s::date as start_date,
                     %(end_date)s::date as end_date
             ),
-            -- 查詢該年度居住的雇主
+            -- 查詢該年度居住過的雇主 (原邏輯)
             ResidentEmployers AS (
                 SELECT 
                     r.dorm_id, 
@@ -347,7 +346,7 @@ def get_annual_financial_dashboard_data(year: int):
                     AND (ah.end_date IS NULL OR ah.end_date >= dp.start_date)
                 GROUP BY r.dorm_id
             ),
-            -- 1. 工人收入
+            -- 1. 工人收入總額 (原邏輯)
             WorkerIncome AS (
                 SELECT 
                     r.dorm_id, 
@@ -364,7 +363,7 @@ def get_annual_financial_dashboard_data(year: int):
                     AND d.primary_manager = '我司' 
                 GROUP BY r.dorm_id
             ),
-            -- 2. 其他收入
+            -- 2. 其他收入總額 (原邏輯)
             OtherIncome AS (
                 SELECT dorm_id, SUM(amount) as income 
                 FROM "OtherIncome" CROSS JOIN DateParams dp 
@@ -376,7 +375,7 @@ def get_annual_financial_dashboard_data(year: int):
                 FROM (SELECT * FROM WorkerIncome UNION ALL SELECT * FROM OtherIncome) as combined_income 
                 GROUP BY dorm_id
             ),
-            -- 3. 支出 (CTE 結構)
+            -- 3. 支出類 (原邏輯)
             PassThroughIncome AS (
                 SELECT b.dorm_id, SUM(b.amount::decimal * (LEAST(b.bill_end_date, dp.end_date)::date - GREATEST(b.bill_start_date, dp.start_date)::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)) as total_pass_through_income 
                 FROM "UtilityBills" b CROSS JOIN DateParams dp 
@@ -390,16 +389,12 @@ def get_annual_financial_dashboard_data(year: int):
                 GROUP BY l.dorm_id
             ),
             UtilitiesExpense AS (
-                -- 【核心修正】直接篩選 payer = '我司'，並正確定義 utility_expense 欄位
                 SELECT 
                     b.dorm_id, 
                     SUM(b.amount::decimal * (LEAST(b.bill_end_date, dp.end_date)::date - GREATEST(b.bill_start_date, dp.start_date)::date + 1) / NULLIF((b.bill_end_date - b.bill_start_date + 1), 0)) as utility_expense 
                 FROM "UtilityBills" b 
                 CROSS JOIN DateParams dp 
-                WHERE 
-                    b.bill_start_date <= dp.end_date AND b.bill_end_date >= dp.start_date 
-                    AND b.payer = '我司' 
-                    AND b.is_pass_through = FALSE 
+                WHERE b.bill_start_date <= dp.end_date AND b.bill_end_date >= dp.start_date AND b.payer = '我司' AND b.is_pass_through = FALSE 
                 GROUP BY b.dorm_id
             ),
             AmortizedExpense AS (
@@ -407,7 +402,53 @@ def get_annual_financial_dashboard_data(year: int):
                 FROM "AnnualExpenses" CROSS JOIN DateParams dp 
                 WHERE TO_DATE(amortization_start_month, 'YYYY-MM') <= dp.end_date AND TO_DATE(amortization_end_month, 'YYYY-MM') >= dp.start_date 
                 GROUP BY dorm_id
+            ),
+            
+            -- 【新增】租金收入細項 (當前在住人員的收費模式)
+            RentIncomeDetail AS (
+                WITH WorkerLatestFee AS (
+                    SELECT
+                        r2.dorm_id,
+                        w.employer_name,
+                        fh.amount,
+                        w.unique_id
+                    FROM "Workers" w
+                    JOIN "AccommodationHistory" ah ON w.unique_id = ah.worker_unique_id
+                    JOIN "Rooms" r2 ON ah.room_id = r2.id
+                    JOIN (
+                        -- 找出每個人最後一筆費用紀錄作為當前收費標準
+                        SELECT worker_unique_id, amount, 
+                               ROW_NUMBER() OVER(PARTITION BY worker_unique_id ORDER BY effective_date DESC, id DESC) as rn
+                        FROM "FeeHistory"
+                    ) fh ON w.unique_id = fh.worker_unique_id AND fh.rn = 1
+                    WHERE (ah.end_date IS NULL OR ah.end_date > CURRENT_DATE)
+                      AND (w.accommodation_end_date IS NULL OR w.accommodation_end_date > CURRENT_DATE)
+                ),
+                GroupedFees AS (
+                    SELECT
+                        dorm_id,
+                        amount,
+                        COUNT(unique_id) as person_count,
+                        STRING_AGG(DISTINCT employer_name, '、') as employer_list
+                    FROM WorkerLatestFee
+                    GROUP BY dorm_id, amount
+                )
+                SELECT
+                    dorm_id,
+                    STRING_AGG(amount::int || ':' || person_count || '人(' || employer_list || ')', ', ') as rent_summary
+                FROM GroupedFees
+                GROUP BY dorm_id
+            ),
+            -- 【新增】房租支出細項 (當前生效合約)
+            RentExpenseDetail AS (
+                SELECT
+                    l.dorm_id,
+                    STRING_AGG('月租' || l.monthly_rent::int || '元 (' || COALESCE(TO_CHAR(l.lease_end_date, 'YYYY-MM-DD'), '無期限') || '止)', '; ') as lease_summary
+                FROM "Leases" l
+                WHERE l.payer = '我司' AND (l.lease_end_date IS NULL OR l.lease_end_date >= CURRENT_DATE)
+                GROUP BY l.dorm_id
             )
+            
             -- 4. 最終彙總
             SELECT
                 d.id,
@@ -419,7 +460,11 @@ def get_annual_financial_dashboard_data(year: int):
                 ROUND(COALESCE(ue.utility_expense, 0))::int AS "變動雜費(我司支付)",
                 COALESCE(ae.amortized_expense, 0)::int AS "長期攤銷",
                 (COALESCE(le.contract_expense, 0) + ROUND(COALESCE(ue.utility_expense, 0)) + COALESCE(ae.amortized_expense, 0) + COALESCE(pti.total_pass_through_income, 0))::int AS "總支出",
-                (COALESCE(ti.total_income, 0) - (COALESCE(le.contract_expense, 0) + ROUND(COALESCE(ue.utility_expense, 0)) + COALESCE(ae.amortized_expense, 0)))::int AS "淨損益"
+                (COALESCE(ti.total_income, 0) - (COALESCE(le.contract_expense, 0) + ROUND(COALESCE(ue.utility_expense, 0)) + COALESCE(ae.amortized_expense, 0)))::int AS "淨損益",
+                
+                -- 加入新欄位
+                COALESCE(rid.rent_summary, '無資料') AS "租金收入",
+                COALESCE(red.lease_summary, '無資料') AS "房租支出"
             FROM "Dormitories" d
             LEFT JOIN ResidentEmployers re ON d.id = re.dorm_id
             LEFT JOIN TotalIncome ti ON d.id = ti.dorm_id
@@ -427,6 +472,8 @@ def get_annual_financial_dashboard_data(year: int):
             LEFT JOIN LeaseExpense le ON d.id = le.dorm_id
             LEFT JOIN UtilitiesExpense ue ON d.id = ue.dorm_id
             LEFT JOIN AmortizedExpense ae ON d.id = ae.dorm_id
+            LEFT JOIN RentIncomeDetail rid ON d.id = rid.dorm_id
+            LEFT JOIN RentExpenseDetail red ON d.id = red.dorm_id
             WHERE d.primary_manager = '我司'
             ORDER BY "淨損益" ASC;
         """

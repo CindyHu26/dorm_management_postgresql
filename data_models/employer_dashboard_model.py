@@ -210,9 +210,16 @@ def get_employer_financial_summary(employer_names: list, year_month: str, only_m
             -- 5. 其他收入 (Direct)
             OtherDormIncome_Direct AS (
                 SELECT dorm_id, SUM(amount) as direct_income
-                FROM "OtherIncome" CROSS JOIN DateParams dp
-                WHERE transaction_date >= dp.first_day_of_month AND transaction_date <= dp.last_day_of_month
-                  AND target_employer = ANY(%(employer_names)s)
+                FROM "OtherIncome"
+                CROSS JOIN DateParams dp
+                WHERE (
+                    -- 1. 日期比對：使用 TO_CHAR 避免時區或格式誤差
+                    TO_CHAR(transaction_date, 'YYYY-MM') = %(year_month)s
+                )
+                AND (
+                    -- 2. 雇主比對：增加 TRIM 去除空格，並確保名稱匹配
+                    TRIM(target_employer) = ANY(%(employer_names)s)
+                )
                 GROUP BY dorm_id
             ),
             -- 6. 其他收入 (Shared)

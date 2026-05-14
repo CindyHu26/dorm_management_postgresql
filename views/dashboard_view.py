@@ -242,12 +242,13 @@ def render():
                     color = 'red' if val < 0 else 'green' if val > 0 else 'grey'
                     return f'color: {color}'
                 
-                # 【修改】同樣加入 help 提示
+                # 更新表格配置
                 st.dataframe(
                     annual_finance_df.style.apply(lambda x: x.map(lambda y: style_profit_annual(y) if x.name == '淨損益' else None)),
                     width="stretch", 
                     hide_index=True,
-                    column_order=["宿舍地址", "雇主", "總收入", "總支出", "淨損益"],
+                    # 在 column_order 中加入新的欄位
+                    column_order=["宿舍地址", "雇主", "總收入", "總支出", "淨損益", "租金收入", "房租支出"],
                     column_config={
                         "宿舍地址": st.column_config.TextColumn("宿舍地址", width="medium"),
                         "雇主": st.column_config.TextColumn("雇主", width="medium"),
@@ -255,9 +256,13 @@ def render():
                         "總支出": st.column_config.NumberColumn("總支出", format="NT$ %d", help="包含合約 + 變動雜費 + 年度攤銷"),
                         "淨損益": st.column_config.NumberColumn("淨損益", format="NT$ %d"),
                         
-                        "長期合約支出": st.column_config.NumberColumn("長期合約支出", format="NT$ %d", help="固定的月費支出 (如房租)"),
-                        "變動雜費(我司支付)": st.column_config.NumberColumn("變動雜費", format="NT$ %d", help="浮動的帳單支出 (如水電)"),
-                        "長期攤銷": st.column_config.NumberColumn("長期攤銷", format="NT$ %d", help="分攤至本月的年度費用 (如保險、修繕)"),
+                        # 新增兩欄的顯示設定
+                        "租金收入": st.column_config.TextColumn("租金收入", help="當前在住移工收租明細 (格式：金額:人數(雇主))"),
+                        "房租支出": st.column_config.TextColumn("房租支出", help="當前生效合約 (格式：月租金額 (合約截止日))"),
+                        
+                        "長期合約支出": st.column_config.NumberColumn("長期合約支出", format="NT$ %d"),
+                        "變動雜費(我司支付)": st.column_config.NumberColumn("變動雜費", format="NT$ %d"),
+                        "長期攤銷": st.column_config.NumberColumn("長期攤銷", format="NT$ %d"),
                         "宿舍備註": st.column_config.TextColumn("宿舍備註")
                     }
                 )
