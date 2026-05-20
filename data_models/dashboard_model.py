@@ -439,14 +439,68 @@ def get_annual_financial_dashboard_data(year: int):
                 FROM GroupedFees
                 GROUP BY dorm_id
             ),
-            -- 【新增】房租支出細項 (當前生效合約)
-            RentExpenseDetail AS (
+            -- 【每月支出明細】合約部分（當前生效）
+            ContractExpenseDetail AS (
                 SELECT
                     l.dorm_id,
-                    STRING_AGG('月租' || l.monthly_rent::int || '元 (' || COALESCE(TO_CHAR(l.lease_end_date, 'YYYY-MM-DD'), '無期限') || '止)', '; ') as lease_summary
+                    SUM(l.monthly_rent)::int AS total_contract,
+                    STRING_AGG(
+                        -- ⚠️ 請將 l.description 改成你的 Leases 名稱欄位
+                        COALESCE(l.contract_item, '合約') || ': ' || l.monthly_rent::int || '元 ('
+                        || COALESCE(TO_CHAR(l.lease_end_date, 'YYYY-MM-DD'), '無期限') || '止)',
+                        ', ' ORDER BY l.monthly_rent DESC
+                    ) AS contract_items
                 FROM "Leases" l
-                WHERE l.payer = '我司' AND (l.lease_end_date IS NULL OR l.lease_end_date >= CURRENT_DATE)
+                WHERE l.payer = '我司'
+                AND (l.lease_end_date IS NULL OR l.lease_end_date >= CURRENT_DATE)
                 GROUP BY l.dorm_id
+            ),
+
+            -- 【每月支出明細】雜費部分（用最近 90 天帳單換算月均）
+            UtilityExpenseDetail AS (
+                SELECT
+                    b.dorm_id,
+                    ROUND(SUM(
+                        b.amount::decimal / NULLIF(b.bill_end_date - b.bill_start_date + 1, 0) * 30.4375
+                    ))::int AS total_monthly_util,
+                    STRING_AGG(
+                        -- ⚠️ 請將 b.bill_type 改成你的 UtilityBills 類型欄位
+                        COALESCE(b.bill_type, '雜費') || ': '
+                        || ROUND(b.amount::decimal / NULLIF(b.bill_end_date - b.bill_start_date + 1, 0) * 30.4375)::int || '元',
+                        ', ' ORDER BY b.bill_type
+                    ) AS utility_items
+                FROM "UtilityBills" b
+                WHERE b.payer = '我司'
+                AND b.is_pass_through = FALSE
+                AND b.bill_end_date >= CURRENT_DATE - INTERVAL '90 days'
+                GROUP BY b.dorm_id
+            ),
+
+            -- 【每月支出明細】攤銷部分（當前仍在攤銷期間）
+            AmortExpenseDetail AS (
+                SELECT
+                    ae.dorm_id,
+                    ROUND(SUM(
+                        ae.total_amount::decimal / NULLIF(
+                            ((EXTRACT(YEAR  FROM TO_DATE(ae.amortization_end_month,   'YYYY-MM'))
+                            - EXTRACT(YEAR  FROM TO_DATE(ae.amortization_start_month, 'YYYY-MM'))) * 12
+                            +(EXTRACT(MONTH FROM TO_DATE(ae.amortization_end_month,   'YYYY-MM'))
+                            - EXTRACT(MONTH FROM TO_DATE(ae.amortization_start_month, 'YYYY-MM'))) + 1), 0)
+                    ))::int AS total_monthly_amort,
+                    STRING_AGG(
+                        -- ⚠️ 請將 ae.expense_name 改成你的 AnnualExpenses 名稱欄位
+                        COALESCE(ae.expense_item, '攤銷項目') || ': '
+                        || ROUND(ae.total_amount::decimal / NULLIF(
+                            ((EXTRACT(YEAR  FROM TO_DATE(ae.amortization_end_month,   'YYYY-MM'))
+                            - EXTRACT(YEAR  FROM TO_DATE(ae.amortization_start_month, 'YYYY-MM'))) * 12
+                            +(EXTRACT(MONTH FROM TO_DATE(ae.amortization_end_month,   'YYYY-MM'))
+                            - EXTRACT(MONTH FROM TO_DATE(ae.amortization_start_month, 'YYYY-MM'))) + 1), 0)
+                        )::int || '元',
+                        ', '
+                    ) AS amort_items
+                FROM "AnnualExpenses" ae
+                WHERE TO_DATE(ae.amortization_end_month, 'YYYY-MM') >= DATE_TRUNC('month', CURRENT_DATE)
+                GROUP BY ae.dorm_id
             )
             
             -- 4. 最終彙總
@@ -454,7 +508,7 @@ def get_annual_financial_dashboard_data(year: int):
                 d.id,
                 d.original_address AS "宿舍地址",
                 re.employers AS "雇主",
-                d.dorm_notes AS "宿舍備註",
+                d.dorm_notes AS "備註",
                 (COALESCE(ti.total_income, 0) + COALESCE(pti.total_pass_through_income, 0))::int AS "總收入",
                 COALESCE(le.contract_expense, 0)::int AS "長期合約支出",
                 ROUND(COALESCE(ue.utility_expense, 0))::int AS "變動雜費(我司支付)",
@@ -462,9 +516,16 @@ def get_annual_financial_dashboard_data(year: int):
                 (COALESCE(le.contract_expense, 0) + ROUND(COALESCE(ue.utility_expense, 0)) + COALESCE(ae.amortized_expense, 0) + COALESCE(pti.total_pass_through_income, 0))::int AS "總支出",
                 (COALESCE(ti.total_income, 0) - (COALESCE(le.contract_expense, 0) + ROUND(COALESCE(ue.utility_expense, 0)) + COALESCE(ae.amortized_expense, 0)))::int AS "淨損益",
                 
-                -- 加入新欄位
                 COALESCE(rid.rent_summary, '無資料') AS "租金收入",
-                COALESCE(red.lease_summary, '無資料') AS "房租支出"
+                -- 每月支出欄位（替換原本的 "房租支出"）
+                '合約: '  || COALESCE(ced.total_contract::text,       '0') || '元('
+                        || COALESCE(ced.contract_items,               '無') || ')；'
+                || '雜費: ' || COALESCE(ued.total_monthly_util::text,  '0') || '元('
+                        || COALESCE(ued.utility_items,                '無') || ')；'
+                || '攤銷: ' || COALESCE(aed.total_monthly_amort::text, '0') || '元('
+                        || COALESCE(aed.amort_items,                  '無') || ')'
+                AS "每月支出"
+
             FROM "Dormitories" d
             LEFT JOIN ResidentEmployers re ON d.id = re.dorm_id
             LEFT JOIN TotalIncome ti ON d.id = ti.dorm_id
@@ -473,12 +534,16 @@ def get_annual_financial_dashboard_data(year: int):
             LEFT JOIN UtilitiesExpense ue ON d.id = ue.dorm_id
             LEFT JOIN AmortizedExpense ae ON d.id = ae.dorm_id
             LEFT JOIN RentIncomeDetail rid ON d.id = rid.dorm_id
-            LEFT JOIN RentExpenseDetail red ON d.id = red.dorm_id
+            LEFT JOIN ContractExpenseDetail ced ON d.id = ced.dorm_id
+            LEFT JOIN UtilityExpenseDetail  ued ON d.id = ued.dorm_id
+            LEFT JOIN AmortExpenseDetail    aed ON d.id = aed.dorm_id
             WHERE d.primary_manager = '我司'
             ORDER BY "淨損益" ASC;
         """
         return _execute_query_to_dataframe(conn, query, params)
     except Exception as e:
+        import traceback
+        traceback.print_exc()   # ← 加這行
         print(f"產生年度財務總覽報表時發生錯誤: {e}")
         return pd.DataFrame()
     finally:
