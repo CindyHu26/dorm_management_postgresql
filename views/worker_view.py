@@ -42,14 +42,15 @@ def render():
 
 def render_main_worker_list():
     """
-    渲染移工總覽列表與篩選器 (修改版：移除勾選框，單純顯示)
+    渲染移工總覽列表與篩選器 (加入房號篩選功能)
     """
     st.markdown("---")
     
     # --- 1. 篩選區塊 ---
     st.markdown("##### 🔍 篩選條件")
     
-    col1, col2, col3, col4 = st.columns(4)
+    # 【修改重點 1】將畫面切分為 5 個欄位 (加入房號欄位)
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     all_dorms = dormitory_model.get_dorms_for_selection()
     dorm_options = {}
@@ -70,18 +71,36 @@ def render_main_worker_list():
             format_func=lambda x: "全部" if x is None else dorm_options[x]
         )
     
+    # 【修改重點 2】新增房號下拉選單，並與宿舍連動
     with col2:
-        search_query = st.text_input("搜尋 (姓名/房號/雇主)", placeholder="輸入關鍵字...")
+        room_options = {}
+        if selected_dorm_id:
+            rooms = dormitory_model.get_rooms_for_selection(selected_dorm_id)
+            if rooms:
+                room_options = {r['id']: r['room_number'] for r in rooms}
+        
+        selected_room_id = st.selectbox(
+            "房號",
+            options=[None] + list(room_options.keys()),
+            format_func=lambda x: "全部" if x is None else room_options.get(x),
+            disabled=not selected_dorm_id, # 如果沒選宿舍，就把選單反灰鎖定
+            help="請先選擇宿舍後，才能篩選房號" if not selected_dorm_id else ""
+        )
     
     with col3:
-        status_filter = st.selectbox("在住狀態", ["全部", "在住", "已離住"], index=0)
+        search_query = st.text_input("搜尋 (姓名/房號/雇主)", placeholder="輸入關鍵字...")
     
     with col4:
+        status_filter = st.selectbox("在住狀態", ["全部", "在住", "已離住"], index=0)
+    
+    with col5:
         sort_by = st.selectbox("排序方式", ["房號", "姓名", "入職日", "離住日"])
 
     # --- 2. 獲取資料 ---
+    # 【修改重點 3】將 selected_room_id 放入篩選條件中
     filters = {
         'dorm_id': selected_dorm_id,
+        'room_id': selected_room_id, 
         'name_search': search_query,
         'status': status_filter
     }

@@ -242,62 +242,130 @@ def add_inventory_log(details: dict):
         if conn: conn.close()
         
 def archive_inventory_log_as_annual_expense(log_id: int):
+    """【v1.3 強制指定總倉版】將一筆「發放」的紀錄轉為年度費用，內部調撥收入固定歸屬 ID: 1185。"""
     conn = database.get_db_connection()
     if not conn: return False, "資料庫連線失敗。"
     try:
         with conn.cursor() as cursor:
+            # 1. 取得資料
             cursor.execute('SELECT l.*, i.item_name, i.unit_cost FROM "InventoryLog" l JOIN "InventoryItems" i ON l.item_id = i.id WHERE l.id = %s', (log_id,))
             log_details = cursor.fetchone()
+            
             if not log_details: return False, "找不到指定的異動紀錄。"
             if log_details.get('related_expense_id') or log_details.get('related_income_id'): return False, "此紀錄已被處理，無法重複操作。"
             if log_details.get('transaction_type') != '發放': return False, "只有「發放」類型的紀錄才能轉入年度費用。"
+            
             unit_cost = log_details.get('unit_cost')
             if unit_cost is None or not isinstance(unit_cost, int) or unit_cost <= 0: return False, "操作失敗：此品項未設定成本單價或成本為0。"
+            
             quantity = abs(log_details.get('quantity', 0))
             if quantity == 0: return False, "發放數量為0，無法計算總金額並轉入費用。"
+            
             total_cost = quantity * unit_cost
             payment_date = log_details.get('transaction_date', date.today())
-            annual_expense_details = {"dorm_id": log_details['dorm_id'], "expense_item": f"資產發放-{log_details.get('item_name')}", "payment_date": payment_date, "total_amount": total_cost, "amortization_start_month": payment_date.strftime('%Y-%m'), "amortization_end_month": (payment_date + relativedelta(months=11)).strftime('%Y-%m'), "notes": f"來自庫存紀錄ID:{log_id} - 發放 {quantity} 個"}
+            receiving_dorm_id = log_details['dorm_id']
+            
+            # --- 【核心修改】直接固定原物主為 1185 ---
+            owning_dorm_id = 1185
+                
+            # --- 2. 新增費用 (記在接收物品的宿舍) ---
+            annual_expense_details = {
+                "dorm_id": receiving_dorm_id, 
+                "expense_item": f"資產發放-{log_details.get('item_name')}", 
+                "payment_date": payment_date, 
+                "total_amount": total_cost, 
+                "amortization_start_month": payment_date.strftime('%Y-%m'), 
+                "amortization_end_month": (payment_date + relativedelta(months=11)).strftime('%Y-%m'), 
+                "notes": f"來自庫存紀錄ID:{log_id} - 發放 {quantity} 個"
+            }
             columns = ', '.join(f'"{k}"' for k in annual_expense_details.keys())
             placeholders = ', '.join(['%s'] * len(annual_expense_details))
             sql = f'INSERT INTO "AnnualExpenses" ({columns}) VALUES ({placeholders}) RETURNING id'
             cursor.execute(sql, tuple(annual_expense_details.values()))
             new_expense_id = cursor.fetchone()['id']
-            cursor.execute('UPDATE "InventoryLog" SET related_expense_id = %s WHERE id = %s', (new_expense_id, log_id))
+
+            # --- 3. 新增收入 (記在原物主 1185) ---
+            # 如果接收方本身就是 1185，代表物品是在原本的地方發放給移工，就不需要另外產生一筆內部轉讓收入
+            new_income_id = None
+            if receiving_dorm_id != owning_dorm_id:
+                income_details = {
+                    "dorm_id": owning_dorm_id,
+                    "income_item": f"內部資產轉出-{log_details.get('item_name')}",
+                    "transaction_date": payment_date,
+                    "amount": total_cost,
+                    "notes": f"來自庫存紀錄ID:{log_id} - 內部轉出 {quantity} 個給宿舍ID:{receiving_dorm_id}",
+                    "target_employer": None
+                }
+                inc_columns = ', '.join(f'"{k}"' for k in income_details.keys())
+                inc_placeholders = ', '.join(['%s'] * len(income_details))
+                inc_sql = f'INSERT INTO "OtherIncome" ({inc_columns}) VALUES ({inc_placeholders}) RETURNING id'
+                cursor.execute(inc_sql, tuple(income_details.values()))
+                new_income_id = cursor.fetchone()['id']
+
+            # --- 4. 更新 Log 狀態 ---
+            if new_income_id:
+                cursor.execute('UPDATE "InventoryLog" SET related_expense_id = %s, related_income_id = %s WHERE id = %s', (new_expense_id, new_income_id, log_id))
+            else:
+                cursor.execute('UPDATE "InventoryLog" SET related_expense_id = %s WHERE id = %s', (new_expense_id, log_id))
+                
         conn.commit()
-        return True, f"成功將庫存紀錄轉入年度費用 (新費用ID: {new_expense_id})！"
+        
+        msg = f"成功將庫存紀錄轉入年度費用 (新費用ID: {new_expense_id})"
+        if new_income_id:
+            msg += f" 並產生內部轉出收入 (新收入ID: {new_income_id})"
+        return True, msg + "！"
+        
     except Exception as e:
         if conn: conn.rollback()
         return False, f"操作失敗: {e}"
     finally:
         if conn: conn.close()
 
+
 def archive_log_as_other_income(log_id: int):
-    """【v1.1 邏輯修正版】將一筆「售出」的紀錄轉為其他收入。"""
+    """【v1.3 強制指定總倉版】將一筆「售出」的紀錄轉為其他收入，收入固定歸屬 ID: 1185。"""
     conn = database.get_db_connection()
     if not conn: return False, "資料庫連線失敗。"
     try:
         with conn.cursor() as cursor:
+            # 1. 撈出原本的資料
             cursor.execute('SELECT l.*, i.item_name, i.selling_price FROM "InventoryLog" l JOIN "InventoryItems" i ON l.item_id = i.id WHERE l.id = %s', (log_id,))
             log_details = cursor.fetchone()
+            
             if not log_details: return False, "找不到指定的異動紀錄。"
             if log_details.get('related_expense_id') or log_details.get('related_income_id'): return False, "此紀錄已被處理，無法重複操作。"
-            
-            # --- 【核心修改】將判斷條件從「發放」改為「售出」 ---
             if log_details.get('transaction_type') != '售出': return False, "只有「售出」類型的紀錄才能轉為收入。"
             
             selling_price = log_details.get('selling_price')
             if selling_price is None or not isinstance(selling_price, int) or selling_price <= 0: return False, "操作失敗：此品項未設定售價或售價為0。"
+            
             quantity = abs(log_details.get('quantity', 0))
             if quantity == 0: return False, "售出數量為0，無法計算總收入。"
+            
             total_income = quantity * selling_price
             transaction_date = log_details.get('transaction_date', date.today())
-            income_details = {"dorm_id": log_details['dorm_id'], "income_item": f"販售-{log_details.get('item_name')}", "transaction_date": transaction_date, "amount": total_income, "notes": f"來自庫存紀錄ID:{log_id} - 售出 {quantity} 個給 {log_details.get('person_in_charge') or '未記錄'}"}
+            
+            # --- 【核心修改】直接固定收入歸屬宿舍為 1185 ---
+            owning_dorm_id = 1185
+            
+            # --- 3. 準備寫入的其他收入資料 ---
+            income_details = {
+                "dorm_id": owning_dorm_id, 
+                "income_item": f"販售-{log_details.get('item_name')}", 
+                "transaction_date": transaction_date, 
+                "amount": total_income, 
+                "notes": f"來自庫存紀錄ID:{log_id} - 售出 {quantity} 個給 {log_details.get('person_in_charge') or '未記錄'}",
+                "target_employer": None
+            }
+            
+            # 4. 新增收入並更新 Log 狀態
             success, message, new_income_id = income_model.add_income_record(income_details)
             if not success: raise Exception(message)
+            
             cursor.execute('UPDATE "InventoryLog" SET related_income_id = %s WHERE id = %s', (new_income_id, log_id))
+            
         conn.commit()
-        return True, f"成功將銷售紀錄轉為其他收入 (新收入ID: {new_income_id})！"
+        return True, f"成功將銷售紀錄轉為其他收入 (歸屬宿舍ID: {owning_dorm_id}, 新收入ID: {new_income_id})！"
     except Exception as e:
         if conn: conn.rollback()
         return False, f"操作失敗: {e}"
