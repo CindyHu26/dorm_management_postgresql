@@ -11,7 +11,7 @@ def render():
         st.cache_data.clear()
 
     st.markdown("---")
-    tab1, tab2 = st.tabs(["🚨 金額異常數據警告", "💧 用量異常數據警告"])
+    tab1, tab2, tab3 = st.tabs(["🚨 金額異常數據警告", "💧 用量異常數據警告", "📊 年度水電費統計"])
 
     with tab1:
         st.subheader("🚨 費用異常數據警告")
@@ -101,6 +101,47 @@ def render():
                 }
             )
 
+
+    with tab3:
+            st.subheader("📊 年度水電費統計")
+            
+            # 獲取資料庫中可選的年份，若無資料則預設為今年
+            available_years = analytics_model.get_available_years()
+            if not available_years:
+                import datetime
+                available_years = [datetime.date.today().year]
+                
+            selected_year = st.selectbox("請選擇統計年度", options=available_years)
+            
+            if selected_year:
+                yearly_stats_df = analytics_model.get_yearly_utility_fee_statistics(selected_year)
+                
+                if yearly_stats_df.empty:
+                    st.info(f"系統中找不到 {selected_year} 年度的水電費紀錄。")
+                else:
+                    # 計算所有宿舍的總計數字
+                    total_water = yearly_stats_df['水費'].sum()
+                    total_elec = yearly_stats_df['電費'].sum()
+                    total_all = yearly_stats_df['水電費總額'].sum()
+                    
+                    # 顯示重點指標
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric(f"{selected_year} 總水費", f"NT$ {total_water:,}")
+                    c2.metric(f"{selected_year} 總電費", f"NT$ {total_elec:,}")
+                    c3.metric(f"{selected_year} 水電費總計", f"NT$ {total_all:,}")
+                    
+                    st.markdown("##### 各宿舍費用明細")
+                    st.dataframe(
+                        yearly_stats_df,
+                        width="stretch",
+                        hide_index=True,
+                        column_config={
+                            "水費": st.column_config.NumberColumn(format="NT$ %d"),
+                            "電費": st.column_config.NumberColumn(format="NT$ %d"),
+                            "水電費總額": st.column_config.NumberColumn(format="NT$ %d"),
+                        }
+                    )
+                    
     st.markdown("---")
     st.subheader("📈 歷史費用趨勢查詢")
     

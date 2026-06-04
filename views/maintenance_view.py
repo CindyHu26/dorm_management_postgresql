@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import date
-from data_models import maintenance_model, dormitory_model, vendor_model, equipment_model
+from data_models import maintenance_model, dormitory_model, vendor_model, equipment_model, worker_model
 import os
 import io
 import re
@@ -201,6 +201,83 @@ def _render_full_edit_form(selected_log_id, dorm_options, vendor_options, item_t
         e_invoice_info = ec12.text_input("發票資訊", value=details.get('invoice_info', ''))
 
         e_notes = st.text_area("其他備註", value=details.get('notes'))
+
+        # ==========================================
+        # 新增：產生 LINE 派工訊息功能 (通報日期在住版本，含房號分組，帶有一鍵複製)
+        # ==========================================
+        st.markdown("##### 📱 產生 LINE 派工訊息")
+        
+# 取得目前已存檔的資料
+        saved_dorm_id = details.get('dorm_id')
+        saved_desc = details.get('description', '')
+        saved_vendor_id = details.get('vendor_id')
+        saved_cost = details.get('cost') or 0
+        saved_notify_date = details.get('notification_date')  # 取得此案件的通報日期
+        
+        dorm_name_str = dorm_options.get(saved_dorm_id, "未知地址")
+        vendor_name_str = vendor_options.get(saved_vendor_id, "未指定") if saved_vendor_id else "未指定"
+        
+        # 查詢該宿舍在「通報日期」當天在住的名單
+        resident_list_str = "無"
+        resident_count = 0  # 新增：用來記錄總人數
+        
+        if saved_dorm_id and saved_notify_date:
+            import database  # 引入資料庫模組
+            
+            conn = database.get_db_connection()
+            if conn:
+                try:
+                    # 核心 SQL 邏輯：
+                    # 撈出房號、雇主、姓名，並依序用「房號 -> 雇主 -> 姓名」進行排序
+                    query = """
+                        SELECT r.room_number, w.employer_name, w.worker_name
+                        FROM "AccommodationHistory" ah
+                        JOIN "Rooms" r ON ah.room_id = r.id
+                        JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+                        WHERE r.dorm_id = %s
+                          AND ah.start_date <= %s
+                          AND (ah.end_date IS NULL OR ah.end_date >= %s)
+                        ORDER BY r.room_number, w.employer_name, w.worker_name
+                    """
+                    with conn.cursor() as cursor:
+                        cursor.execute(query, (saved_dorm_id, saved_notify_date, saved_notify_date))
+                        records = cursor.fetchall()
+                        
+                        if records:
+                            resident_count = len(records)  # 取得實際在住的總人數
+                            res_list = []
+                            current_room = None
+                            
+                            for row in records:
+                                room_num = row['room_number']
+                                
+                                # 當發現房號跟前一筆不一樣時，印出新房號標題
+                                if room_num != current_room:
+                                    if current_room is not None:
+                                        res_list.append("")  # 換房間時加一個空行區隔
+                                    res_list.append(f"{room_num}")
+                                    current_room = room_num
+                                
+                                # 印出員工資訊
+                                res_list.append(f"{row['employer_name']} {row['worker_name']}")
+                                
+                            resident_list_str = "\n".join(res_list)
+                except Exception as e:
+                    resident_list_str = f"名單查詢出錯: {e}"
+                finally:
+                    conn.close()
+        
+        # 組裝 LINE 訊息內容
+        line_msg = f"🏠宿舍地址：{dorm_name_str}\n"
+        line_msg += f"🔨說明：{saved_desc}\n"
+        line_msg += f"🧰廠商：{vendor_name_str}\n"
+        line_msg += f"💲費用：{saved_cost}\n"
+        line_msg += f"💥💥💥請確認名單🔽({resident_count}人)：\n{resident_list_str}"
+        
+        # 使用 st.code 顯示，右上角會自動產生「複製」按鈕
+        st.code(line_msg, language="text")
+        st.caption(f"💡 提示：名單已鎖定為案件 **通報日期 ({saved_notify_date})** 當天實際在住的移工，並以「房號」進行分組。")
+        # ==========================================
 
         # --- 儲存按鈕 ---
         if st.form_submit_button("💾 儲存完整變更"):
@@ -492,7 +569,7 @@ def render_edit_delete(dorm_options, vendor_options, item_type_options, status_o
         filtered_search_df['通報日期'] = pd.to_datetime(filtered_search_df['通報日期'])
         filtered_search_df = filtered_search_df.sort_values(by=['通報日期', 'id'], ascending=[False, False])
         options_dict = {
-            row['id']: (f"[ID:{row['id']}] {row['狀態']} / {row['宿舍地址']} {row['細項說明']} / {row['通報日期'].strftime('%Y-%m-%d')}")
+            row['id']: (f"[ID:{row['id']}] {row['通報日期'].strftime('%Y-%m-%d')} / {row['狀態']} / {row['宿舍地址']} {row['細項說明']}")
             for _, row in filtered_search_df.iterrows()
         }
         selected_log_id = st.selectbox(
@@ -546,9 +623,12 @@ def render_overview(dorm_options, vendor_options, item_type_options, status_opti
     f_dorm = c2.selectbox("宿舍篩選", [None] + list(dorm_options.keys()), format_func=lambda x: "全部" if x is None else dorm_options.get(x), key="ov_dorm")
     f_vendor = c3.selectbox("廠商篩選", [None] + list(vendor_options.keys()), format_func=lambda x: "全部" if x is None else vendor_options.get(x), key="ov_vendor")
     
-    c4, c5 = st.columns(2)
+    c4, c5, c6 = st.columns(3)
     f_start = c4.date_input("完成日期 (起)", value=None, key="ov_start")
     f_end = c5.date_input("完成日期 (迄)", value=None, key="ov_end")
+    
+    payer_opts = ["我司", "工人", "雇主", "房東"]
+    f_payer = c6.selectbox("付款人篩選", ["全部"] + payer_opts, key="ov_payer")
 
     filters = {}
     if f_status: filters["status"] = f_status
@@ -559,10 +639,18 @@ def render_overview(dorm_options, vendor_options, item_type_options, status_opti
 
     # 取得篩選後的資料
     log_df = maintenance_model.get_logs_for_view(filters)
+
+    # 【修改點 2】利用 Pandas 在前端將「付款人」進行過濾
+    if f_payer != "全部" and not log_df.empty:
+        # 自動判斷資料表中的欄位名稱是 '付款人' 還是 'payer'
+        col_name = '付款人' if '付款人' in log_df.columns else 'payer' if 'payer' in log_df.columns else None
+        if col_name:
+            log_df = log_df[log_df[col_name] == f_payer]
     
     # --- Part 2: 顯示資料表格 ---
     if not log_df.empty:
-        if f_vendor or f_start or f_end:
+        # 【修改點 3】如果付款人有被篩選，也要觸發顯示「篩選總計」的文字提示
+        if f_vendor or f_start or f_end or f_payer != "全部":
              st.success(f"篩選總計: {len(log_df)} 筆, 費用總額: NT$ {log_df['維修費用'].sum():,}")
         
         # 顯示表格 (增加搜尋功能以便快速定位 ID)

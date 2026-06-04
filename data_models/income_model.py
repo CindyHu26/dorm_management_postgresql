@@ -389,3 +389,35 @@ def batch_generate_recurring_income(start_date: date, end_date: date):
         return False, f"生成過程發生錯誤: {e}"
     finally:
         if conn: conn.close()
+
+
+def get_other_income_annual_stats():
+    """
+    獲取其他收入的年度、宿舍地址(含編號)與項目統計數據
+    回傳 DataFrame 欄位: 年度, 宿舍地址, 項目, 總金額
+    """
+    conn = database.get_db_connection()
+    if not conn: 
+        return pd.DataFrame()
+        
+    try:
+        # 新增 legacy_dorm_code (宿舍編號)，並與 original_address 組合
+        query = """
+            SELECT 
+                EXTRACT(YEAR FROM COALESCE(i.transaction_date, NOW()))::int AS 年度,
+                CONCAT('(', COALESCE(d.legacy_dorm_code, '無編號'), ') ', COALESCE(d.original_address, '未知宿舍')) AS 宿舍地址,
+                i.income_item AS 項目,
+                SUM(i.amount)::float AS 總金額
+            FROM "OtherIncome" i
+            LEFT JOIN "Dormitories" d ON i.dorm_id = d.id
+            GROUP BY 
+                EXTRACT(YEAR FROM COALESCE(i.transaction_date, NOW())), 
+                d.legacy_dorm_code,
+                d.original_address,
+                i.income_item
+            ORDER BY 年度 DESC, 宿舍地址 ASC, 總金額 DESC;
+        """
+        return _execute_query_to_dataframe(conn, query)
+    finally:
+        if conn: 
+            conn.close()

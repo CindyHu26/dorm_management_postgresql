@@ -10,7 +10,7 @@ def render():
     st.info("用於登錄房租以外的收入，例如冷氣卡儲值、押金沒收、固定補貼等。")
 
     # --- 頁籤切換 ---
-    tab1, tab2 = st.tabs(["📝 收入紀錄管理 (手動)", "⚙️ 固定收入設定 & 生成"])
+    tab1, tab2, tab3 = st.tabs(["📝 收入紀錄管理 (手動)", "⚙️ 固定收入設定 & 生成", "📈 其他收入年度統計"])
 
     # ==========================================================================
     # 頁籤 1: 收入紀錄管理 (單筆/歷史)
@@ -433,3 +433,121 @@ def render():
                             success, msg = income_model.batch_generate_recurring_income(batch_start_date, batch_end_date)
                         if success: st.success(msg)
                         else: st.error(msg)
+
+    # ==================== 第三個頁籤 (支援地址與項目多選、單純列表呈現) ====================
+    with tab3:
+        st.subheader("📊 其他收入年度與項目分析")
+        
+        # 呼叫 Model 統計函式 (地址已經變成 "(編號) 地址" 的格式)
+        stats_df = income_model.get_other_income_annual_stats()
+        
+        if stats_df.empty:
+            st.info("目前沒有任何其他收入的紀錄可供統計。")
+        else:
+            # --- 1. 選擇年度 ---
+            available_years = sorted(stats_df['年度'].unique(), reverse=True)
+            selected_year = st.selectbox("📅 選擇統計年度", options=available_years, key="other_inc_stat_year")
+            
+            # 篩出該年度擁有的所有地址與項目
+            year_df = stats_df[stats_df['年度'] == selected_year]
+            all_addresses = sorted(year_df['宿舍地址'].unique())
+            all_items = sorted(year_df['項目'].unique())
+            
+            st.divider()
+
+            # --- 2. 雙重篩選控制區 (地址與項目並排) ---
+            col_addr, col_item = st.columns(2)
+            
+            # (A) 宿舍地址篩選區
+            with col_addr:
+                st.markdown("**🏠 宿舍地址篩選**")
+                btn_a1, btn_a2 = st.columns(2)
+                
+                # 直接針對元件的 key ("ms_addrs") 進行初始化與安全過濾
+                if "ms_addrs" not in st.session_state:
+                    st.session_state.ms_addrs = all_addresses
+                else:
+                    # 年份切換時的防呆過濾
+                    st.session_state.ms_addrs = [a for a in st.session_state.ms_addrs if a in all_addresses]
+                    
+                if btn_a1.button("✅ 全選地址", key="btn_all_addrs", use_container_width=True):
+                    st.session_state.ms_addrs = all_addresses
+                    st.rerun()
+                if btn_a2.button("❌ 清空地址", key="btn_clear_addrs", use_container_width=True):
+                    st.session_state.ms_addrs = []
+                    st.rerun()
+                    
+                # 移除 default 參數，完全交給 key 自動同步畫面
+                selected_addrs = st.multiselect(
+                    "選擇欲統計的宿舍", 
+                    options=all_addresses, 
+                    key="ms_addrs",
+                    label_visibility="collapsed"
+                )
+
+            # (B) 收入項目篩選區
+            with col_item:
+                st.markdown("**🔍 收入項目篩選**")
+                btn_i1, btn_i2 = st.columns(2)
+                
+                # 直接針對元件的 key ("ms_items") 進行初始化與安全過濾
+                if "ms_items" not in st.session_state:
+                    desired_defaults = ["冷氣卡儲值", "投幣式洗衣機"]
+                    st.session_state.ms_items = [item for item in desired_defaults if item in all_items]
+                else:
+                    # 年份切換時的防呆過濾
+                    st.session_state.ms_items = [i for i in st.session_state.ms_items if i in all_items]
+                    
+                if btn_i1.button("✅ 全選項目", key="btn_all_items", use_container_width=True):
+                    st.session_state.ms_items = all_items
+                    st.rerun()
+                if btn_i2.button("❌ 清空項目", key="btn_clear_items", use_container_width=True):
+                    st.session_state.ms_items = []
+                    st.rerun()
+                    
+                # 移除 default 參數，完全交給 key 自動同步畫面
+                selected_items = st.multiselect(
+                    "選擇欲統計的項目", 
+                    options=all_items, 
+                    key="ms_items",
+                    label_visibility="collapsed"
+                )
+                st.session_state.selected_income_items = selected_items
+
+            st.divider()
+
+            # --- 3. 數據處理與單純列表呈現 ---
+            final_df = year_df[
+                year_df['宿舍地址'].isin(selected_addrs) & 
+                year_df['項目'].isin(selected_items)
+            ]
+            
+            if final_df.empty:
+                st.warning("⚠️ 查無符合條件的數據，請放寬您的篩選條件。")
+            else:
+                # 計算總金額
+                total_amount = final_df['總金額'].sum()
+                
+                # 大字卡顯示目前條件下的總收入
+                st.metric(
+                    label=f"💰 {selected_year} 年度 - 篩選條件合計總收入", 
+                    value=f"${total_amount:,.0f} 元"
+                )
+                
+                st.write("##### 📋 項目金額明細列表")
+                
+                # 整理只要顯示的三個欄位 (地址、項目、總金額)
+                display_df = final_df[['宿舍地址', '項目', '總金額']].copy()
+                
+                # 將資料先依地址排、再依金額排，方便閱讀
+                display_df = display_df.sort_values(by=['宿舍地址', '總金額'], ascending=[True, False])
+                
+                # 加上千分位格式
+                display_df['總金額'] = display_df['總金額'].map(lambda x: f"${x:,.0f}")
+                
+                # 直接輸出全寬度的表格，不用圖表
+                st.dataframe(
+                    display_df, 
+                    hide_index=True, 
+                    use_container_width=True
+                )

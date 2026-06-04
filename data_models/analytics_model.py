@@ -208,3 +208,56 @@ def find_usage_anomalies(threshold_percent: float = 10.0):
         return pd.DataFrame(anomalies)
     finally:
         if conn: conn.close()
+
+
+def get_available_years():
+    """
+    獲取有帳單紀錄的所有年份，作為下拉選單的選項。
+    """
+    conn = database.get_db_connection()
+    if not conn: return []
+    try:
+        query = """
+            SELECT DISTINCT EXTRACT(YEAR FROM bill_end_date)::int AS year
+            FROM "UtilityBills"
+            WHERE bill_end_date IS NOT NULL
+            ORDER BY year DESC
+        """
+        with conn.cursor() as cursor:
+            cursor.execute(query)
+            records = cursor.fetchall()
+            # 💡 修正：將 row[0] 改為 row['year']，因為資料庫回傳的是字典格式
+            return [row['year'] for row in records if row['year'] is not None]
+    finally:
+        if conn: conn.close()
+
+def get_yearly_utility_fee_statistics(year: int):
+    """
+    查詢指定年度各宿舍的水費、電費及總額。
+    使用帳單結束日 (bill_end_date) 來判斷所屬年份。
+    """
+    conn = database.get_db_connection()
+    if not conn: return pd.DataFrame()
+    try:
+        query = """
+            SELECT
+                d.original_address AS "宿舍地址",
+                SUM(CASE WHEN m.meter_type LIKE '%%水%%' THEN b.amount ELSE 0 END) AS "水費",
+                SUM(CASE WHEN m.meter_type LIKE '%%電%%' THEN b.amount ELSE 0 END) AS "電費"
+            FROM "UtilityBills" b
+            JOIN "Meters" m ON b.meter_id = m.id
+            JOIN "Dormitories" d ON b.dorm_id = d.id
+            WHERE EXTRACT(YEAR FROM b.bill_end_date) = %(year)s
+            AND d.primary_manager = '我司'
+            GROUP BY d.original_address
+            ORDER BY d.original_address
+        """
+        df = _execute_query_to_dataframe(conn, query, {"year": year})
+        if not df.empty:
+            # 確保資料型態正確並計算總額
+            df["水費"] = pd.to_numeric(df["水費"], errors='coerce').fillna(0).astype(int)
+            df["電費"] = pd.to_numeric(df["電費"], errors='coerce').fillna(0).astype(int)
+            df["水電費總額"] = df["水費"] + df["電費"]
+        return df
+    finally:
+        if conn: conn.close()
