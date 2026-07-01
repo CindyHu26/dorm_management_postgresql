@@ -5,7 +5,6 @@ import streamlit as st
 def render():
     """渲染「系統操作指南」頁面"""
     
-    st.markdown("# 📘 宿舍管理系統 - 行政人員操作指南")
     
     st.info("💡 **提示**：點擊左側側邊欄的選單可切換不同功能頁面。本頁面為系統功能速查表。")
 

@@ -8,7 +8,6 @@ from data_models import worker_model, dormitory_model, employer_dashboard_model
 import utils
 
 def render():
-    st.header("📸 住宿照片批次上傳")
     st.info("此頁面專門用於快速篩選特定梯次的入住或離宿人員，並批次上傳照片。")
 
     # --- 1. 篩選條件 ---

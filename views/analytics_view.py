@@ -1,10 +1,28 @@
 import streamlit as st
 import pandas as pd
+import altair as alt
 from data_models import analytics_model, dormitory_model, meter_model
+
+def _render_safe_time_series_chart(data, x_title="日期", y_title="數值"):
+    chart_data = pd.to_numeric(data, errors='coerce').dropna()
+    if chart_data.empty:
+        return False
+    chart_df = chart_data.reset_index()
+    chart_df.columns = [x_title, y_title]
+    chart_df[x_title] = pd.to_datetime(chart_df[x_title], errors='coerce')
+    chart_df = chart_df.dropna(subset=[x_title, y_title])
+    if chart_df.empty:
+        return False
+    chart = alt.Chart(chart_df).mark_line(point=True).encode(
+        x=alt.X(f"{x_title}:T", title=x_title),
+        y=alt.Y(f"{y_title}:Q", title=y_title),
+        tooltip=[alt.Tooltip(f"{x_title}:T", title=x_title), alt.Tooltip(f"{y_title}:Q", title=y_title, format=",.0f")]
+    )
+    st.altair_chart(chart, use_container_width=True)
+    return True
 
 def render():
     """渲染「費用分析」儀表板"""
-    st.header("水電費用分析儀表板")
     st.info("此工具用於追蹤單一電水錶的歷史費用，並自動偵測潛在的異常帳單。")
     
     if st.button("🔄 重新整理所有數據"):
@@ -184,7 +202,8 @@ def render():
                     chart_df = history_df.set_index('帳單結束日')
 
                     st.markdown("##### 金額趨勢圖")
-                    st.line_chart(chart_df['帳單金額'])
+                    if not _render_safe_time_series_chart(chart_df['帳單金額'], x_title="帳單結束日", y_title="帳單金額"):
+                        st.info("目前沒有可繪製的金額資料。")
                     
                     if '用量(度/噸)' in chart_df.columns and chart_df['用量(度/噸)'].notna().any():
                         st.markdown("##### 用量趨勢圖")
@@ -192,7 +211,8 @@ def render():
                         # --- 【核心修正】在這裡強制將資料轉換為數字格式，增強圖表的穩定性 ---
                         chart_df['用量(度/噸)'] = pd.to_numeric(chart_df['用量(度/噸)'], errors='coerce')
                         
-                        st.line_chart(chart_df['用量(度/噸)'])
+                        if not _render_safe_time_series_chart(chart_df['用量(度/噸)'], x_title="帳單結束日", y_title="用量(度/噸)"):
+                            st.info("目前沒有可繪製的用量資料。")
                     
                     with st.expander("查看原始數據"):
                         st.dataframe(history_df, width="stretch", hide_index=True)

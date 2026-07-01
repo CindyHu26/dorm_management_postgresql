@@ -14,7 +14,6 @@ def to_excel(df):
 
 def render():
     """渲染「批次匯入」頁面"""
-    st.header("批次資料匯入中心")
     st.markdown("---")
 
     # --- 區塊一：變動費用匯入 ---

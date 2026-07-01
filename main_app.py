@@ -15,6 +15,8 @@ from views import (
     operations_analyzer_view,
     scraper_view, 
     dormitory_view,
+    map_coordinate_editor_view,
+    map_room_search_view,
     placement_view,  
     compliance_overview_view,
     room_assignment_view,
@@ -69,6 +71,8 @@ PAGES = {
         "人員管理": worker_view,                # 增刪修人員
         "住宿照片批次上傳": photo_upload_view,
         "地址與房間管理": dormitory_view,        # 增刪修宿舍
+        "地圖座標維護": map_coordinate_editor_view,
+        "地圖找房": map_room_search_view,
         "空床位查詢": placement_view,            # 找空床
         "房間分配 (入住/換宿)": room_assignment_view, # 派房
         "未分配房間人員總覽": unassigned_worker_view, # 抓漏網之魚

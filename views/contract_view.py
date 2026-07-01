@@ -6,7 +6,6 @@ from data_models import contract_model
 
 def render():
     """渲染「合約總覽」頁面"""
-    st.header("合約總覽 (依項目分類)")
     st.info("此頁面用於快速檢視所有宿舍中，屬於同一項目的長期合約，方便進行比較與管理。")
 
     # 步驟 1: 獲取所有可選的合約項目

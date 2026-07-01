@@ -5,7 +5,6 @@ from data_models import placement_model, dormitory_model
 
 def render():
     """渲染「空床位智慧查詢」頁面"""
-    st.header("空床位智慧查詢")
     st.info("此工具能協助您根據新進員工的條件與指定日期，快速找到我司管理宿舍中所有符合入住條件的空床位。")
 
     # --- 1. 載入選項 ---

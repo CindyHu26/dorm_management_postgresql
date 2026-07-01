@@ -7,7 +7,6 @@ from data_models import room_assignment_model, dormitory_model
 
 def render():
     """渲染「房間與床位分配」頁面"""
-    st.header("🛏️ 房間與床位管理")
 
     # --- 模式切換 ---
     mode = st.radio(

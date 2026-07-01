@@ -75,7 +75,6 @@ def prefill_lease_form(details):
 
 def render():
     """渲染「長期合約管理」頁面"""
-    st.header("長期合約管理")
     st.info("用於管理房租、清運費、網路費等具備固定月費的長期合約。")
 
     today = date.today()

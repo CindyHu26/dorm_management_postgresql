@@ -8,7 +8,6 @@ from data_models import equipment_model, dormitory_model, maintenance_model, ven
 
 def render():
     """渲染「設備管理」頁面"""
-    st.header("我司管理宿舍 - 設備管理")
     st.info("用於登錄、追蹤宿舍內的消防、電器、飲水等各類設備及其完整的生命週期紀錄。")
 
     today = date.today()

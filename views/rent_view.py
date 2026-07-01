@@ -7,7 +7,6 @@ from data_models import finance_model, dormitory_model, employer_dashboard_model
 
 def render():
     """渲染「工人費用管理」頁面"""
-    st.header("我司管理宿舍 - 工人費用總覽與批次更新")
 
     @st.cache_data
     def get_my_dorms():

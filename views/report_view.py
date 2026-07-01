@@ -37,7 +37,6 @@ def to_excel(sheet_data: dict):
 
 def render():
     """渲染「匯出報表」頁面的所有 Streamlit UI 元件。"""
-    st.header("各式報表匯出")
 
     # with st.container(border=True):
     #     st.subheader("更新至雲端儀表板 (Google Sheet)")

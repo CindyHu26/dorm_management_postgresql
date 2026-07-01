@@ -128,6 +128,13 @@ def get_workers_for_view(filters: dict):
             where_clauses.append("w.gender = %s")
             params.append(filters['gender'])
 
+        if filters.get('special_status') and filters.get('special_status') != '全部':
+            if filters['special_status'] == '無':
+                where_clauses.append("(w.special_status IS NULL OR BTRIM(w.special_status) = '')")
+            else:
+                where_clauses.append("w.special_status = %s")
+                params.append(filters['special_status'])
+
         status_filter = filters.get('status')
         if status_filter == '在住':
             where_clauses.append(f"(w.accommodation_end_date IS NULL OR w.accommodation_end_date > {current_date_func})")
@@ -142,6 +149,24 @@ def get_workers_for_view(filters: dict):
         return _execute_query_to_dataframe(conn, base_query, params)
     finally:
         if conn: conn.close()
+
+def get_distinct_special_statuses():
+    conn = database.get_db_connection()
+    if not conn:
+        return []
+    try:
+        query = """
+            SELECT DISTINCT BTRIM(special_status) AS status
+            FROM "Workers"
+            WHERE special_status IS NOT NULL AND BTRIM(special_status) <> ''
+            ORDER BY status
+        """
+        df = _execute_query_to_dataframe(conn, query)
+        if df.empty or 'status' not in df.columns:
+            return []
+        return df['status'].tolist()
+    finally:
+        conn.close()
 
 def get_single_worker_details(unique_id: str):
     """

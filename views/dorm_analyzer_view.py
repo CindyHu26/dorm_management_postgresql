@@ -2,10 +2,74 @@
 
 import streamlit as st
 import pandas as pd
+import altair as alt
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import database
 from data_models import dormitory_model, single_dorm_analyzer, analytics_model
+
+@st.cache_data(show_spinner=False)
+def get_resident_details_cached(dorm_ids, year_month):
+    return single_dorm_analyzer.get_resident_details_as_df(list(dorm_ids), year_month)
+
+def _render_safe_line_chart(data):
+    if isinstance(data, pd.Series):
+        chart_data = pd.to_numeric(data, errors='coerce').dropna()
+        if chart_data.empty:
+            return False
+        st.line_chart(chart_data)
+        return True
+
+    chart_data = data.copy()
+    for column in chart_data.columns:
+        chart_data[column] = pd.to_numeric(chart_data[column], errors='coerce')
+    chart_data = chart_data.dropna(how='all')
+    if chart_data.empty:
+        return False
+    st.line_chart(chart_data)
+    return True
+
+def _render_safe_time_series_chart(data, x_title="日期", y_title="數值"):
+    if isinstance(data, pd.Series):
+        chart_df = data.reset_index()
+        chart_df.columns = [x_title, y_title]
+        chart_df[y_title] = pd.to_numeric(chart_df[y_title], errors='coerce')
+        chart_df[x_title] = pd.to_datetime(chart_df[x_title], errors='coerce')
+        chart_df = chart_df.dropna(subset=[x_title, y_title])
+        if chart_df.empty:
+            return False
+        chart = alt.Chart(chart_df).mark_line(point=True).encode(
+            x=alt.X(f"{x_title}:T", title=x_title),
+            y=alt.Y(f"{y_title}:Q", title=y_title),
+            tooltip=[alt.Tooltip(f"{x_title}:T", title=x_title), alt.Tooltip(f"{y_title}:Q", title=y_title, format=",.0f")]
+        )
+        st.altair_chart(chart, use_container_width=True)
+        return True
+
+    chart_df = data.reset_index().rename(columns={data.index.name or "index": x_title})
+    chart_df[x_title] = pd.to_datetime(chart_df[x_title], errors='coerce')
+    value_columns = [col for col in chart_df.columns if col != x_title]
+    if not value_columns:
+        return False
+
+    melted_df = chart_df.melt(id_vars=[x_title], value_vars=value_columns, var_name="項目", value_name=y_title)
+    melted_df[y_title] = pd.to_numeric(melted_df[y_title], errors='coerce')
+    melted_df = melted_df.dropna(subset=[x_title, y_title])
+    if melted_df.empty:
+        return False
+
+    chart = alt.Chart(melted_df).mark_line(point=True).encode(
+        x=alt.X(f"{x_title}:T", title=x_title),
+        y=alt.Y(f"{y_title}:Q", title=y_title),
+        color=alt.Color("項目:N", title="項目"),
+        tooltip=[
+            alt.Tooltip(f"{x_title}:T", title=x_title),
+            alt.Tooltip("項目:N", title="項目"),
+            alt.Tooltip(f"{y_title}:Q", title=y_title, format=",.0f")
+        ]
+    )
+    st.altair_chart(chart, use_container_width=True)
+    return True
 
 def render():
     """渲染「宿舍深度分析」頁面"""
@@ -311,12 +375,16 @@ def render():
                             st.info("此錶號沒有歷史帳單紀錄。")
                         else:
                             st.markdown("###### 金額趨勢圖")
-                            st.line_chart(meter_history_df.set_index('帳單結束日')['帳單金額'])
+                            amount_series = meter_history_df.set_index('帳單結束日')['帳單金額']
+                            if not _render_safe_time_series_chart(amount_series, x_title="帳單結束日", y_title="帳單金額"):
+                                st.info("此錶號目前沒有可繪製的金額資料。")
                             
                             if '用量(度/噸)' in meter_history_df.columns and meter_history_df['用量(度/噸)'].notna().any():
                                 st.markdown("###### 用量趨勢圖")
                                 meter_history_df['用量(度/噸)'] = pd.to_numeric(meter_history_df['用量(度/噸)'], errors='coerce')
-                                st.line_chart(meter_history_df[meter_history_df['用量(度/噸)'].notna()].set_index('帳單結束日')['用量(度/噸)'])
+                                usage_series = meter_history_df[meter_history_df['用量(度/噸)'].notna()].set_index('帳單結束日')['用量(度/噸)']
+                                if not _render_safe_time_series_chart(usage_series, x_title="帳單結束日", y_title="用量(度/噸)"):
+                                    st.info("此錶號目前沒有可繪製的用量資料。")
                             
                             st.dataframe(meter_history_df, width="stretch", hide_index=True)
 
@@ -344,7 +412,8 @@ def render():
 
     if not trend_df.empty:
         chart_df = trend_df.set_index("月份")
-        st.line_chart(chart_df)
+        if not _render_safe_time_series_chart(chart_df, x_title="月份", y_title="數值"):
+            st.info("目前沒有可繪製的月趨勢資料。")
         
         with st.expander("查看趨勢圖原始數據"):
             # 【核心修改 2】將表格依月份倒序排列 (最新的在上面)
@@ -352,6 +421,50 @@ def render():
     else:
         st.info("尚無足夠的歷史資料可繪製趨勢圖。")
     
+    st.markdown("---")
+    st.subheader("年度收支分析 (彙總)")
+
+    annual_year_options = list(range(datetime.now().year - 2, datetime.now().year + 1))
+    annual_default_year = default_date.year if default_date.year in annual_year_options else datetime.now().year
+    annual_year = st.selectbox(
+        "選擇年度",
+        options=annual_year_options,
+        index=annual_year_options.index(annual_default_year),
+        key="annual_analysis_year"
+    )
+
+    annual_summary = single_dorm_analyzer.calculate_annual_financial_summary(selected_dorm_ids, annual_year)
+    if annual_summary:
+        st.caption(f"統計區間：{annual_summary['period_start']} ~ {annual_summary['period_end']}")
+        annual_col1, annual_col2, annual_col3 = st.columns(3)
+        annual_col1.metric("年度總收入", f"NT$ {annual_summary['income_total']:,}")
+        annual_col2.metric("年度總支出", f"NT$ {annual_summary['expense_total']:,}")
+        annual_profit = annual_summary['profit_loss_total']
+        annual_col3.metric("年度淨損益", f"NT$ {annual_profit:,}", delta=f"{annual_profit:,}")
+
+        st.markdown("##### 年度收入拆解")
+        annual_income_col1, annual_income_col2 = st.columns(2)
+        annual_income_col1.metric("房租等工人月費收入", f"NT$ {annual_summary['worker_income_total']:,}")
+        annual_income_col2.metric("其他收入", f"NT$ {annual_summary['other_income_total']:,}")
+
+        st.markdown("##### 年度支出拆解")
+        annual_exp_col1, annual_exp_col2, annual_exp_col3, annual_exp_col4 = st.columns(4)
+        annual_exp_col1.metric("長期合約支出", f"NT$ {annual_summary['contract_total']:,}")
+        annual_exp_col2.metric("變動雜費", f"NT$ {annual_summary['utilities_total']:,}")
+        annual_exp_col3.metric("代收代付雜費", f"NT$ {annual_summary['passthrough_total']:,}")
+        annual_exp_col4.metric("長期攤銷", f"NT$ {annual_summary['amortized_total']:,}")
+
+        annual_breakdown_df = annual_summary['monthly_breakdown'].copy()
+        chart_annual_df = annual_breakdown_df.set_index('月份')[['總收入', '總支出', '淨損益']]
+        if not _render_safe_time_series_chart(chart_annual_df, x_title="月份", y_title="金額"):
+            st.info("目前沒有可繪製的年度趨勢資料。")
+
+        annual_breakdown_df['月份'] = annual_breakdown_df['月份'].dt.strftime('%Y-%m')
+        with st.expander("查看年度明細"):
+            st.dataframe(annual_breakdown_df.sort_values("月份", ascending=False), width="stretch", hide_index=True)
+    else:
+        st.info("此年度目前沒有可供統計的收支資料。")
+
     st.markdown("---")
     st.subheader("自訂區間平均損益分析 (彙總)")
     
@@ -391,7 +504,7 @@ def render():
     st.markdown("---")
     st.subheader(f"{year_month_str} 在住人員詳細名單 (彙總)")
     
-    resident_details_df = single_dorm_analyzer.get_resident_details_as_df(selected_dorm_ids, year_month_str)
+    resident_details_df = get_resident_details_cached(tuple(selected_dorm_ids), year_month_str)
 
     if resident_details_df.empty:
         st.info("所選宿舍於該月份沒有在住人員。")

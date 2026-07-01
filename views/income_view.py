@@ -6,7 +6,6 @@ from datetime import datetime, date
 from data_models import income_model, dormitory_model, employer_dashboard_model
 
 def render():
-    st.header("我司管理宿舍 - 其他收入管理")
     st.info("用於登錄房租以外的收入，例如冷氣卡儲值、押金沒收、固定補貼等。")
 
     # --- 頁籤切換 ---

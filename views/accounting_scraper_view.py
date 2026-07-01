@@ -101,7 +101,6 @@ def _run_write(temp_dir, mapping):
 
 def render(config):
     """渲染頁面"""
-    st.header("財務系統爬取與設定 (B04)")
 
     # 初始化日誌
     if 'log_messages_acc' not in st.session_state:

@@ -3,7 +3,6 @@ import pandas as pd
 from data_models import room_assignment_model
 
 def render():
-    st.header("未分配房間人員總覽")
     st.info("此頁面自動列出所有目前住在「我司管理」宿舍，但房號為 `[未分配房間]` 的人員。請盡速為他們分配房間。")
 
     if st.button("🔄 重新整理"):

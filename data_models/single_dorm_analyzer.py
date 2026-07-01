@@ -303,16 +303,26 @@ def get_resident_details_as_df(dorm_ids: list, year_month: str):
             ),
             -- 1. 先找出該月份的「目標紀錄」 (每人取最新一筆)
             -- 這筆紀錄決定了房號、床位、以及目前的離住狀態
+            ActiveWorkerIds AS (
+                SELECT DISTINCT ah.worker_unique_id
+                FROM "AccommodationHistory" ah
+                JOIN "Rooms" r ON ah.room_id = r.id
+                CROSS JOIN DateParams dp
+                WHERE r.dorm_id = ANY(%(dorm_ids)s)
+                  AND ah.start_date <= dp.last_day_of_month
+                  AND (ah.end_date IS NULL OR ah.end_date >= dp.first_day_of_month)
+            ),
             TargetRecords AS (
-                 SELECT DISTINCT ON (ah.worker_unique_id)
-                    ah.worker_unique_id, 
-                    r.dorm_id, 
+                SELECT DISTINCT ON (ah.worker_unique_id)
+                    ah.worker_unique_id,
+                    r.dorm_id,
                     r.room_number,
                     ah.bed_number,
-                    ah.start_date, 
+                    ah.start_date,
                     ah.end_date
                 FROM "AccommodationHistory" ah
                 JOIN "Rooms" r ON ah.room_id = r.id
+                JOIN ActiveWorkerIds awi ON awi.worker_unique_id = ah.worker_unique_id
                 CROSS JOIN DateParams dp
                 WHERE r.dorm_id = ANY(%(dorm_ids)s)
                   AND ah.start_date <= dp.last_day_of_month
@@ -329,7 +339,7 @@ def get_resident_details_as_df(dorm_ids: list, year_month: str):
                     tr.dorm_id
                 FROM TargetRecords tr
 
-                UNION ALL
+                UNION
 
                 -- (B) 遞迴：往前找無縫銜接且同宿舍的紀錄
                 SELECT 
@@ -353,11 +363,17 @@ def get_resident_details_as_df(dorm_ids: list, year_month: str):
             -- 4. 費用資料 (維持不變)
             MonthFeeHistory AS (
                 SELECT
-                    worker_unique_id, fee_type, amount,
-                    ROW_NUMBER() OVER(PARTITION BY worker_unique_id, fee_type ORDER BY effective_date DESC) as rn
-                FROM "FeeHistory"
+                    fh.worker_unique_id,
+                    fh.fee_type,
+                    fh.amount,
+                    ROW_NUMBER() OVER(
+                        PARTITION BY fh.worker_unique_id, fh.fee_type
+                        ORDER BY fh.effective_date DESC
+                    ) as rn
+                FROM "FeeHistory" fh
+                JOIN ActiveWorkerIds awi ON awi.worker_unique_id = fh.worker_unique_id
                 CROSS JOIN DateParams dp
-                WHERE effective_date BETWEEN dp.first_day_of_month AND dp.last_day_of_month
+                WHERE fh.effective_date BETWEEN dp.first_day_of_month AND dp.last_day_of_month
             )
             -- 5. 最終查詢
             SELECT

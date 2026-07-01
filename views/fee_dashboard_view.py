@@ -6,7 +6,6 @@ from data_models import finance_model, dormitory_model, employer_dashboard_model
 
 def render():
     """渲染「費用標準與異常儀表板」"""
-    st.header("費用標準與異常儀表板")
     st.info("此儀表板自動分析各「宿舍」、「雇主」與「特殊狀況」的收費慣例（標準），並列出收費不同的特例人員。")
 
     # --- 1. 篩選條件 ---

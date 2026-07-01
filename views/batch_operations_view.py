@@ -7,7 +7,6 @@ from data_models import finance_model, dormitory_model, worker_model, employer_d
 
 def render():
     """渲染「進階批次作業」頁面"""
-    st.header("進階批次作業")
 
     # --- 模式切換 ---
     operation_mode = st.radio(

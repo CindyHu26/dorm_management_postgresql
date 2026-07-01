@@ -6,7 +6,6 @@ from dateutil.relativedelta import relativedelta
 from data_models import finance_model, dormitory_model, vendor_model 
 
 def render():
-    st.title("💰 年度/攤銷費用管理")
 
     # === 新增：模式切換 ===
     mode = st.radio(

@@ -64,7 +64,6 @@ def _run_write_only(temp_dir):
 
 def render(config):
     """渲染「系統爬取」頁面"""
-    st.header("自動化資料同步控制台")
 
     url = config.get('System', 'URL', fallback='http://127.0.0.1')
     account = config.get('System', 'ACCOUNT', fallback='')

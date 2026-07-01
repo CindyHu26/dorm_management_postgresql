@@ -607,3 +607,162 @@ def get_locations_dataframe():
         return _execute_query_to_dataframe(conn, query)
     finally:
         if conn: conn.close()
+
+def get_map_coordinate_editor_dataframe(search_term: str = None, primary_manager: str = None, city: str = None, district: str = None):
+    """取得座標維護頁所需的宿舍資料。"""
+    conn = database.get_db_connection()
+    if not conn:
+        return pd.DataFrame()
+
+    try:
+        query = """
+            SELECT
+                d.id,
+                d.legacy_dorm_code AS "宿舍編號",
+                d.dorm_name AS "宿舍名稱",
+                d.original_address AS "原始地址",
+                d.normalized_address AS "正規化地址",
+                d.city AS "縣市",
+                d.district AS "區域",
+                d.primary_manager AS "主要管理人",
+                d.map_display_address AS "地圖顯示地址",
+                d.map_latitude AS "緯度",
+                d.map_longitude AS "經度",
+                d.map_geocoded_at AS "最後定位時間"
+            FROM "Dormitories" d
+            WHERE 1 = 1
+        """
+        params = []
+
+        if primary_manager and primary_manager != "全部":
+            query += ' AND d.primary_manager = %s'
+            params.append(primary_manager)
+        if city and city != "全部":
+            query += ' AND d.city = %s'
+            params.append(city)
+        if district and district != "全部":
+            query += ' AND d.district = %s'
+            params.append(district)
+        if search_term:
+            term = f"%{search_term}%"
+            query += """
+                AND (
+                    d.original_address ILIKE %s OR
+                    d.normalized_address ILIKE %s OR
+                    d.dorm_name ILIKE %s OR
+                    d.legacy_dorm_code ILIKE %s OR
+                    d.map_display_address ILIKE %s
+                )
+            """
+            params.extend([term, term, term, term, term])
+
+        query += ' ORDER BY d.primary_manager, d.city, d.district, d.legacy_dorm_code NULLS LAST, d.original_address'
+        return _execute_query_to_dataframe(conn, query, params)
+    finally:
+        if conn:
+            conn.close()
+
+def get_map_coordinate_filter_options():
+    """取得座標維護頁的篩選選項。"""
+    conn = database.get_db_connection()
+    if not conn:
+        return pd.DataFrame()
+
+    try:
+        query = """
+            SELECT DISTINCT
+                COALESCE(primary_manager, '') AS primary_manager,
+                COALESCE(city, '') AS city,
+                COALESCE(district, '') AS district
+            FROM "Dormitories"
+            ORDER BY primary_manager, city, district
+        """
+        return _execute_query_to_dataframe(conn, query)
+    finally:
+        if conn:
+            conn.close()
+
+def batch_update_map_coordinates(edited_df: pd.DataFrame):
+    """批次更新宿舍地圖座標與顯示地址。"""
+    if edited_df is None or edited_df.empty:
+        return False, "沒有可儲存的資料。"
+
+    conn = database.get_db_connection()
+    if not conn:
+        return False, "無法連接到資料庫"
+
+    def clean_text(value):
+        if pd.isna(value):
+            return None
+        text = str(value).strip()
+        return text or None
+
+    def clean_numeric(value):
+        if pd.isna(value) or value == "":
+            return None
+        return float(value)
+
+    try:
+        updated_count = 0
+        with conn.cursor() as cursor:
+            for _, row in edited_df.iterrows():
+                dorm_id = row.get('id')
+                if pd.isna(dorm_id):
+                    continue
+
+                map_display_address = clean_text(row.get('地圖顯示地址'))
+                map_latitude = clean_numeric(row.get('緯度'))
+                map_longitude = clean_numeric(row.get('經度'))
+
+                if map_latitude is not None and not (20 <= map_latitude <= 27):
+                    conn.rollback()
+                    return False, f"ID {int(dorm_id)} 的緯度超出台灣常用範圍，請確認。"
+                if map_longitude is not None and not (118 <= map_longitude <= 123):
+                    conn.rollback()
+                    return False, f"ID {int(dorm_id)} 的經度超出台灣常用範圍，請確認。"
+
+                if map_latitude is None and map_longitude is None:
+                    geocoded_at = None
+                elif map_latitude is None or map_longitude is None:
+                    conn.rollback()
+                    return False, f"ID {int(dorm_id)} 的經緯度需成對填寫，不能只填一邊。"
+                else:
+                    geocoded_at = 'NOW()'
+
+                if geocoded_at == 'NOW()':
+                    cursor.execute(
+                        """
+                        UPDATE "Dormitories"
+                        SET
+                            "map_display_address" = %s,
+                            "map_latitude" = %s,
+                            "map_longitude" = %s,
+                            "map_geocoded_at" = NOW()
+                        WHERE id = %s
+                        """,
+                        (map_display_address, map_latitude, map_longitude, int(dorm_id))
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        UPDATE "Dormitories"
+                        SET
+                            "map_display_address" = %s,
+                            "map_latitude" = %s,
+                            "map_longitude" = %s,
+                            "map_geocoded_at" = NULL
+                        WHERE id = %s
+                        """,
+                        (map_display_address, map_latitude, map_longitude, int(dorm_id))
+                    )
+                updated_count += 1
+
+        conn.commit()
+        return True, f"已成功更新 {updated_count} 筆宿舍座標資料。"
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return False, f"批次更新座標時發生錯誤: {e}"
+    finally:
+        if conn:
+            conn.close()
