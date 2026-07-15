@@ -1,73 +1,72 @@
-# scraper.py (新版系統修正後)
-
-import requests
+﻿import concurrent.futures
 import os
 import shutil
-import time
 import string
-from typing import List, Tuple, Callable
-from datetime import datetime, timedelta # 引入 timedelta 來計算日期
+from datetime import datetime
+from typing import Callable, Dict, List, Optional, Tuple
 
-# ==============================================================================
-# 核心功能函式
-# ==============================================================================
+import requests
+
+
+DEFAULT_MAX_WORKERS = 8
+REQUEST_TIMEOUT_SECONDS = 300
+
 
 def generate_code_ranges() -> List[Tuple[str, str]]:
     """
-    自動產生所有雇主編號的查詢區間 (單編號 CODE ~ CODE-S)。
+    Generate all employer code ranges used by the legacy export.
+    Examples: A01-A01-S, A02-A02-S, ..., AA-AA-S, ..., ZZ-ZZ-S.
     """
-    ranges = []
+    ranges: List[Tuple[str, str]] = []
     letters = string.ascii_uppercase
 
-    # 1. 處理數字範圍 (A01~H99)
-    # 針對每一個編號，產生 CODE 到 CODE-S 的範圍
     for prefix in 'ABCDEFGH':
-        for start in range(1, 100): # 遍歷 01 到 99
+        for start in range(1, 100):
             start_code = f"{prefix}{start:02d}"
-            # 查詢範圍： CODE 到 CODE-S
             ranges.append((start_code, f"{start_code}-S"))
-    
-    # 2. 處理字母範圍 (AA~ZZ)
-    # 針對每一個編號，產生 CODE 到 CODE-S 的範圍
+
     for a in letters:
         for b in letters:
             start_code = f"{a}{b}"
-            # 查詢範圍： CODE 到 CODE-S
             ranges.append((start_code, f"{start_code}-S"))
-    
+
     return ranges
+
 
 def download_all_reports(
     target_url: str,
     auth_credentials: Tuple[str, str],
     query_ranges: List[Tuple[str, str]],
     temp_dir: str,
-    log_callback: Callable[[str], None]
+    log_callback: Callable[[str], None],
+    max_workers: int = DEFAULT_MAX_WORKERS,
 ) -> List[str]:
     """
-    遍歷所有查詢區間，下載所有報表，並將它們存入指定的暫存資料夾。
+    Download all range-based XLS reports from the legacy system.
+    Requests are sent in parallel with a bounded worker count to reduce total runtime.
     """
-    log_callback("INFO: 開始執行報表下載程序 (新版系統)...")
+    log_callback("INFO: 開始批次下載報表 (平行請求模式)...")
 
     try:
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
         os.makedirs(temp_dir)
-        log_callback(f"INFO: 已建立並清空暫存資料夾: {temp_dir}")
+        log_callback(f"INFO: 已清空並建立暫存資料夾 {temp_dir}")
     except OSError as e:
-        log_callback(f"CRITICAL: 無法建立暫存資料夾 {temp_dir}，請檢查權限。錯誤: {e}")
+        log_callback(f"CRITICAL: 無法準備暫存資料夾 {temp_dir}: {e}")
         return []
 
-    downloaded_files = []
     total_ranges = len(query_ranges)
+    if total_ranges == 0:
+        log_callback("WARNING: 沒有可下載的查詢區間。")
+        return []
 
-    # --- 【核心修改 1】計算基準日期 (改為今天) ---
+    worker_count = max(1, min(max_workers, total_ranges))
     base_date_str = datetime.today().strftime('%Y-%m-%d')
-    log_callback(f"INFO: 將使用基準日期: {base_date_str} (今日) 進行查詢。")
 
-    for i, (start_code, end_code) in enumerate(query_ranges):
-        # log_callback(f"INFO: 正在下載第 {i+1}/{total_ranges} 批: {start_code} - {end_code} ...")
-        
+    log_callback(f"INFO: 基準日期 {base_date_str}，總區間數 {total_ranges}，workers={worker_count}")
+
+    def download_single_range(index: int, start_code: str, end_code: str) -> Optional[str]:
         # --- 【核心修改 2】更新 payload ---
         payload = {
             'CU00_BNO1': start_code,         # 起始雇主編號
@@ -108,34 +107,60 @@ def download_all_reports(
                 target_url,
                 data=payload,
                 auth=auth_credentials,
-                timeout=300
+                timeout=REQUEST_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
 
-            if 'text/html' in response.headers.get('content-type', ''):
-                log_callback(f"WARNING: 區間 {start_code}-{end_code} 可能沒有資料，伺服器回傳HTML頁面，已略過。")
-                continue
+            if 'text/html' in response.headers.get('content-type', '').lower():
+                log_callback(
+                    f"WARNING: 區間 {index + 1}/{total_ranges} {start_code}-{end_code} 回傳 HTML，略過。"
+                )
+                return None
 
             file_path = os.path.join(temp_dir, f"report_{start_code}_to_{end_code}.xls")
             with open(file_path, 'wb') as f:
                 f.write(response.content)
-
-            downloaded_files.append(file_path)
-            # log_callback(f"SUCCESS: 已儲存報表: {os.path.basename(file_path)}")
-            
-            time.sleep(1)
-
+            return file_path
         except requests.exceptions.Timeout:
-            log_callback(f"ERROR: 下載 {start_code}-{end_code} 時發生超時錯誤。")
+            log_callback(
+                f"ERROR: 區間 {index + 1}/{total_ranges} {start_code}-{end_code} 請求逾時。"
+            )
         except requests.exceptions.RequestException as e:
-            log_callback(f"ERROR: 下載 {start_code}-{end_code} 時發生網路或請求錯誤: {e}")
+            log_callback(
+                f"ERROR: 區間 {index + 1}/{total_ranges} {start_code}-{end_code} HTTP 請求失敗: {e}"
+            )
         except Exception as e:
-            log_callback(f"ERROR: 處理 {start_code}-{end_code} 時發生未知系統錯誤: {e}")
+            log_callback(
+                f"ERROR: 區間 {index + 1}/{total_ranges} {start_code}-{end_code} 發生未預期錯誤: {e}"
+            )
+        return None
 
+    completed_files: Dict[int, str] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+        future_map = {
+            executor.submit(download_single_range, index, start_code, end_code): (index, start_code, end_code)
+            for index, (start_code, end_code) in enumerate(query_ranges)
+        }
+
+        for future in concurrent.futures.as_completed(future_map):
+            index, start_code, end_code = future_map[future]
+            try:
+                file_path = future.result()
+                if file_path:
+                    completed_files[index] = file_path
+                    log_callback(
+                        f"SUCCESS: 區間 {index + 1}/{total_ranges} {start_code}-{end_code} 下載完成。"
+                    )
+            except Exception as e:
+                log_callback(
+                    f"ERROR: 區間 {index + 1}/{total_ranges} {start_code}-{end_code} 執行緒處理失敗: {e}"
+                )
+
+    downloaded_files = [completed_files[index] for index in sorted(completed_files)]
 
     if not downloaded_files:
-        log_callback("WARNING: 本次執行未下載任何報表檔案。")
+        log_callback("WARNING: 本次沒有成功下載任何報表。")
     else:
-        log_callback(f"\nINFO: 全部下載程序完成，共成功下載 {len(downloaded_files)} 個檔案。")
+        log_callback(f"INFO: 批次下載完成，共成功下載 {len(downloaded_files)} 份報表。")
 
     return downloaded_files

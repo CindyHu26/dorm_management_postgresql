@@ -10,7 +10,6 @@ from dateutil.relativedelta import relativedelta
 
 def render():
     """渲染「費用管理」頁面 (DataEditor 模式)"""
-    st.header("我司管理宿舍 - 費用帳單管理")
     st.info("用於登錄每一筆獨立的水電、網路等費用帳單，系統將根據帳單起訖日自動計算每月攤分費用。")
 
     my_dorms = dormitory_model.get_my_company_dorms_for_selection()

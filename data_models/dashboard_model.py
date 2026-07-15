@@ -148,7 +148,7 @@ def get_financial_dashboard_data(year_month: str):
                 FROM "UtilityBills" b CROSS JOIN DateParams dp WHERE b.is_pass_through = TRUE AND b.bill_start_date <= dp.last_day_of_month AND b.bill_end_date >= dp.first_day_of_month GROUP BY b.dorm_id
             ),
             MonthlyContracts AS ( 
-                SELECT l.dorm_id, SUM(l.monthly_rent) as contract_expense
+                SELECT l.dorm_id, SUM(l.monthly_rent * ((LEAST(COALESCE(l.lease_end_date, dp.last_day_of_month), dp.last_day_of_month)::date - GREATEST(l.lease_start_date, dp.first_day_of_month)::date + 1) / 30.4375)) as contract_expense
                 FROM "Leases" l CROSS JOIN DateParams dp WHERE l.payer = '我司' AND l.lease_start_date <= dp.last_day_of_month AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month) GROUP BY l.dorm_id
             ),
             ProratedUtilities AS (

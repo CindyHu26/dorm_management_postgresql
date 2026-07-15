@@ -24,6 +24,112 @@ except ImportError:
 def get_all_logs_for_selection():
     return maintenance_model.get_logs_for_view(filters=None)
 
+def _build_log_search_text(log_df: pd.DataFrame) -> pd.Series:
+    return (
+        log_df['id'].astype(str) + " " +
+        log_df['宿舍地址'].fillna('') + " " +
+        log_df['細項說明'].fillna('') + " " +
+        log_df['狀態'].fillna('') + " " +
+        log_df['內部提報人'].fillna('') + " " +
+        log_df['維修廠商'].fillna('') + " " +
+        log_df['項目類型'].fillna('')
+    ).str.lower()
+
+def _filter_logs_by_keyword(log_df: pd.DataFrame, search_key: str) -> pd.DataFrame:
+    if log_df.empty or not search_key:
+        return log_df.copy()
+
+    keywords = search_key.lower().split()
+    filtered_df = log_df.copy()
+    filtered_df['searchable_text'] = _build_log_search_text(filtered_df)
+    mask = filtered_df['searchable_text'].apply(lambda text: all(keyword in text for keyword in keywords))
+    return filtered_df.loc[mask].copy()
+
+def _format_log_option(row) -> str:
+    report_date = pd.to_datetime(row['通報日期']).strftime('%Y-%m-%d') if pd.notna(row['通報日期']) else '無日期'
+    reporter = row.get('內部提報人') or '未填通報人'
+    detail = row.get('細項說明') or ''
+    dorm_label = row.get('宿舍地址') or '未填地址'
+    dorm_id = row.get('dorm_id')
+    if pd.notna(dorm_id) and dorm_id not in [None, ""]:
+        try:
+            dorm_id = int(dorm_id)
+        except (TypeError, ValueError):
+            pass
+    if dorm_id in st.session_state.get('_maintenance_dorm_options', {}):
+        dorm_label = st.session_state['_maintenance_dorm_options'][dorm_id]
+    return f"{report_date} / {dorm_label} / {row['狀態']} / {detail} / {reporter}"
+
+def _build_resident_list(records):
+    if not records:
+        return "無", 0
+
+    resident_lines = []
+    current_room = None
+    for row in records:
+        room_num = row['room_number']
+        if room_num != current_room:
+            if current_room is not None:
+                resident_lines.append("")
+            resident_lines.append(f"{room_num}")
+            current_room = room_num
+        resident_lines.append(f"{row['employer_name']} {row['worker_name']}")
+
+    return "\n".join(resident_lines), len(records)
+
+def _render_line_dispatch_message(selected_log_id, key_suffix, details, dorm_options, vendor_options):
+    st.markdown("##### 📱 產生 LINE 派工訊息")
+
+    saved_dorm_id = details.get('dorm_id')
+    saved_desc = details.get('description', '')
+    saved_vendor_id = details.get('vendor_id')
+    saved_cost = details.get('cost') or 0
+    saved_notify_date = details.get('notification_date')
+    default_line_date = saved_notify_date or date.today()
+
+    dorm_name_str = dorm_options.get(saved_dorm_id, "未知地址")
+    vendor_name_str = vendor_options.get(saved_vendor_id, "未指定") if saved_vendor_id else "未指定"
+
+    period_col1, period_col2 = st.columns(2)
+    line_period_start = period_col1.date_input(
+        "名單篩選起日",
+        value=default_line_date,
+        key=f"line_period_start_{selected_log_id}_{key_suffix}"
+    )
+    line_period_end = period_col2.date_input(
+        "名單篩選迄日",
+        value=default_line_date,
+        key=f"line_period_end_{selected_log_id}_{key_suffix}"
+    )
+
+    if line_period_start and line_period_end and line_period_start > line_period_end:
+        st.error("名單篩選起日不能晚於迄日。")
+        line_period_end = line_period_start
+
+    resident_list_str = "無"
+    resident_count = 0
+
+    if saved_dorm_id and line_period_start and line_period_end:
+        try:
+            resident_records = maintenance_model.get_residents_for_period_by_dorm(
+                saved_dorm_id,
+                line_period_start,
+                line_period_end
+            )
+            resident_list_str, resident_count = _build_resident_list(resident_records)
+        except Exception as e:
+            resident_list_str = f"名單查詢出錯: {e}"
+
+    line_msg = f"🏠宿舍地址：{dorm_name_str}\n"
+    line_msg += f"🔨說明：{saved_desc}\n"
+    line_msg += f"🧰廠商：{vendor_name_str}\n"
+    line_msg += f"💲費用：{saved_cost}\n"
+    line_msg += f"📅名單區間：{line_period_start.strftime('%Y/%m/%d')} ~ {line_period_end.strftime('%Y/%m/%d')}\n"
+    line_msg += f"💥💥💥請確認名單🔽({resident_count}人)：\n{resident_list_str}"
+
+    st.code(line_msg, language="text")
+    st.caption(f"💡 提示：名單篩選區間為 **{line_period_start} ~ {line_period_end}**，會列出該期間內曾住在此地址的人員，並以房號進行分組。")
+
 # -----------------------------------------------------------------------------
 # 輔助函式：圖片轉 Base64 (用於 HTML 報表)
 # -----------------------------------------------------------------------------
@@ -205,7 +311,7 @@ def _render_full_edit_form(selected_log_id, dorm_options, vendor_options, item_t
         # ==========================================
         # 新增：產生 LINE 派工訊息功能 (通報日期在住版本，含房號分組，帶有一鍵複製)
         # ==========================================
-        st.markdown("##### 📱 產生 LINE 派工訊息")
+        """
         
 # 取得目前已存檔的資料
         saved_dorm_id = details.get('dorm_id')
@@ -213,71 +319,56 @@ def _render_full_edit_form(selected_log_id, dorm_options, vendor_options, item_t
         saved_vendor_id = details.get('vendor_id')
         saved_cost = details.get('cost') or 0
         saved_notify_date = details.get('notification_date')  # 取得此案件的通報日期
+        default_line_date = saved_notify_date or date.today()
         
         dorm_name_str = dorm_options.get(saved_dorm_id, "未知地址")
         vendor_name_str = vendor_options.get(saved_vendor_id, "未指定") if saved_vendor_id else "未指定"
         
-        # 查詢該宿舍在「通報日期」當天在住的名單
+        period_col1, period_col2 = st.columns(2)
+        line_period_start = period_col1.date_input(
+            "名單篩選起日",
+            value=default_line_date,
+            key=f"line_period_start_{selected_log_id}_{key_suffix}"
+        )
+        line_period_end = period_col2.date_input(
+            "名單篩選迄日",
+            value=default_line_date,
+            key=f"line_period_end_{selected_log_id}_{key_suffix}"
+        )
+
+        if line_period_start and line_period_end and line_period_start > line_period_end:
+            st.error("名單篩選起日不能晚於迄日。")
+            line_period_end = line_period_start
+
         resident_list_str = "無"
-        resident_count = 0  # 新增：用來記錄總人數
+        resident_count = 0
         
-        if saved_dorm_id and saved_notify_date:
-            import database  # 引入資料庫模組
-            
-            conn = database.get_db_connection()
-            if conn:
-                try:
-                    # 核心 SQL 邏輯：
-                    # 撈出房號、雇主、姓名，並依序用「房號 -> 雇主 -> 姓名」進行排序
-                    query = """
-                        SELECT r.room_number, w.employer_name, w.worker_name
-                        FROM "AccommodationHistory" ah
-                        JOIN "Rooms" r ON ah.room_id = r.id
-                        JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
-                        WHERE r.dorm_id = %s
-                          AND ah.start_date <= %s
-                          AND (ah.end_date IS NULL OR ah.end_date >= %s)
-                        ORDER BY r.room_number, w.employer_name, w.worker_name
-                    """
-                    with conn.cursor() as cursor:
-                        cursor.execute(query, (saved_dorm_id, saved_notify_date, saved_notify_date))
-                        records = cursor.fetchall()
-                        
-                        if records:
-                            resident_count = len(records)  # 取得實際在住的總人數
-                            res_list = []
-                            current_room = None
-                            
-                            for row in records:
-                                room_num = row['room_number']
-                                
-                                # 當發現房號跟前一筆不一樣時，印出新房號標題
-                                if room_num != current_room:
-                                    if current_room is not None:
-                                        res_list.append("")  # 換房間時加一個空行區隔
-                                    res_list.append(f"{room_num}")
-                                    current_room = room_num
-                                
-                                # 印出員工資訊
-                                res_list.append(f"{row['employer_name']} {row['worker_name']}")
-                                
-                            resident_list_str = "\n".join(res_list)
-                except Exception as e:
-                    resident_list_str = f"名單查詢出錯: {e}"
-                finally:
-                    conn.close()
+        if saved_dorm_id and line_period_start and line_period_end:
+            try:
+                resident_records = maintenance_model.get_residents_for_period_by_dorm(
+                    saved_dorm_id,
+                    line_period_start,
+                    line_period_end
+                )
+                resident_list_str, resident_count = _build_resident_list(resident_records)
+            except Exception as e:
+                resident_list_str = f"名單查詢出錯: {e}"
         
         # 組裝 LINE 訊息內容
         line_msg = f"🏠宿舍地址：{dorm_name_str}\n"
         line_msg += f"🔨說明：{saved_desc}\n"
         line_msg += f"🧰廠商：{vendor_name_str}\n"
         line_msg += f"💲費用：{saved_cost}\n"
+        line_msg += f"📅名單區間：{line_period_start.strftime('%Y/%m/%d')} ~ {line_period_end.strftime('%Y/%m/%d')}\n"
         line_msg += f"💥💥💥請確認名單🔽({resident_count}人)：\n{resident_list_str}"
         
         # 使用 st.code 顯示，右上角會自動產生「複製」按鈕
         st.code(line_msg, language="text")
-        st.caption(f"💡 提示：名單已鎖定為案件 **通報日期 ({saved_notify_date})** 當天實際在住的移工，並以「房號」進行分組。")
+        st.caption(f"💡 提示：名單篩選區間為 **{line_period_start} ~ {line_period_end}**，會列出該期間內曾住在此地址的人員，並以房號進行分組。")
         # ==========================================
+
+        """
+        st.info("LINE 派工訊息已移到表單下方，可即時依日期區間更新。")
 
         # --- 儲存按鈕 ---
         if st.form_submit_button("💾 儲存完整變更"):
@@ -312,6 +403,14 @@ def _render_full_edit_form(selected_log_id, dorm_options, vendor_options, item_t
                 st.rerun()
             else:
                 st.error(message)
+
+    _render_line_dispatch_message(
+        selected_log_id,
+        key_suffix,
+        details,
+        dorm_options,
+        vendor_options
+    )
 
 # -----------------------------------------------------------------------------
 # 子功能渲染函式
@@ -545,22 +644,8 @@ def render_edit_delete(dorm_options, vendor_options, item_type_options, status_o
         st.info("目前沒有任何維修紀錄。")
         return
     
-    search_key = st.text_input("輸入關鍵字搜尋紀錄 (ID, 地址, 說明...)", key="maint_log_search_key")
-    filtered_search_df = all_logs_df.copy()
-
-    if search_key:
-        keywords = search_key.lower().split()
-        filtered_search_df['searchable_text'] = (
-            filtered_search_df['id'].astype(str) + " " +
-            filtered_search_df['宿舍地址'] + " " +
-            filtered_search_df['細項說明'] + " " +
-            filtered_search_df['狀態'] + " " +
-            filtered_search_df['內部提報人'].fillna('') + " " +
-            filtered_search_df['維修廠商'].fillna('') + " " +
-            filtered_search_df['項目類型'].fillna('') 
-        ).str.lower()
-        mask = filtered_search_df['searchable_text'].apply(lambda x: all(k in x for k in keywords))
-        filtered_search_df = filtered_search_df[mask].copy()
+    search_key = st.text_input("輸入關鍵字搜尋紀錄 (ID, 狀態, 明細, 通報人...)", key="maint_log_search_key")
+    filtered_search_df = _filter_logs_by_keyword(all_logs_df, search_key)
     
     if filtered_search_df.empty:
          st.warning(f"找不到符合「{search_key}」的紀錄。")
@@ -568,10 +653,7 @@ def render_edit_delete(dorm_options, vendor_options, item_type_options, status_o
     else:
         filtered_search_df['通報日期'] = pd.to_datetime(filtered_search_df['通報日期'])
         filtered_search_df = filtered_search_df.sort_values(by=['通報日期', 'id'], ascending=[False, False])
-        options_dict = {
-            row['id']: (f"[ID:{row['id']}] {row['通報日期'].strftime('%Y-%m-%d')} / {row['狀態']} / {row['宿舍地址']} {row['細項說明']}")
-            for _, row in filtered_search_df.iterrows()
-        }
+        options_dict = {row['id']: _format_log_option(row) for _, row in filtered_search_df.iterrows()}
         selected_log_id = st.selectbox(
             f"選擇紀錄 (共 {len(filtered_search_df)} 筆)", 
             options=[None] + list(options_dict.keys()), 
@@ -659,19 +741,26 @@ def render_overview(dorm_options, vendor_options, item_type_options, status_opti
         st.markdown("---")
         
         # --- Part 3: 下方編輯區 (新增) ---
-        st.subheader("🔍 檢視詳情與編輯")
-        st.info("請在下方選擇上方表格中的案件 ID，即可進行詳細內容編輯或查看照片。")
-        
-        # 準備下拉選單選項
-        edit_options = {
-            row['id']: f"[ID:{row['id']}] {row['宿舍地址']} - {row['細項說明'][:30]}..." 
-            for _, row in log_df.iterrows()
-        }
+        st.subheader("✏️ 編輯 / 刪除單筆維修紀錄 (歷史查詢)")
+        st.info("可用關鍵字搜尋 ID、日期、狀態、明細或通報人，再選取案件進行詳細編輯。")
+        overview_search_key = st.text_input(
+            "輸入關鍵字搜尋紀錄 (ID, 狀態, 明細, 通報人...)",
+            key="overview_log_search_key"
+        )
+        filtered_overview_df = _filter_logs_by_keyword(log_df, overview_search_key)
+
+        if filtered_overview_df.empty:
+            st.warning(f"找不到符合「{overview_search_key}」的紀錄。")
+            return
+
+        filtered_overview_df['通報日期'] = pd.to_datetime(filtered_overview_df['通報日期'])
+        filtered_overview_df = filtered_overview_df.sort_values(by=['通報日期', 'id'], ascending=[False, False])
+        edit_options = {row['id']: _format_log_option(row) for _, row in filtered_overview_df.iterrows()}
         
         selected_log_id = st.selectbox(
-            "選擇要編輯/檢視的案件：",
+            f"選擇紀錄 (共 {len(filtered_overview_df)} 筆)",
             options=[None] + list(edit_options.keys()),
-            format_func=lambda x: "請選擇案件 ID..." if x is None else edit_options.get(x),
+            format_func=lambda x: "請選擇..." if x is None else edit_options.get(x),
             key="overview_edit_selector"
         )
         
@@ -1173,11 +1262,11 @@ def render():
         default_nav_mode = "⏳ 未完成案件追蹤"
         tracking_target_dorm = query_params.get("target_dorm")
 
-    st.header("維修追蹤管理")
     st.info("用於登記、追蹤和管理宿舍的各項維修申報與進度，並可上傳現場照片、報價單(PDF)等相關文件。")
     
     dorms = dormitory_model.get_dorms_for_selection()
     dorm_options = {d['id']: f"({d.get('legacy_dorm_code') or '無編號'}) {d.get('original_address', '')}" for d in dorms} if dorms else {}
+    st.session_state['_maintenance_dorm_options'] = dorm_options
     
     vendors = vendor_model.get_vendors_for_view()
     vendor_options = {v['id']: f"{v['服務項目']} - {v['廠商名稱']}" for _, v in vendors.iterrows()} if not vendors.empty else {}

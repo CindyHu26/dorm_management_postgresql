@@ -4,7 +4,6 @@ from datetime import date, timedelta
 from data_models import finance_dashboard_model, dormitory_model
 
 def render():
-    st.title("💰 宿舍別財務收支總覽")
     st.info("此頁面匯總了所有財務相關模組的詳細資料，並以「宿舍地址」作為主要關聯依據。")
 
     # --- 1. 全域篩選器 ---

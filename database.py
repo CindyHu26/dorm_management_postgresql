@@ -126,6 +126,10 @@ def create_all_tables_and_indexes():
                 "normalized_address" VARCHAR(255) NOT NULL UNIQUE, "dorm_name" VARCHAR(100),
                 "city" VARCHAR(50),
                 "district" VARCHAR(50),
+                "map_display_address" VARCHAR(255),
+                "map_latitude" NUMERIC(10, 7),
+                "map_longitude" NUMERIC(10, 7),
+                "map_geocoded_at" TIMESTAMP,
                 "person_in_charge" VARCHAR(50),
                 "landlord_id" INTEGER, 
                 "primary_manager" VARCHAR(50) DEFAULT '雇主', "rent_payer" VARCHAR(50) DEFAULT '雇主',
@@ -410,8 +414,28 @@ def create_all_tables_and_indexes():
                 "related_expense_id" INTEGER,
                 "related_income_id" INTEGER,
                 "notes" TEXT,
+                "item_id" INTEGER NOT NULL,
+                "transaction_type" VARCHAR(50),
+                "quantity" INTEGER,
+                "transaction_date" DATE NOT NULL,
+                "dorm_id" INTEGER,
+                "person_in_charge" TEXT,
+                "related_expense_id" INTEGER,
+                "related_income_id" INTEGER,
+                "notes" TEXT,
                 FOREIGN KEY ("item_id") REFERENCES "InventoryItems" ("id") ON DELETE CASCADE,
                 FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE SET NULL
+            );
+            """
+
+            TABLES['EmployerWorkplaces'] = """
+            CREATE TABLE IF NOT EXISTS "EmployerWorkplaces" (
+                "id" SERIAL PRIMARY KEY,
+                "employer_id" VARCHAR(100),
+                "employer_name" VARCHAR(255) NOT NULL UNIQUE,
+                "latitude" NUMERIC(10, 7),
+                "longitude" NUMERIC(10, 7),
+                "address" VARCHAR(255)
             );
             """
 
@@ -421,6 +445,7 @@ def create_all_tables_and_indexes():
 
             INDEXES = [
                 'CREATE INDEX IF NOT EXISTS idx_dorms_normalized_address ON "Dormitories" ("normalized_address");',
+                'CREATE INDEX IF NOT EXISTS idx_dorms_map_coordinates ON "Dormitories" ("map_latitude", "map_longitude");',
                 'CREATE INDEX IF NOT EXISTS idx_workers_employer_name ON "Workers" ("employer_name");',
                 'CREATE INDEX IF NOT EXISTS idx_rooms_dorm_id ON "Rooms" ("dorm_id");',
                 'CREATE INDEX IF NOT EXISTS idx_workers_room_id ON "Workers" ("room_id");',

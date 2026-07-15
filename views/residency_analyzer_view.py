@@ -8,7 +8,6 @@ from data_models import residency_analyzer_model, dormitory_model, employer_dash
 
 def render():
     """渲染「歷史在住查詢」頁面"""
-    st.header("歷史在住查詢")
     st.info("您可以透過設定日期區間和宿舍，來查詢過去、現在或未來的住宿人員名單及其費用狀況。")
 
     # --- 篩選器區塊 ---

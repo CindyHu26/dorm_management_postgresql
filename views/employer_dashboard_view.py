@@ -150,7 +150,6 @@ def generate_html_report(title, kpi_data, summary_df, resident_summary_df, detai
 
 def render():
     """渲染「雇主儀表板」頁面"""
-    st.header("雇主視角儀表板")
     st.info("請從下方選擇一位或多位雇主，以檢視其所有在住員工的詳細住宿分佈與財務貢獻情況。")
 
     @st.cache_data

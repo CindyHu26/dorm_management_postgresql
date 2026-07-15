@@ -7,7 +7,6 @@ from datetime import datetime
 
 def render():
     """渲染「智慧提醒」儀表板"""
-    st.header("智慧提醒儀表板")
     
     # --- 【核心修改 1】調整滑桿範圍，允許負數 ---
     days_ahead = st.slider(

@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
-from data_models import importer_model
+from data_models import importer_model, employer_workplace_model
 from datetime import date
 
 def to_excel(df):
@@ -14,7 +14,6 @@ def to_excel(df):
 
 def render():
     """渲染「批次匯入」頁面"""
-    st.header("批次資料匯入中心")
     st.markdown("---")
 
     # --- 區塊一：變動費用匯入 ---
@@ -755,6 +754,50 @@ def render():
                             data=to_excel(failed_df),
                             file_name="landlord_import_failed_report.xlsx",
                             key="failed_landlord_download"
+                        )
+            except Exception as e:
+                st.error(f"處理檔案時發生錯誤：{e}")
+
+    with st.container(border=True):
+        st.subheader("📍 雇主工作地址匯入")
+        st.info(
+            """
+            用於批次新增或更新雇主工作地址，提供地圖找房時的中心點選項。
+            - **更新方式**：系統會以「雇主簡稱」為基準，若已存在則會**覆蓋**。
+            """
+        )
+
+        workplace_template_df = pd.DataFrame({
+            "雇主編號": ["EMP001"],
+            "雇主簡稱": ["OO科技"],
+            "工作地址": ["台北市信義區信義路五段7號"],
+            "座標": ["120.317056,23.798813"],
+        })
+        st.download_button(
+            label="📥 下載雇主工作地址匯入範本",
+            data=to_excel(workplace_template_df),
+            file_name="employer_workplace_import_template.xlsx"
+        )
+
+        uploaded_workplace_file = st.file_uploader("上傳【雇主工作地址】Excel 檔案", type=["xlsx"], key="workplace_uploader")
+
+        if uploaded_workplace_file:
+            try:
+                df_workplace = pd.read_excel(uploaded_workplace_file)
+                st.markdown("##### 檔案內容預覽：")
+                st.dataframe(df_workplace.head())
+                if st.button("🚀 開始匯入雇主工作地址", type="primary", key="workplace_import_btn"):
+                    with st.spinner("正在處理與匯入資料..."):
+                        success, failed_df = employer_workplace_model.batch_import_workplaces(df_workplace)
+                    st.success(f"匯入完成！成功處理 {success} 筆紀錄。")
+                    if not failed_df.empty:
+                        st.error(f"有 {len(failed_df)} 筆資料匯入失敗：")
+                        st.dataframe(failed_df)
+                        st.download_button(
+                            label="📥 下載失敗紀錄報告",
+                            data=to_excel(failed_df),
+                            file_name="workplace_import_failed_report.xlsx",
+                            key="failed_workplace_download"
                         )
             except Exception as e:
                 st.error(f"處理檔案時發生錯誤：{e}")

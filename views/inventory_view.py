@@ -7,7 +7,6 @@ from data_models import inventory_model, dormitory_model
 
 def render():
     """渲染「資產與庫存管理」頁面"""
-    st.header("資產與庫存管理")
     st.info("此頁面用於管理公司的庫存品項（如床墊、鑰匙），並追蹤其採購、發放、借還的流動紀錄。")
 
     dorms = dormitory_model.get_dorms_for_selection()

@@ -1,4 +1,4 @@
-# updater.py (v2.38 簡化匹配版)
+﻿# updater.py (v2.38 簡化匹配版)
 
 import pandas as pd
 from datetime import datetime, timedelta
@@ -17,6 +17,56 @@ def _execute_query_to_dataframe(conn, query, params=None):
         
         columns = [desc[0] for desc in cursor.description]
         return pd.DataFrame(records, columns=columns)
+
+
+def _parse_date_or_none(raw_value):
+    """將報表中的日期安全轉為 Python date；NaN/NaT/空字串 一律回傳 None。"""
+    import math
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, float) and math.isnan(raw_value):
+        return None
+    try:
+        if pd.isna(raw_value):
+            return None
+    except (TypeError, ValueError):
+        pass
+
+    if hasattr(raw_value, "date") and not isinstance(raw_value, str):
+        try:
+            return raw_value.date()
+        except Exception:
+            pass
+
+    raw_text = str(raw_value).strip()
+    if not raw_text or raw_text.lower() == 'nan':
+        return None
+
+    parsed = pd.to_datetime(raw_text, errors='coerce')
+    if pd.isna(parsed):
+        return None
+    return parsed.date()
+
+
+def _normalize_sql_value(value):
+    """避免將 Pandas 的 NaN/NaT 直接送進 PostgreSQL。"""
+    import math
+    if value is None:
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, pd.Timestamp):
+        return value.date()
+    return value
+
+
+def _normalize_sql_record(record):
+    return {key: _normalize_sql_value(value) for key, value in record.items()}
 
 def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], None]):
     """
@@ -134,14 +184,8 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                 fresh_passport = str(fresh_worker.get('passport_number', '')).strip()
                 fresh_employer = str(fresh_worker.get('employer_name', '')).strip()
                 fresh_name = str(fresh_worker.get('worker_name', '')).strip()
-                
                 # 取得報表中的交工日 (這非常重要)
-                fresh_start_date_str = fresh_worker.get('accommodation_start_date')
-                fresh_start_date_obj = None
-                if fresh_start_date_str:
-                    try:
-                        fresh_start_date_obj = datetime.strptime(fresh_start_date_str, '%Y-%m-%d').date()
-                    except: pass
+                fresh_start_date_obj = _parse_date_or_none(fresh_worker.get('accommodation_start_date'))
 
                 raw_room_id = fresh_worker.get('room_id')
                 new_room_id = int(raw_room_id) if pd.notna(raw_room_id) else None
@@ -218,14 +262,7 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                 # ----------------------------------------------------
                 db_info = worker_info_cache.get(worker_id, {})
                 data_source = db_info.get('data_source')
-                
-                departure_date_from_file_str = fresh_worker.get('departure_date')
-                final_departure_date = None 
-                if pd.notna(departure_date_from_file_str) and departure_date_from_file_str:
-                    try:
-                        final_departure_date = datetime.strptime(departure_date_from_file_str, '%Y-%m-%d').date()
-                    except ValueError:
-                        final_departure_date = None
+                final_departure_date = _parse_date_or_none(fresh_worker.get('departure_date'))
 
                 current_room_id = db_info.get('room_id')
                 current_history_end_date = db_info.get('history_end_date')
@@ -241,7 +278,9 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                     
                     if new_room_id is not None: final_details['room_id'] = new_room_id
                     else: final_details['room_id'] = None 
+                    final_details['departure_date'] = final_departure_date
                     final_details['accommodation_end_date'] = final_departure_date
+                    final_details = _normalize_sql_record(final_details)
                     
                     columns = ', '.join(f'"{k}"' for k in final_details.keys())
                     placeholders = ', '.join(['%s'] * len(final_details))
@@ -277,7 +316,9 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
                     protected_sources = ['手動管理(他仲)', '手動調整']
                     if new_room_id is not None and data_source not in protected_sources: 
                         update_details['room_id'] = new_room_id
+                    update_details['departure_date'] = final_departure_date
                     update_details['accommodation_end_date'] = final_departure_date
+                    update_details = _normalize_sql_record(update_details)
                     
                     fields = ', '.join([f'"{key}" = %s' for key in update_details.keys()])
                     values = list(update_details.values()) + [worker_id]

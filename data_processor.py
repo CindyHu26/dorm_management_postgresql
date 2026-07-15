@@ -1,9 +1,24 @@
-import pandas as pd
+﻿import pandas as pd
 from lxml import etree
 import re
 import os
+import unicodedata
 from datetime import datetime
 from typing import List, Callable, Dict
+
+def normalize_fee_name(text) -> str:
+    if text is None:
+        return ""
+    normalized = unicodedata.normalize("NFKC", str(text))
+    normalized = (
+        normalized
+        .replace("\ufeff", "")
+        .replace("\u200b", "")
+        .replace("\u200c", "")
+        .replace("\u200d", "")
+        .replace("\u00a0", " ")
+    )
+    return re.sub(r"\s+", " ", normalized).strip()
 
 def chinese_to_arabic(cn_num_str: str) -> str:
     """
@@ -193,6 +208,22 @@ def parse_and_process_reports(
     all_workers_data = [] # 儲存 {欄位名: 值} 的字典列表
     ns = {'ss': 'urn:schemas-microsoft-com:office:spreadsheet'}
     parser = etree.XMLParser(recover=True, encoding='utf-8')
+    def extract_cells_with_index(row):
+        """支援 SpreadsheetML 的 ss:Index 跳欄語法，避免欄位錯位。"""
+        cells_text = []
+        for cell in row.findall('ss:Cell', ns):
+            index_attr = cell.get(f'{{{ns["ss"]}}}Index')
+            if index_attr:
+                target_index = max(int(index_attr) - 1, 0)
+                while len(cells_text) < target_index:
+                    cells_text.append("")
+
+            data_element = cell.find('ss:Data', ns)
+            if data_element is not None and data_element.text is not None:
+                cells_text.append(data_element.text.strip())
+            else:
+                cells_text.append("")
+        return cells_text
 
     # 1. 定義我們系統真正需要的欄位
     REQUIRED_COLS_MAP = {
@@ -227,15 +258,7 @@ def parse_and_process_reports(
             # log_callback(f"INFO: 正在解析檔案: {os.path.basename(file_path)}...")
             
             for row in rows_xml:
-                
-                cells_text = []
-                for cell in row.findall('ss:Cell', ns):
-                    data_element = cell.find('ss:Data', ns)
-                    if data_element is not None and data_element.text is not None:
-                        cells_text.append(data_element.text.strip())
-                    else:
-                        cells_text.append("") 
-                
+                cells_text = extract_cells_with_index(row)
                 if not cells_text: continue
                 
                 if "客戶簡稱" in cells_text and "姓名(中)" in cells_text and not is_data_section:
@@ -383,6 +406,11 @@ def parse_b04_xml(file_path_or_buffer, fee_mapping: dict) -> pd.DataFrame:
         rows = tree.xpath('.//ss:Row', namespaces=ns)
         
         extracted_data = []
+        normalized_fee_mapping = {
+            normalize_fee_name(external_name): internal_name
+            for external_name, internal_name in (fee_mapping or {}).items()
+            if normalize_fee_name(external_name) and internal_name
+        }
         
         # 欄位索引
         IDX_EMPLOYER = 2
@@ -418,7 +446,8 @@ def parse_b04_xml(file_path_or_buffer, fee_mapping: dict) -> pd.DataFrame:
 
             # 提取費用名稱
             fee_name = cell_texts.get(IDX_FEE_NAME)
-            if fee_name not in fee_mapping:
+            normalized_fee_name = normalize_fee_name(fee_name)
+            if normalized_fee_name not in normalized_fee_mapping:
                 continue
 
             # 日期轉換
@@ -458,7 +487,7 @@ def parse_b04_xml(file_path_or_buffer, fee_mapping: dict) -> pd.DataFrame:
                 'employer_name': clean_emp_name,
                 'worker_name': clean_worker_name,
                 'passport_number': passport, # 允許為 None
-                'fee_type': fee_mapping[fee_name],
+                'fee_type': normalized_fee_mapping[normalized_fee_name],
                 'source_fee_name': fee_name,
                 'amount': amount,
                 'effective_date': effective_date
@@ -469,3 +498,4 @@ def parse_b04_xml(file_path_or_buffer, fee_mapping: dict) -> pd.DataFrame:
     except Exception as e:
         print(f"解析 XML 失敗: {e}")
         return pd.DataFrame()
+

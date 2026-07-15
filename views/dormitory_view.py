@@ -20,7 +20,6 @@ def get_person_options():
 
 def render():
     """渲染「地址管理」頁面的所有 Streamlit UI 元件。"""
-    st.header("宿舍地址管理")
 
     # --- Session State 初始化 (維持不變) ---
     if 'selected_dorm_id' not in st.session_state:
@@ -176,7 +175,11 @@ def render():
                         district = edit_c6.text_input("區域", value=dorm_details.get('district', ''))
                         
                         invoice_info_edit = st.text_input("發票抬頭/統編", value=dorm_details.get('invoice_info', ''))
-                        edit_is_self_owned = st.checkbox("✅ 此為公司自購宿舍", value=dorm_details.get('is_self_owned', False), key="edit_self_owned")
+                        edit_is_self_owned = st.checkbox(
+                            "✅ 此為公司自購宿舍",
+                            value=bool(dorm_details.get('is_self_owned', False)),
+                            key=f"edit_self_owned_{dorm_id}"
+                        )
 
                         st.markdown("##### 責任歸屬與備註")
                         edit_rc1, edit_rc2, edit_rc3 = st.columns(3)

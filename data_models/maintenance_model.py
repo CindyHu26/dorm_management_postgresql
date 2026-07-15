@@ -102,6 +102,30 @@ def get_logs_for_view(filters: dict = None):
     finally:
         if conn: conn.close()
 
+def get_residents_for_period_by_dorm(dorm_id: int, start_date, end_date):
+    conn = database.get_db_connection()
+    if not conn:
+        return []
+    try:
+        query = """
+            SELECT
+                r.room_number,
+                w.employer_name,
+                w.worker_name
+            FROM "AccommodationHistory" ah
+            JOIN "Rooms" r ON ah.room_id = r.id
+            JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
+            WHERE r.dorm_id = %s
+              AND ah.start_date <= %s
+              AND (ah.end_date IS NULL OR ah.end_date >= %s)
+            ORDER BY r.room_number, w.employer_name, w.worker_name
+        """
+        with conn.cursor() as cursor:
+            cursor.execute(query, (dorm_id, end_date, start_date))
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
 def get_single_log_details(log_id: int):
     conn = database.get_db_connection()
     if not conn: return None

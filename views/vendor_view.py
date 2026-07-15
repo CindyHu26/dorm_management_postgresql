@@ -6,7 +6,6 @@ from data_models import vendor_model # 引用我們剛剛建立的新模型
 
 def render():
     """渲染「廠商資料管理」頁面"""
-    st.header("廠商資料管理")
     st.info("用於建立與維護維修、清潔、消防等協力廠商的聯絡資訊。")
 
     # --- 新增區塊 ---

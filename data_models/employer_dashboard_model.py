@@ -240,7 +240,7 @@ def get_employer_financial_summary(employer_names: list, year_month: str, only_m
                     COALESCE(ae.total_amortized, 0) AS amortized_expense
                 FROM "Dormitories" d
                 LEFT JOIN (
-                    SELECT l.dorm_id, SUM(l.monthly_rent) as contract_expense
+                    SELECT l.dorm_id, SUM(l.monthly_rent * ((LEAST(COALESCE(l.lease_end_date, dp.last_day_of_month), dp.last_day_of_month)::date - GREATEST(l.lease_start_date, dp.first_day_of_month)::date + 1) / 30.4375)) as contract_expense
                     FROM "Leases" l CROSS JOIN DateParams dp
                     WHERE l.payer = '我司' AND l.lease_start_date <= dp.last_day_of_month AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month) GROUP BY l.dorm_id
                 ) l ON d.id = l.dorm_id
@@ -615,55 +615,38 @@ def get_employer_cash_flow_summary(employer_names: list, year_month: str, only_m
                   AND (w.special_status IS NULL OR w.special_status NOT ILIKE '%%掛宿外住%%')
                   AND (%(only_my_company)s IS FALSE OR d.primary_manager = '我司')
             ),
-            LatestEffectiveDates AS (
-                SELECT
-                    worker_unique_id, fee_type, MAX(effective_date) as max_effective_date
-                FROM "FeeHistory"
-                CROSS JOIN DateParams dp
-                WHERE effective_date <= dp.last_day_of_month
-                GROUP BY worker_unique_id, fee_type
-            ),
-            WorkerFees AS (
-                SELECT
-                    awm.worker_unique_id, awm.employer_name, awm.dorm_id, awm.days_in_month,
-                    COALESCE(rent_fh.amount, 0) AS monthly_fee,
-                    COALESCE(util_fh.amount, 0) AS utilities_fee,
-                    COALESCE(clean_fh.amount, 0) AS cleaning_fee,
-                    COALESCE(resto_fh.amount, 0) AS restoration_fee,
-                    COALESCE(charge_fh.amount, 0) AS charging_cleaning_fee
-                FROM ActiveWorkersInMonth awm
-                LEFT JOIN LatestEffectiveDates rent_led ON awm.worker_unique_id = rent_led.worker_unique_id AND rent_led.fee_type = '房租'
-                LEFT JOIN "FeeHistory" rent_fh ON rent_led.worker_unique_id = rent_fh.worker_unique_id AND rent_led.fee_type = rent_fh.fee_type AND rent_led.max_effective_date = rent_fh.effective_date
-                LEFT JOIN LatestEffectiveDates util_led ON awm.worker_unique_id = util_led.worker_unique_id AND util_led.fee_type = '水電費'
-                LEFT JOIN "FeeHistory" util_fh ON util_led.worker_unique_id = util_fh.worker_unique_id AND util_led.fee_type = util_fh.fee_type AND util_led.max_effective_date = util_fh.effective_date
-                LEFT JOIN LatestEffectiveDates clean_led ON awm.worker_unique_id = clean_led.worker_unique_id AND clean_led.fee_type = '清潔費'
-                LEFT JOIN "FeeHistory" clean_fh ON clean_led.worker_unique_id = clean_fh.worker_unique_id AND clean_led.fee_type = clean_fh.fee_type AND clean_led.max_effective_date = clean_fh.effective_date
-                LEFT JOIN LatestEffectiveDates resto_led ON awm.worker_unique_id = resto_led.worker_unique_id AND resto_led.fee_type = '宿舍復歸費'
-                LEFT JOIN "FeeHistory" resto_fh ON resto_led.worker_unique_id = resto_fh.worker_unique_id AND resto_led.fee_type = resto_fh.fee_type AND resto_led.max_effective_date = resto_fh.effective_date
-                LEFT JOIN LatestEffectiveDates charge_led ON awm.worker_unique_id = charge_led.worker_unique_id AND charge_led.fee_type = '充電清潔費'
-                LEFT JOIN "FeeHistory" charge_fh ON charge_led.worker_unique_id = charge_fh.worker_unique_id AND charge_led.fee_type = charge_fh.fee_type AND charge_led.max_effective_date = charge_fh.effective_date
-            ),
             DormOccupancyDays AS (
                 SELECT
                     dorm_id,
                     SUM(days_in_month) as total_days,
-                    SUM(CASE WHEN employer_name = ANY(%(employer_names)s) THEN days_in_month ELSE 0 END) as employer_days,
-                    SUM(
-                        CASE WHEN employer_name = ANY(%(employer_names)s)
-                        THEN (monthly_fee + utilities_fee + cleaning_fee + restoration_fee + charging_cleaning_fee)
-                             * (days_in_month / EXTRACT(DAY FROM dp.last_day_of_month)::decimal)
-                        ELSE 0 END
-                    ) as employer_worker_income
-                FROM WorkerFees
-                CROSS JOIN DateParams dp
+                    SUM(CASE WHEN employer_name = ANY(%(employer_names)s) THEN days_in_month ELSE 0 END) as employer_days
+                FROM ActiveWorkersInMonth
                 GROUP BY dorm_id
             ),
             DormProration AS (
                 SELECT
-                    dorm_id, employer_worker_income,
+                    dorm_id,
                     CASE WHEN total_days > 0 THEN employer_days::decimal / total_days ELSE 0 END AS proration_ratio
                 FROM DormOccupancyDays
                 WHERE employer_days > 0
+            ),
+            EmployerActualIncome AS (
+                SELECT
+                    r.dorm_id,
+                    SUM(fh.amount) as actual_income
+                FROM "FeeHistory" fh
+                JOIN "Workers" w ON fh.worker_unique_id = w.unique_id
+                JOIN "AccommodationHistory" ah ON fh.worker_unique_id = ah.worker_unique_id
+                JOIN "Rooms" r ON ah.room_id = r.id
+                JOIN "Dormitories" d ON r.dorm_id = d.id
+                CROSS JOIN DateParams dp
+                WHERE 
+                    w.employer_name = ANY(%(employer_names)s)
+                    AND fh.effective_date BETWEEN dp.first_day_of_month AND dp.last_day_of_month
+                    AND ah.start_date <= fh.effective_date
+                    AND (ah.end_date IS NULL OR ah.end_date >= fh.effective_date)
+                    AND (%(only_my_company)s IS FALSE OR d.primary_manager = '我司')
+                GROUP BY r.dorm_id
             ),
             OtherDormIncome_Direct AS (
                 SELECT dorm_id, SUM(amount) as direct_income
@@ -691,7 +674,7 @@ def get_employer_cash_flow_summary(employer_names: list, year_month: str, only_m
                 FROM "Dormitories" d
                 LEFT JOIN (
                     -- 合約 (租金)：維持按月計算 (視為當月應付現金)
-                    SELECT l.dorm_id, SUM(l.monthly_rent) as contract_expense
+                    SELECT l.dorm_id, SUM(l.monthly_rent * ((LEAST(COALESCE(l.lease_end_date, dp.last_day_of_month), dp.last_day_of_month)::date - GREATEST(l.lease_start_date, dp.first_day_of_month)::date + 1) / 30.4375)) as contract_expense
                     FROM "Leases" l CROSS JOIN DateParams dp
                     WHERE l.payer = '我司' AND l.lease_start_date <= dp.last_day_of_month AND (l.lease_end_date IS NULL OR l.lease_end_date >= dp.first_day_of_month) GROUP BY l.dorm_id
                 ) l ON d.id = l.dorm_id
@@ -716,7 +699,7 @@ def get_employer_cash_flow_summary(employer_names: list, year_month: str, only_m
                 dme.dorm_id,
                 dme.original_address AS "宿舍地址",
                 dme.dorm_notes AS "宿舍備註",
-                ROUND(dp.employer_worker_income)::int AS "收入(員工月費)",
+                ROUND(COALESCE(eai.actual_income, 0))::int AS "收入(員工月費)",
                 (
                     ROUND(COALESCE(odi_s.shared_income, 0) * dp.proration_ratio) + 
                     COALESCE(odi_d.direct_income, 0)
@@ -726,6 +709,7 @@ def get_employer_cash_flow_summary(employer_names: list, year_month: str, only_m
                 ROUND(dme.amortized_expense * dp.proration_ratio)::int AS "我司分攤攤銷" -- 這裡顯示的是「現金流支出」
             FROM DormProration dp
             JOIN DormCashFlowExpenses dme ON dp.dorm_id = dme.dorm_id
+            LEFT JOIN EmployerActualIncome eai ON dp.dorm_id = eai.dorm_id
             LEFT JOIN OtherDormIncome_Shared odi_s ON dp.dorm_id = odi_s.dorm_id
             LEFT JOIN OtherDormIncome_Direct odi_d ON dp.dorm_id = odi_d.dorm_id
             ORDER BY "收入(員工月費)" DESC;
@@ -927,59 +911,25 @@ def get_employer_cash_flow_details_for_dorm(employer_names: list, dorm_id: int, 
 
         # 收入查詢 (與一般版相同)
         income_query = """
-            WITH DateParams AS (SELECT %(start_date)s::date as start_date, %(end_date)s::date as end_date),
-            TargetWorkers AS (
-                SELECT DISTINCT ON (ah.worker_unique_id)
-                    ah.worker_unique_id,
-                    (LEAST(COALESCE(ah.end_date, dp.end_date), dp.end_date)::date - GREATEST(ah.start_date, dp.start_date)::date + 1) as days_in_period
-                FROM "AccommodationHistory" ah
-                JOIN "Workers" w ON ah.worker_unique_id = w.unique_id
-                JOIN "Rooms" r ON ah.room_id = r.id
-                CROSS JOIN DateParams dp
-                WHERE r.dorm_id = %(dorm_id)s
-                  AND w.employer_name = ANY(%(employer_names)s)
-                  AND ah.start_date <= dp.end_date
-                  AND (ah.end_date IS NULL OR ah.end_date >= dp.start_date)
-                  AND (w.special_status IS NULL OR w.special_status NOT ILIKE '%%掛宿外住%%')
-            ),
-            LatestEffectiveDates AS (
-                SELECT
-                    worker_unique_id, fee_type, MAX(effective_date) as max_effective_date
-                FROM "FeeHistory"
-                CROSS JOIN DateParams dp
-                WHERE effective_date <= dp.end_date
-                GROUP BY worker_unique_id, fee_type
-            ),
-            WorkerPeriodFees AS (
-                 SELECT
-                    tw.worker_unique_id, tw.days_in_period,
-                    COALESCE(rent_fh.amount, 0) AS monthly_fee,
-                    COALESCE(util_fh.amount, 0) AS utilities_fee,
-                    COALESCE(clean_fh.amount, 0) AS cleaning_fee,
-                    COALESCE(resto_fh.amount, 0) AS restoration_fee,
-                    COALESCE(charge_fh.amount, 0) AS charging_cleaning_fee
-                FROM TargetWorkers tw
-                LEFT JOIN LatestEffectiveDates rent_led ON tw.worker_unique_id = rent_led.worker_unique_id AND rent_led.fee_type = '房租'
-                LEFT JOIN "FeeHistory" rent_fh ON rent_led.worker_unique_id = rent_fh.worker_unique_id AND rent_led.fee_type = rent_fh.fee_type AND rent_led.max_effective_date = rent_fh.effective_date
-                LEFT JOIN LatestEffectiveDates util_led ON tw.worker_unique_id = util_led.worker_unique_id AND util_led.fee_type = '水電費'
-                LEFT JOIN "FeeHistory" util_fh ON util_led.worker_unique_id = util_fh.worker_unique_id AND util_led.fee_type = util_fh.fee_type AND util_led.max_effective_date = util_fh.effective_date
-                LEFT JOIN LatestEffectiveDates clean_led ON tw.worker_unique_id = clean_led.worker_unique_id AND clean_led.fee_type = '清潔費'
-                LEFT JOIN "FeeHistory" clean_fh ON clean_led.worker_unique_id = clean_fh.worker_unique_id AND clean_led.fee_type = clean_fh.fee_type AND clean_led.max_effective_date = clean_fh.effective_date
-                LEFT JOIN LatestEffectiveDates resto_led ON tw.worker_unique_id = resto_led.worker_unique_id AND resto_led.fee_type = '宿舍復歸費'
-                LEFT JOIN "FeeHistory" resto_fh ON resto_led.worker_unique_id = resto_fh.worker_unique_id AND resto_led.fee_type = resto_fh.fee_type AND resto_led.max_effective_date = resto_fh.effective_date
-                LEFT JOIN LatestEffectiveDates charge_led ON tw.worker_unique_id = charge_led.worker_unique_id AND charge_led.fee_type = '充電清潔費'
-                LEFT JOIN "FeeHistory" charge_fh ON charge_led.worker_unique_id = charge_fh.worker_unique_id AND charge_led.fee_type = charge_fh.fee_type AND charge_led.max_effective_date = charge_fh.effective_date
-            )
+            WITH DateParams AS (SELECT %(start_date)s::date as start_date, %(end_date)s::date as end_date)
+            -- 1. 員工月費收入 (來自 FeeHistory)
             SELECT
-                '月費 ' || (wpf.monthly_fee + wpf.utilities_fee + wpf.cleaning_fee + wpf.restoration_fee + wpf.charging_cleaning_fee)::text || ' 元' as "項目",
-                COUNT(wpf.worker_unique_id) AS "人數",
-                ROUND(SUM(
-                    (wpf.monthly_fee + wpf.utilities_fee + wpf.cleaning_fee + wpf.restoration_fee + wpf.charging_cleaning_fee) *
-                    (wpf.days_in_period / NULLIF((dp.end_date - dp.start_date + 1)::decimal, 0))
-                ))::int AS "金額"
-            FROM WorkerPeriodFees wpf
+                fh.fee_type as "項目",
+                COUNT(DISTINCT fh.worker_unique_id) AS "人數",
+                SUM(fh.amount)::int as "金額"
+            FROM "FeeHistory" fh
+            JOIN "Workers" w ON fh.worker_unique_id = w.unique_id
+            JOIN "AccommodationHistory" ah ON fh.worker_unique_id = ah.worker_unique_id
+            JOIN "Rooms" r ON ah.room_id = r.id
             CROSS JOIN DateParams dp
-            GROUP BY (wpf.monthly_fee + wpf.utilities_fee + wpf.cleaning_fee + wpf.restoration_fee + wpf.charging_cleaning_fee)
+            WHERE r.dorm_id = %(dorm_id)s
+              AND w.employer_name = ANY(%(employer_names)s)
+              -- 費用發生在該期間
+              AND fh.effective_date BETWEEN dp.start_date AND dp.end_date
+              -- 費用發生時住在該宿舍
+              AND ah.start_date <= fh.effective_date
+              AND (ah.end_date IS NULL OR ah.end_date >= fh.effective_date)
+            GROUP BY fh.fee_type
 
             UNION ALL
 

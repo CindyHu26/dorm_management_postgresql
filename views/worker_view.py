@@ -24,7 +24,6 @@ def render():
     """
     移工管理主視圖入口
     """
-    st.title("👥 人員管理")
 
     # 定義主功能選單
     main_options = [
@@ -49,8 +48,8 @@ def render_main_worker_list():
     # --- 1. 篩選區塊 ---
     st.markdown("##### 🔍 篩選條件")
     
-    # 【修改重點 1】將畫面切分為 5 個欄位 (加入房號欄位)
-    col1, col2, col3, col4, col5 = st.columns(5)
+    # 將畫面切分為 7 個欄位，新增國籍與特殊狀況篩選
+    col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
     
     all_dorms = dormitory_model.get_dorms_for_selection()
     dorm_options = {}
@@ -91,10 +90,18 @@ def render_main_worker_list():
         search_query = st.text_input("搜尋 (姓名/房號/雇主)", placeholder="輸入關鍵字...")
     
     with col4:
+        nationality_options = ["全部"] + worker_model.get_distinct_nationalities()
+        nationality_filter = st.selectbox("國籍", nationality_options, index=0)
+
+    with col5:
         status_filter = st.selectbox("在住狀態", ["全部", "在住", "已離住"], index=0)
     
-    with col5:
+    with col6:
         sort_by = st.selectbox("排序方式", ["房號", "姓名", "入職日", "離住日"])
+
+    with col7:
+        special_status_options = ["全部", "無"] + worker_model.get_distinct_special_statuses()
+        special_status_filter = st.selectbox("特殊狀況", special_status_options, index=0)
 
     # --- 2. 獲取資料 ---
     # 【修改重點 3】將 selected_room_id 放入篩選條件中
@@ -102,7 +109,9 @@ def render_main_worker_list():
         'dorm_id': selected_dorm_id,
         'room_id': selected_room_id, 
         'name_search': search_query,
-        'status': status_filter
+        'nationality': nationality_filter,
+        'status': status_filter,
+        'special_status': special_status_filter
     }
 
     workers_df = worker_model.get_workers_for_view(filters)
@@ -126,7 +135,7 @@ def render_main_worker_list():
     
     display_cols = [
         '實際地址', '實際房號', '床位編號', 
-        '姓名', '雇主', '國籍', '性別', '在住狀態',
+        '姓名', '雇主', '國籍', '性別', '入住日期', '離住日期', '在住狀態',
         '前月月租', '特殊狀況', '資料來源'
     ]
     

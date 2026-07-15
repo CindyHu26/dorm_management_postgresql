@@ -8,7 +8,6 @@ from data_models import operations_analyzer_model
 
 def render():
     """渲染「營運分析」頁面"""
-    st.header("營運分析與優化工具")
     
     if st.button("🔄 重新整理所有數據"):
         st.cache_data.clear()

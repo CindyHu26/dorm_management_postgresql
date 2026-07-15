@@ -8,7 +8,6 @@ from data_models import meter_model, dormitory_model
 
 def render():
     """渲染「電水錶管理」頁面"""
-    st.header("我司管理宿舍 - 各類用戶號管理")
     st.info("用於登錄與管理宿舍的電錶、水錶、天然氣、電信等各類用戶號碼。")
 
     # --- Session State 初始化 ---

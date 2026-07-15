@@ -8,7 +8,6 @@ from data_models import dashboard_model
 
 def render():
     """渲染儀表板頁面，包含「住宿總覽」、「財務分析」與「雇主統計」三個頁籤。"""
-    st.header("系統儀表板")
 
     tab1, tab2, tab3 = st.tabs(["📊 住宿情況總覽", "💰 財務收支分析", "👥 雇主住宿統計"])
 

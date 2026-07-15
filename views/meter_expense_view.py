@@ -10,7 +10,6 @@ from dateutil.relativedelta import relativedelta
 
 def render():
     """渲染「錶號費用管理」頁面 (DataEditor 模式)"""
-    st.header("錶號費用管理")
     st.info("此頁面專為快速登錄與特定錶號相關的費用（如水電費）而設計。請先搜尋並選取一個錶號開始操作。")
 
     # --- 1. 搜尋與選取錶號 ---
@@ -38,7 +37,6 @@ def render():
         return
 
     # --- 2. 顯示關聯的宿舍資訊---
-    @st.cache_data
     def get_context_details(meter_id):
         dorm_id = meter_model.get_dorm_id_from_meter_id(meter_id)
         if not dorm_id:

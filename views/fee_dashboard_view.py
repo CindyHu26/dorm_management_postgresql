@@ -6,7 +6,6 @@ from data_models import finance_model, dormitory_model, employer_dashboard_model
 
 def render():
     """渲染「費用標準與異常儀表板」"""
-    st.header("費用標準與異常儀表板")
     st.info("此儀表板自動分析各「宿舍」、「雇主」與「特殊狀況」的收費慣例（標準），並列出收費不同的特例人員。")
 
     # --- 1. 篩選條件 ---
@@ -91,11 +90,21 @@ def render():
 
     # 預先計算「宿舍層級」的標準 (Fallback 機制)
     dorm_level_standards = {}
+    analysis_df['total_fee'] = analysis_df[fee_cols].sum(axis=1)
+    
+    # 計算各費用項目的宿舍標準
     for col in fee_cols:
         valid_fees = analysis_df[analysis_df[col] > 0]
         if not valid_fees.empty:
             dorm_modes = valid_fees.groupby(['宿舍地址', '特殊狀況'])[col].apply(lambda x: x.mode().iloc[0] if not x.mode().empty else 0)
             dorm_level_standards[col] = dorm_modes.to_dict()
+            
+    # 預先計算「宿舍層級」的總標準
+    dorm_level_total_standards = {}
+    valid_totals = analysis_df[analysis_df['total_fee'] > 0]
+    if not valid_totals.empty:
+        dorm_total_modes = valid_totals.groupby(['宿舍地址', '特殊狀況'])['total_fee'].apply(lambda x: x.mode().iloc[0] if not x.mode().empty else 0)
+        dorm_level_total_standards = dorm_total_modes.to_dict()
 
     grouped = analysis_df.groupby(['宿舍地址', '雇主', '特殊狀況', '資料月份'])
 
@@ -103,35 +112,51 @@ def render():
         group_stats = {
             "宿舍": dorm, "雇主": emp, "特殊狀況": status, "資料月份": month, "總人數": len(group)
         }
+        
+        # 1. 計算該群組各費用項目的標準金額
+        group_standards = {}
         for col in fee_cols:
-            # 1. 先算該雇主的標準 (Local Standard)
             modes = group[col].mode()
             local_standard = modes[0] if not modes.empty else 0
             
             effective_standard = local_standard
-            
-            # 2. 如果雇主標準是 0，嘗試參考宿舍標準
             if local_standard == 0:
                 dorm_standard = dorm_level_standards.get(col, {}).get((dorm, status), 0)
                 if dorm_standard > 0:
                     effective_standard = dorm_standard
             
-            # 【核心修正】針對 "掛宿外住(不收費)"，強制標準為 0
-            # 這樣金額為 0 的人就不會被視為異常，也不會因為同宿舍其他人有標準而被誤判
             if status == "掛宿外住(不收費)":
                 effective_standard = 0
 
+            group_standards[col] = effective_standard
             group_stats[f"標準{col}"] = effective_standard
+
+        # 針對總金額計算真正的標準總額（避免各科目標準相加導致重複計算相似費用）
+        group_total_series = group['total_fee']
+        modes = group_total_series.mode()
+        total_local_standard = modes[0] if not modes.empty else 0
+        total_standard = total_local_standard
+        
+        if total_local_standard == 0:
+            total_standard = dorm_level_total_standards.get((dorm, status), 0)
             
-            # 3. 比對異常
+        if status == "掛宿外住(不收費)":
+            total_standard = 0
+            
+        # 2. 比對異常並記錄
+        for col in fee_cols:
+            effective_standard = group_standards[col]
             exceptions = group[group[col] != effective_standard]
             if not exceptions.empty:
                 group_stats[f"{col}異常"] = len(exceptions)
                 for _, row in exceptions.iterrows():
+                    person_total_actual = sum(row[c] for c in fee_cols)
                     exception_details.append({
                         "宿舍": dorm, "雇主": emp, "特殊狀況": status, "資料月份": month,
                         "姓名": row['姓名'], "房號": row['房號'], "費用項目": col,
                         "標準金額": effective_standard, "實際金額": row[col],
+                        "總標準金額": total_standard,
+                        "總實際金額": person_total_actual,
                         "入住日": row['入住日'], "備註": row['個人備註']
                     })
             else:
@@ -175,6 +200,11 @@ def render():
             "🚨 只顯示「入住超過 1 個完整月且無費用 (金額=0)」的異常", 
             help="篩選邏輯：入住日早於「上個月1號」。例如現在11月，會抓出9/30(含)以前入住，但至今無費用紀錄的人。"
         )
+        exclude_same_total = st.checkbox(
+            "💡 排除「總金額相符」的異常",
+            value=True,
+            help="若勾選，當該員工各項費用加總的「總實際金額」與「總標準金額」相同時(僅收費名目不同)，將不會顯示在清單中。"
+        )
 
         st.markdown("##### 進階篩選")
         filter_c1, filter_c2 = st.columns(2)
@@ -208,6 +238,10 @@ def render():
             ]
             if filtered_ex_df.empty:
                 st.success(f"太棒了！沒有發現「入住日早於 {cutoff_date} 且漏收費用」的異常人員。")
+                
+        # 1.5 排除總金額相符
+        if exclude_same_total:
+            filtered_ex_df = filtered_ex_df[filtered_ex_df['總實際金額'] != filtered_ex_df['總標準金額']]
 
         # 2. 費用項目篩選
         if filter_ex_col:
@@ -235,6 +269,8 @@ def render():
                 column_config={
                     "標準金額": st.column_config.NumberColumn(format="$%d"),
                     "實際金額": st.column_config.NumberColumn(format="$%d"),
+                    "總標準金額": st.column_config.NumberColumn(format="$%d"),
+                    "總實際金額": st.column_config.NumberColumn(format="$%d"),
                     "入住日": st.column_config.DateColumn(format="YYYY-MM-DD"),
                     "資料月份": st.column_config.TextColumn(help="此筆費用的所屬月份"),
                 }

@@ -6,7 +6,6 @@ from data_models import loss_analyzer_model
 
 def render():
     """渲染「虧損宿舍分析」頁面"""
-    st.header("虧損宿舍分析")
     st.info("此頁面用於快速找出目前處於虧損狀態的我司管理宿舍，並分析其收支結構。")
 
     if st.button("🔄 重新整理所有數據"):
