@@ -35,15 +35,22 @@ def get_workplace_editor_df(search_term=""):
             "雇主編號": wp.get("employer_id") or "",
             "雇主簡稱": wp.get("employer_name") or "",
             "工作地址": wp.get("address") or "",
+            "郵遞區號": wp.get("postal_code") or "",
             "緯度": to_float(wp.get("latitude")),
             "經度": to_float(wp.get("longitude")),
         }
-        searchable = " ".join(str(row.get(col, "")) for col in ["雇主編號", "雇主簡稱", "工作地址"]).lower()
+        searchable = " ".join(
+            str(row.get(col, ""))
+            for col in ["雇主編號", "雇主簡稱", "工作地址", "郵遞區號"]
+        ).lower()
         if term and term not in searchable:
             continue
         records.append(row)
 
-    return pd.DataFrame(records, columns=["id", "雇主編號", "雇主簡稱", "工作地址", "緯度", "經度"])
+    return pd.DataFrame(
+        records,
+        columns=["id", "雇主編號", "雇主簡稱", "工作地址", "郵遞區號", "緯度", "經度"],
+    )
 
 
 def _parse_coordinate_pair(raw_value):
@@ -172,15 +179,15 @@ def _render_dorm_coordinate_editor():
 
 
 def _render_workplace_coordinate_editor():
-    st.info("此頁面維護雇主工作地址，供地圖找房作為中心點使用。可用雇主編號、雇主簡稱或工作地址搜尋。")
+    st.info("此頁面維護雇主工作地址、郵遞區號與座標，供寄件與地圖找房使用。")
 
-    search_term = st.text_input("搜尋雇主工作地址", placeholder="可輸入雇主編號、雇主簡稱、工作地址")
+    search_term = st.text_input("搜尋雇主工作地址", placeholder="可輸入雇主編號、雇主簡稱、工作地址、郵遞區號")
     editor_df = get_workplace_editor_df(search_term=search_term.strip())
 
     if editor_df.empty:
-        editor_df = pd.DataFrame(columns=["id", "雇主編號", "雇主簡稱", "工作地址", "座標貼上", "緯度", "經度"])
+        editor_df = pd.DataFrame(columns=["id", "雇主編號", "雇主簡稱", "工作地址", "郵遞區號", "座標貼上", "緯度", "經度"])
     else:
-        for col in ["雇主編號", "雇主簡稱", "工作地址"]:
+        for col in ["雇主編號", "雇主簡稱", "工作地址", "郵遞區號"]:
             if col in editor_df.columns:
                 editor_df[col] = editor_df[col].fillna("")
         text_cols = [col for col in ["雇主編號", "雇主簡稱", "工作地址"] if col in editor_df.columns]
@@ -205,6 +212,7 @@ def _render_workplace_coordinate_editor():
                 "雇主編號": st.column_config.TextColumn("雇主編號", width="small"),
                 "雇主簡稱": st.column_config.TextColumn("雇主簡稱", required=True, width="small"),
                 "工作地址": st.column_config.TextColumn("工作地址", width="large"),
+                "郵遞區號": st.column_config.TextColumn("郵遞區號", width="small"),
                 "座標貼上": st.column_config.TextColumn("座標貼上", help="可直接貼上 lat,lng 或 lng,lat。儲存時會自動拆分。", width="medium"),
                 "緯度": st.column_config.NumberColumn("緯度", format="%.7f", min_value=20.0, max_value=27.0),
                 "經度": st.column_config.NumberColumn("經度", format="%.7f", min_value=118.0, max_value=123.0),
@@ -234,12 +242,13 @@ def _render_workplace_coordinate_editor():
                 employer_name = row.get("雇主簡稱")
                 employer_id = row.get("雇主編號")
                 address = row.get("工作地址")
+                postal_code = row.get("郵遞區號")
                 lat = row.get("緯度")
                 lng = row.get("經度")
 
                 is_blank_row = all(
                     pd.isna(value) or str(value).strip() == ""
-                    for value in [employer_name, employer_id, address, lat, lng]
+                    for value in [employer_name, employer_id, address, postal_code, lat, lng]
                 )
                 if is_blank_row:
                     continue

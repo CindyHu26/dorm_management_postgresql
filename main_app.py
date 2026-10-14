@@ -43,6 +43,7 @@ from views import (
     unassigned_worker_view,
     guide_view,
     finance_dashboard_view,
+    mail_view,
 )
 
 def load_config():
@@ -55,6 +56,9 @@ def load_config():
 
 # 頁面結構化 (維持不變)
 PAGES = {
+    "📮 郵局寄件": {
+        "郵局寄件工作台": mail_view,
+    },
     "📊 數據決策儀表板": {
         "系統總覽儀表板": dashboard_view,
         "費用基準與異常分析": fee_dashboard_view,      # 抓出收費異常

@@ -239,6 +239,16 @@ def parse_and_process_reports(
         '居住地址': 'original_address',
         '出境日期': 'departure_date'
     }
+
+    # 這些欄位用於同步雇主工作地點。設為選填，以便程式仍能處理舊版報表。
+    OPTIONAL_COLS_MAP = {
+        '雇主編號': 'employer_id',
+        '工作地址': 'work_address',
+        '公司地址': 'company_address',
+        '核准函地址': 'approval_address',
+        '郵遞區號': 'postal_code',
+    }
+    REPORT_COLS_MAP = {**REQUIRED_COLS_MAP, **OPTIONAL_COLS_MAP}
     
     for file_path in file_paths:
         header_index_map = {}
@@ -267,7 +277,7 @@ def parse_and_process_reports(
                      
                     header_index_map = {}
                     for i, col_name in enumerate(cells_text):
-                        if col_name in REQUIRED_COLS_MAP:
+                        if col_name in REPORT_COLS_MAP:
                             if col_name not in header_index_map: 
                                 header_index_map[col_name] = i
                     
@@ -290,6 +300,14 @@ def parse_and_process_reports(
                                 worker_dict[internal_col_name] = cells_text[col_index]
                             else:
                                 worker_dict[internal_col_name] = ""
+
+                        for xml_col_name, internal_col_name in OPTIONAL_COLS_MAP.items():
+                            col_index = header_index_map.get(xml_col_name)
+                            worker_dict[internal_col_name] = (
+                                cells_text[col_index]
+                                if col_index is not None and col_index < len(cells_text)
+                                else ""
+                            )
                         
                         # 基礎驗證，並在失敗時印出日誌
                         emp_name = worker_dict.get('employer_name')
@@ -377,7 +395,8 @@ def parse_and_process_reports(
         'accommodation_start_date',
         'work_permit_expiry_date', 
         'departure_date', 
-        'original_address', 'normalized_address', 'city', 'district'
+        'original_address', 'normalized_address', 'city', 'district',
+        'employer_id', 'work_address', 'company_address', 'approval_address', 'postal_code'
     ]
     existing_final_columns = [col for col in final_columns if col in master_df.columns]
     

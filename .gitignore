@@ -86,9 +86,11 @@ dorm_photos/
 lease_photos/
 accommodation_photos/
 temp_uploads/
+mail_receipts/
 worker_docs/
 run_daily_sync.py
 run_monthly_finance_sync.py
 sync_log.txt
 sync_finance_log.txt
 google_sync_model.py
+doc_templates/

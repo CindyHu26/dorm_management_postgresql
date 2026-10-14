@@ -1103,13 +1103,17 @@ def batch_import_external_fees(df: pd.DataFrame):
     try:
         with conn.cursor() as cursor:
             # 1. 建立員工快取
-            cursor.execute('SELECT unique_id, employer_name, worker_name, passport_number FROM "Workers"')
+            cursor.execute('SELECT unique_id, employer_name, worker_name, passport_number, arc_number FROM "Workers"')
             workers = cursor.fetchall()
             
             worker_map = {}
+            fallback_map = {} # 新增：護照/居留證 防呆對應表
             for w in workers:
                 p_num = str(w['passport_number']).strip() if w['passport_number'] else ""
                 if p_num == 'None': p_num = "" 
+                
+                a_num = str(w['arc_number']).strip() if w['arc_number'] else ""
+                if a_num == 'None': a_num = ""
 
                 key = (
                     str(w['employer_name']).strip(),
@@ -1117,22 +1121,33 @@ def batch_import_external_fees(df: pd.DataFrame):
                     p_num
                 )
                 worker_map[key] = w['unique_id']
+                
+                # 將護照與居留證都加入防呆字典 (確保 B04 報表給哪一種都能認得出來)
+                if p_num:
+                    fallback_map[p_num] = w['unique_id']
+                if a_num:
+                    fallback_map[a_num] = w['unique_id']
 
             # 2. 遍歷 "加總後" 的資料進行匯入
             for _, row in df_aggregated.iterrows():
                 
-                # 準備比對 Key
-                passport_key = str(row['passport_number']).strip()
+                # 準備比對 Key (B04 報表上的第5欄可能是護照或居留證)
+                b04_id_key = str(row['passport_number']).strip()
                 key = (
                     str(row['employer_name']),
                     str(row['worker_name']),
-                    passport_key
+                    b04_id_key
                 )
                 
+                # 第一階段：精準匹配 (雇主+姓名+護照)
                 worker_id = worker_map.get(key)
                 
+                # 第二階段：防呆匹配 (只看證件號) - 解決換廠後 B04 報表上雇主名稱舊的問題
+                if not worker_id and b04_id_key:
+                    worker_id = fallback_map.get(b04_id_key)
+                
                 if not worker_id:
-                    p_display = passport_key if passport_key else "(無護照)"
+                    p_display = b04_id_key if b04_id_key else "(無證件號)"
                     errors.append(f"找不到員工: {row['employer_name']} - {row['worker_name']} - {p_display}")
                     skip_count += 1
                     continue
@@ -1168,6 +1183,181 @@ def batch_import_external_fees(df: pd.DataFrame):
         return 0, 0, [f"資料庫錯誤: {e}"]
     finally:
         if conn: conn.close()
+
+def _ensure_fee_target_standard_table(conn):
+    """目標價資料表需由資料庫管理者手動建立；app runtime 不執行 DDL。"""
+    return True
+
+def get_fee_target_standards(filters: dict = None, include_inactive: bool = True):
+    """取得「宿舍地址 + 雇主 + 費用項目」的目標收費基準。"""
+    filters = filters or {}
+    conn = database.get_db_connection()
+    if not conn:
+        return pd.DataFrame()
+
+    try:
+        _ensure_fee_target_standard_table(conn)
+        query = """
+            SELECT
+                fts.id,
+                fts.dorm_id,
+                d.legacy_dorm_code AS "宿舍編號",
+                d.original_address AS "宿舍地址",
+                fts.employer_name AS "雇主",
+                fts.fee_type AS "費用項目",
+                fts.target_amount AS "目標金額",
+                fts.active AS "啟用",
+                fts.notes AS "備註",
+                fts.updated_at AS "更新時間"
+            FROM "FeeTargetStandards" fts
+            JOIN "Dormitories" d ON fts.dorm_id = d.id
+            WHERE 1 = 1
+        """
+        params = []
+
+        dorm_ids = filters.get("dorm_ids")
+        employer_names = filters.get("employer_names")
+        if dorm_ids:
+            query += ' AND fts.dorm_id = ANY(%s)'
+            params.append(list(dorm_ids))
+        if employer_names:
+            query += ' AND (fts.employer_name = ANY(%s) OR fts.employer_name = %s)'
+            params.append(list(employer_names))
+            params.append("全部")
+        if not include_inactive:
+            query += ' AND fts.active = TRUE'
+
+        query += ' ORDER BY d.legacy_dorm_code NULLS LAST, d.original_address, fts.employer_name, fts.fee_type'
+        return _execute_query_to_dataframe(conn, query, tuple(params))
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"INFO: 無法讀取目標價資料表 FeeTargetStandards: {e}")
+        return pd.DataFrame()
+    finally:
+        if conn:
+            conn.close()
+
+
+def save_fee_target_standards(rows: list):
+    """儲存目標價列表。既有列依 id 更新，新列依宿舍/雇主/費用項目新增或覆蓋。"""
+    if not rows:
+        return True, "沒有需要儲存的目標價。"
+
+    def is_blank(value):
+        if value is None:
+            return True
+        if isinstance(value, float) and pd.isna(value):
+            return True
+        return str(value).strip() == ""
+
+    def as_bool(value):
+        if isinstance(value, bool):
+            return value
+        if is_blank(value):
+            return False
+        return str(value).strip().lower() in ["true", "1", "yes", "y", "啟用"]
+
+    normalized_rows = []
+    errors = []
+    seen_keys = set()
+
+    for index, row in enumerate(rows, start=1):
+        row_id = 0 if is_blank(row.get("id")) else safe_int(row.get("id"))
+        delete_row = as_bool(row.get("delete"))
+        dorm_id = 0 if is_blank(row.get("dorm_id")) else safe_int(row.get("dorm_id"))
+        employer_name = "全部" if is_blank(row.get("employer_name")) else str(row.get("employer_name")).strip()
+        fee_type = "總收租" if is_blank(row.get("fee_type")) else str(row.get("fee_type")).strip()
+        notes = "" if is_blank(row.get("notes")) else str(row.get("notes")).strip()
+
+        if delete_row and row_id:
+            normalized_rows.append({"id": row_id, "delete": True})
+            continue
+
+        if not row_id and not dorm_id and not employer_name and not fee_type and is_blank(row.get("target_amount")):
+            continue
+
+        if not dorm_id or not employer_name or not fee_type or is_blank(row.get("target_amount")):
+            errors.append(f"第 {index} 列缺少宿舍、雇主、費用項目或目標金額。")
+            continue
+
+        key = (dorm_id, employer_name, fee_type)
+        if key in seen_keys:
+            errors.append(f"第 {index} 列重複：同一宿舍、雇主與費用項目只能有一筆目標價。")
+            continue
+        seen_keys.add(key)
+
+        normalized_rows.append({
+            "id": row_id,
+            "delete": False,
+            "dorm_id": dorm_id,
+            "employer_name": employer_name,
+            "fee_type": fee_type,
+            "target_amount": safe_int(row.get("target_amount")),
+            "active": as_bool(row.get("active", True)),
+            "notes": notes,
+        })
+
+    if errors:
+        return False, "\n".join(errors)
+    if not normalized_rows:
+        return True, "沒有需要儲存的目標價。"
+
+    conn = database.get_db_connection()
+    if not conn:
+        return False, "無法連接到資料庫"
+
+    saved_count = 0
+    deleted_count = 0
+    try:
+        _ensure_fee_target_standard_table(conn)
+        with conn.cursor() as cursor:
+            for row in normalized_rows:
+                if row.get("delete"):
+                    cursor.execute('DELETE FROM "FeeTargetStandards" WHERE id = %s', (row["id"],))
+                    deleted_count += cursor.rowcount
+                    continue
+
+                if row["id"]:
+                    cursor.execute("""
+                        UPDATE "FeeTargetStandards"
+                        SET dorm_id = %s,
+                            employer_name = %s,
+                            fee_type = %s,
+                            target_amount = %s,
+                            active = %s,
+                            notes = %s,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = %s
+                    """, (
+                        row["dorm_id"], row["employer_name"], row["fee_type"],
+                        row["target_amount"], row["active"], row["notes"], row["id"]
+                    ))
+                else:
+                    cursor.execute("""
+                        INSERT INTO "FeeTargetStandards" (dorm_id, employer_name, fee_type, target_amount, active, notes)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (dorm_id, employer_name, fee_type)
+                        DO UPDATE SET
+                            target_amount = EXCLUDED.target_amount,
+                            active = EXCLUDED.active,
+                            notes = EXCLUDED.notes,
+                            updated_at = CURRENT_TIMESTAMP
+                    """, (
+                        row["dorm_id"], row["employer_name"], row["fee_type"],
+                        row["target_amount"], row["active"], row["notes"]
+                    ))
+                saved_count += 1
+
+        conn.commit()
+        return True, f"已儲存 {saved_count} 筆目標價，刪除 {deleted_count} 筆。"
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return False, f"儲存目標價時發生錯誤: {e}"
+    finally:
+        if conn:
+            conn.close()
 
 def get_dynamic_fee_data_for_dashboard(filters: dict):
     """
@@ -1206,6 +1396,8 @@ def get_dynamic_fee_data_for_dashboard(filters: dict):
                 WHERE TO_CHAR(fh.effective_date, 'YYYY-MM') = TO_CHAR(ldp.max_date, 'YYYY-MM')
             )
             SELECT
+                d.id AS "宿舍ID",
+                d.legacy_dorm_code AS "宿舍編號",
                 d.original_address AS "宿舍地址",
                 w.employer_name AS "雇主",
                 w.worker_name AS "姓名",

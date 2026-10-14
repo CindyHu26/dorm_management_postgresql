@@ -15,6 +15,14 @@ def _clean_numeric(value):
     return float(value)
 
 
+def _clean_postal_code(value):
+    """將 Excel 可能讀成浮點數的郵遞區號轉回純文字。"""
+    text = _clean_text(value)
+    if text and text.endswith(".0") and text[:-2].isdigit():
+        return text[:-2]
+    return text
+
+
 def get_all_workplaces():
     """
     獲取所有雇主工作地址清單
@@ -50,6 +58,7 @@ def get_workplace_editor_dataframe(search_term: str = None):
                 employer_id AS "雇主編號",
                 employer_name AS "雇主簡稱",
                 address AS "工作地址",
+                postal_code AS "郵遞區號",
                 latitude AS "緯度",
                 longitude AS "經度"
             FROM "EmployerWorkplaces"
@@ -63,10 +72,11 @@ def get_workplace_editor_dataframe(search_term: str = None):
                 AND (
                     employer_id ILIKE %s OR
                     employer_name ILIKE %s OR
-                    address ILIKE %s
+                    address ILIKE %s OR
+                    postal_code ILIKE %s
                 )
             """
-            params.extend([term, term, term])
+            params.extend([term, term, term, term])
 
         query += ' ORDER BY employer_id NULLS LAST, employer_name'
         with conn.cursor() as cursor:
@@ -76,7 +86,7 @@ def get_workplace_editor_dataframe(search_term: str = None):
         df = pd.DataFrame([dict(row) for row in records])
         if df.empty:
             return df
-        for col in ["雇主編號", "雇主簡稱", "工作地址"]:
+        for col in ["雇主編號", "雇主簡稱", "工作地址", "郵遞區號"]:
             if col in df.columns:
                 df[col] = df[col].fillna("")
         return df
@@ -105,6 +115,7 @@ def batch_update_workplaces(edited_df: pd.DataFrame):
                 employer_id = _clean_text(row.get("雇主編號"))
                 employer_name = _clean_text(row.get("雇主簡稱"))
                 address = _clean_text(row.get("工作地址"))
+                postal_code = _clean_postal_code(row.get("郵遞區號"))
                 latitude = _clean_numeric(row.get("緯度"))
                 longitude = _clean_numeric(row.get("經度"))
 
@@ -124,16 +135,17 @@ def batch_update_workplaces(edited_df: pd.DataFrame):
                 if pd.isna(workplace_id):
                     cursor.execute(
                         """
-                        INSERT INTO "EmployerWorkplaces" (employer_id, employer_name, latitude, longitude, address)
-                        VALUES (%s, %s, %s, %s, %s)
-                        ON CONFLICT (employer_name)
+                        INSERT INTO "EmployerWorkplaces"
+                            (employer_id, employer_name, latitude, longitude, address, postal_code)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (employer_name, address)
                         DO UPDATE SET
                             employer_id = EXCLUDED.employer_id,
                             latitude = EXCLUDED.latitude,
                             longitude = EXCLUDED.longitude,
-                            address = EXCLUDED.address
+                            postal_code = EXCLUDED.postal_code
                         """,
-                        (employer_id, employer_name, latitude, longitude, address)
+                        (employer_id, employer_name, latitude, longitude, address, postal_code)
                     )
                 else:
                     cursor.execute(
@@ -144,10 +156,11 @@ def batch_update_workplaces(edited_df: pd.DataFrame):
                             employer_name = %s,
                             latitude = %s,
                             longitude = %s,
-                            address = %s
+                            address = %s,
+                            postal_code = %s
                         WHERE id = %s
                         """,
-                        (employer_id, employer_name, latitude, longitude, address, int(workplace_id))
+                        (employer_id, employer_name, latitude, longitude, address, postal_code, int(workplace_id))
                     )
                 saved_count += 1
 
@@ -167,7 +180,7 @@ def batch_update_workplaces(edited_df: pd.DataFrame):
 def batch_import_workplaces(df: pd.DataFrame):
     """
     批次匯入或更新雇主工作地址
-    df 需包含：雇主編號, 雇主簡稱, 座標 (如: 120.317056,23.798813)
+    df 可包含：雇主編號, 雇主簡稱, 工作地址, 郵遞區號, 座標
     """
     if df.empty:
         return 0, pd.DataFrame()
@@ -186,6 +199,7 @@ def batch_import_workplaces(df: pd.DataFrame):
                     employer_id = str(row.get("雇主編號", "")).strip()
                     employer_name = str(row.get("雇主簡稱", "")).strip()
                     address = str(row.get("工作地址", "")).strip()
+                    postal_code = _clean_postal_code(row.get("郵遞區號"))
                     coord_str = str(row.get("座標", "")).strip()
 
                     if not employer_name:
@@ -210,21 +224,26 @@ def batch_import_workplaces(df: pd.DataFrame):
                             raise ValueError("座標格式不正確")
 
                     query = """
-                    INSERT INTO "EmployerWorkplaces" (employer_id, employer_name, latitude, longitude, address)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (employer_name)
+                    INSERT INTO "EmployerWorkplaces"
+                        (employer_id, employer_name, latitude, longitude, address, postal_code)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (employer_name, address)
                     DO UPDATE SET
                         employer_id = EXCLUDED.employer_id,
                         latitude = EXCLUDED.latitude,
                         longitude = EXCLUDED.longitude,
-                        address = EXCLUDED.address;
+                        postal_code = COALESCE(
+                            EXCLUDED.postal_code,
+                            "EmployerWorkplaces".postal_code
+                        );
                     """
                     cursor.execute(query, (
                         employer_id if employer_id and employer_id.lower() != 'nan' else None,
                         employer_name,
                         latitude,
                         longitude,
-                        address if address and address.lower() != 'nan' else None
+                        address if address and address.lower() != 'nan' else None,
+                        postal_code
                     ))
                     success_count += 1
 

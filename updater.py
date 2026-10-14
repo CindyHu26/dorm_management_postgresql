@@ -1,4 +1,4 @@
-﻿# updater.py (v2.38 簡化匹配版)
+# updater.py (v2.38 簡化匹配版)
 
 import pandas as pd
 from datetime import datetime, timedelta
@@ -68,6 +68,72 @@ def _normalize_sql_value(value):
 def _normalize_sql_record(record):
     return {key: _normalize_sql_value(value) for key, value in record.items()}
 
+
+def _clean_sync_text(value):
+    """將報表內的空值與多餘空白正規化，避免同一地址因排版差異重複建立。"""
+    value = _normalize_sql_value(value)
+    if value is None:
+        return None
+    text = " ".join(str(value).split()).strip()
+    return text or None
+
+
+def _sync_employer_workplaces(cursor, fresh_df: pd.DataFrame, log_callback: Callable[[str], None]):
+    """
+    從每日報表同步雇主的所有不重複地址。
+
+    同步工作地址的郵遞區號，不觸碰人工維護的經緯度。
+    """
+    address_columns = ('work_address', 'company_address', 'approval_address')
+    if 'employer_name' not in fresh_df.columns or not any(
+        column in fresh_df.columns for column in address_columns
+    ):
+        log_callback("INFO: 報表沒有雇主工作地點欄位，略過同步。")
+        return 0
+
+    workplaces = {}
+    for _, row in fresh_df.iterrows():
+        employer_name = _clean_sync_text(row.get('employer_name'))
+        employer_id = _clean_sync_text(row.get('employer_id'))
+        postal_code = _clean_sync_text(row.get('postal_code'))
+        if not employer_name:
+            continue
+
+        for address_column in address_columns:
+            address = _clean_sync_text(row.get(address_column))
+            if address:
+                key = (employer_name, address)
+                if key not in workplaces:
+                    workplaces[key] = {
+                        "employer_id": employer_id,
+                        "postal_code": postal_code if address_column == 'work_address' else None,
+                    }
+                else:
+                    if not workplaces[key]["employer_id"] and employer_id:
+                        workplaces[key]["employer_id"] = employer_id
+                    if (
+                        address_column == 'work_address'
+                        and not workplaces[key]["postal_code"]
+                        and postal_code
+                    ):
+                        workplaces[key]["postal_code"] = postal_code
+
+    for (employer_name, address), workplace in sorted(workplaces.items()):
+        cursor.execute(
+            """
+            INSERT INTO "EmployerWorkplaces" (employer_id, employer_name, address, postal_code)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (employer_name, address)
+            DO UPDATE SET
+                employer_id = COALESCE(EXCLUDED.employer_id, "EmployerWorkplaces".employer_id),
+                postal_code = COALESCE(EXCLUDED.postal_code, "EmployerWorkplaces".postal_code)
+            """,
+            (workplace["employer_id"], employer_name, address, workplace["postal_code"]),
+        )
+
+    log_callback(f"INFO: 已同步 {len(workplaces)} 筆雇主工作地點（已去重，保留既有座標）。")
+    return len(workplaces)
+
 def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], None]):
     """
     【v2.41 換宿日誌增強版】
@@ -87,6 +153,9 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
         
     try:
         with conn.cursor() as cursor:
+            log_callback("INFO: 同步雇主編號與工作地點...")
+            _sync_employer_workplaces(cursor, fresh_df, log_callback)
+
             # --- 步驟 1: 同步宿舍與地址映射 (邏輯不變) ---
             log_callback("INFO: 步驟 1/5 - 同步宿舍地址...")
             db_dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, normalized_address, original_address FROM "Dormitories"')
@@ -247,12 +316,17 @@ def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], Non
 
                     # --- 確認匹配結果 ---
                     if matched_id:
-                        # 再次檢查雇主是否相同 (防呆)
+                        # 檢查雇主是否相同 (防呆)
                         db_employer = str(worker_info_cache[matched_id].get('employer_name', '')).strip()
-                        if db_employer == fresh_employer:
+
+                        # 如果是 ARC 或 Passport 匹配，我們允許雇主不同 (視為換廠/換雇主)
+                        if db_employer == fresh_employer or match_reason in ["ARC匹配", "Passport匹配"]:
                             worker_id = matched_id 
                             is_worker_matched = True
-                            if match_reason not in ["ARC匹配", "Passport匹配"]: # 減少日誌雜訊
+
+                            if db_employer != fresh_employer:
+                                log_callback(f"INFO: [{match_reason}] 偵測到雇主變更 ({db_employer} -> {fresh_employer})，關聯舊資料 ID: {matched_id}。")
+                            elif match_reason not in ["ARC匹配", "Passport匹配"]: # 減少日誌雜訊
                                 log_callback(f"INFO: [{match_reason}] 關聯舊資料 ID: {matched_id}。")
                         else:
                             matched_id = None 

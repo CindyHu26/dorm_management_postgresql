@@ -1,8 +1,10 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
-from data_models import importer_model, employer_workplace_model
+from data_models import importer_model, employer_workplace_model, finance_model, dormitory_model
 from datetime import date
+
+ALL_EMPLOYERS_TARGET = "全部"
 
 def to_excel(df):
     """將 DataFrame 轉換為可供下載的 Excel 檔案。"""
@@ -12,8 +14,134 @@ def to_excel(df):
     processed_data = output.getvalue()
     return processed_data
 
+def render_fee_target_standard_import():
+    """渲染總收租目標價批次匯入區塊。"""
+    with st.container(border=True):
+        st.subheader("🎯 單人總收租目標價匯入")
+        st.info(
+            """
+            用於匯入「宿舍地址 + 雇主」對應的單人目標總收租金額（每人各項費用加總）。
+            - **更新方式**：系統會以「宿舍地址 + 雇主 + 目標類型(總收租)」判斷是否同一筆；已存在會覆蓋目標金額，不會刪除未出現在 Excel 的資料。
+            - **不分雇主**：雇主欄位留空或填「全部」，代表該地址所有雇主共用同一個單人總收租目標。
+            - **地址對應**：宿舍地址需與系統宿舍原始地址完全一致。
+            """
+        )
+
+        template_df = pd.DataFrame({
+            "宿舍地址": ["範例：彰化縣鹿港鎮中山路100號", "範例：彰化縣鹿港鎮中山路100號"],
+            "雇主": ["全部", "範例：ABC公司"],
+            "目標總收租": [6500, 6000],
+            "啟用": [True, True],
+            "備註": ["整個地址共用的單人總額", "指定雇主的單人總額"]
+        })
+        st.download_button(
+            label="📥 下載單人總收租目標價匯入範本",
+            data=to_excel(template_df),
+            file_name="fee_target_standard_import_template.xlsx",
+            key="fee_target_standard_template_download"
+        )
+
+        uploaded_target_file = st.file_uploader("上傳【單人總收租目標價】Excel 檔案", type=["xlsx"], key="fee_target_standard_uploader")
+        if not uploaded_target_file:
+            return
+
+        try:
+            df_target = pd.read_excel(uploaded_target_file)
+            st.markdown("##### 檔案內容預覽：")
+            st.dataframe(df_target.head())
+
+            if not st.button("🚀 開始匯入單人總收租目標價", type="primary", key="fee_target_standard_import_btn"):
+                return
+
+            required_cols = ["宿舍地址", "雇主", "目標總收租"]
+            missing_cols = [col for col in required_cols if col not in df_target.columns]
+            if missing_cols:
+                st.error(f"缺少必要欄位：{', '.join(missing_cols)}")
+                return
+
+            dorms = dormitory_model.get_dorms_for_selection()
+            dorm_id_by_address = {
+                str(d.get('original_address', '')).strip(): d['id']
+                for d in dorms
+                if d.get('original_address')
+            }
+
+            rows_to_save = []
+            failed_rows = []
+            seen_target_keys = set()
+            for index, row in df_target.iterrows():
+                row_no = index + 2
+                address = str(row.get("宿舍地址", "")).strip()
+                employer_raw = row.get("雇主", "")
+                employer = "" if pd.isna(employer_raw) else str(employer_raw).strip()
+                if not employer:
+                    employer = ALL_EMPLOYERS_TARGET
+                amount_raw = row.get("目標總收租")
+                active_raw = row.get("啟用", True)
+                notes = "" if pd.isna(row.get("備註", "")) else str(row.get("備註", "")).strip()
+
+                if not address or address.startswith("範例："):
+                    failed_rows.append({**row.to_dict(), "失敗原因": f"第 {row_no} 列宿舍地址空白或仍為範例文字"})
+                    continue
+                if employer.startswith("範例："):
+                    failed_rows.append({**row.to_dict(), "失敗原因": f"第 {row_no} 列雇主仍為範例文字"})
+                    continue
+                if address not in dorm_id_by_address:
+                    failed_rows.append({**row.to_dict(), "失敗原因": f"找不到宿舍地址：{address}"})
+                    continue
+
+                target_key = (address, employer, "總收租")
+                if target_key in seen_target_keys:
+                    failed_rows.append({**row.to_dict(), "失敗原因": f"第 {row_no} 列與同一份 Excel 內前面資料重複：{address} / {employer} / 總收租"})
+                    continue
+                seen_target_keys.add(target_key)
+
+                try:
+                    amount = int(float(amount_raw))
+                except Exception:
+                    failed_rows.append({**row.to_dict(), "失敗原因": f"第 {row_no} 列目標總收租不是數字"})
+                    continue
+
+                if isinstance(active_raw, bool):
+                    active = active_raw
+                else:
+                    active = str(active_raw).strip().lower() not in ["false", "0", "n", "no", "否", "停用"]
+
+                rows_to_save.append({
+                    "dorm_id": dorm_id_by_address[address],
+                    "employer_name": employer,
+                    "fee_type": "總收租",
+                    "target_amount": amount,
+                    "active": active,
+                    "notes": notes,
+                })
+
+            if rows_to_save:
+                success, message = finance_model.save_fee_target_standards(rows_to_save)
+                if success:
+                    st.success(f"匯入完成！成功處理 {len(rows_to_save)} 筆目標價。")
+                else:
+                    st.error(message)
+                    failed_rows.extend([{**row, "失敗原因": message} for row in rows_to_save])
+
+            failed_df = pd.DataFrame(failed_rows)
+            if not failed_df.empty:
+                st.error(f"有 {len(failed_df)} 筆資料匯入失敗：")
+                st.dataframe(failed_df)
+                st.download_button(
+                    label="📥 下載失敗紀錄報告",
+                    data=to_excel(failed_df),
+                    file_name="fee_target_standard_import_failed_report.xlsx",
+                    key="failed_fee_target_standard_download"
+                )
+        except Exception as e:
+            st.error(f"處理檔案時發生錯誤：{e}")
 def render():
     """渲染「批次匯入」頁面"""
+    st.markdown("---")
+
+    render_fee_target_standard_import()
+
     st.markdown("---")
 
     # --- 區塊一：變動費用匯入 ---
@@ -763,7 +891,7 @@ def render():
         st.info(
             """
             用於批次新增或更新雇主工作地址，提供地圖找房時的中心點選項。
-            - **更新方式**：系統會以「雇主簡稱」為基準，若已存在則會**覆蓋**。
+            - **更新方式**：系統會以「雇主簡稱 + 工作地址」判斷同一地點，已存在的資料會更新。
             """
         )
 
@@ -771,6 +899,7 @@ def render():
             "雇主編號": ["EMP001"],
             "雇主簡稱": ["OO科技"],
             "工作地址": ["台北市信義區信義路五段7號"],
+            "郵遞區號": ["110615"],
             "座標": ["120.317056,23.798813"],
         })
         st.download_button(
