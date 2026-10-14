@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 ﻿import concurrent.futures
+=======
+import concurrent.futures
+>>>>>>> 81b83f58349da59515de6f1ba6047c44206b871e
 import os
 import shutil
 import string

@@ -5,7 +5,11 @@ import json
 import math
 from datetime import date
 
+<<<<<<< HEAD
 from data_models import dormitory_model, placement_model, employer_workplace_model
+=======
+from data_models import dormitory_model, placement_model
+>>>>>>> 81b83f58349da59515de6f1ba6047c44206b871e
 
 
 @st.cache_data
@@ -93,7 +97,10 @@ def _render_leaflet_map(map_df: pd.DataFrame, center_info=None):
     for row in map_records:
         vacancy_count = int(row.get("總空床位數", 0))
         total_beds = int(row.get("總床位數", 0))
+<<<<<<< HEAD
         current_occupants = int(row.get("目前入住數", 0))
+=======
+>>>>>>> 81b83f58349da59515de6f1ba6047c44206b871e
         marker_color = "#2f9e44" if vacancy_count > 0 else "#c92a2a"
         dorm_name = str(row.get("宿舍名稱", "")).strip()
         address = str(row.get("顯示地址", ""))
@@ -106,10 +113,16 @@ def _render_leaflet_map(map_df: pd.DataFrame, center_info=None):
             "room_count": int(row.get("可入住房間數", 0)),
             "vacancy_count": int(row.get("總空床位數", 0)),
             "total_beds": total_beds,
+<<<<<<< HEAD
             "current_occupants": current_occupants,
             "latitude": float(row.get("latitude")),
             "longitude": float(row.get("longitude")),
             "label": f"{label_prefix}{address} ({current_occupants}人/{vacancy_count}床空)",
+=======
+            "latitude": float(row.get("latitude")),
+            "longitude": float(row.get("longitude")),
+            "label": f"{label_prefix}{address} ({total_beds}床/{vacancy_count}床空)",
+>>>>>>> 81b83f58349da59515de6f1ba6047c44206b871e
             "marker_color": marker_color,
         })
 
@@ -197,7 +210,10 @@ def _render_leaflet_map(map_df: pd.DataFrame, center_info=None):
             <div style="font-weight:700;">${{point.dorm_name ? point.dorm_name + '/' : ''}}${{point.address}}</div>
             <div>${{point.city}} ${{point.district}}</div>
             <div>總床位數: ${{point.total_beds}}</div>
+<<<<<<< HEAD
             <div>目前入住數: ${{point.current_occupants}}</div>
+=======
+>>>>>>> 81b83f58349da59515de6f1ba6047c44206b871e
             <div>可入住房間數: ${{point.room_count}}</div>
             <div>總空床位數: ${{point.vacancy_count}}</div>
           </div>
@@ -248,6 +264,7 @@ def render():
         )
 
     with st.expander("中心點範圍查詢", expanded=False):
+<<<<<<< HEAD
         workplaces = employer_workplace_model.get_all_workplaces()
         workplace_by_id = {wp["id"]: wp for wp in workplaces if wp.get("latitude") and wp.get("longitude")}
         workplace_options = [None] + list(workplace_by_id.keys())
@@ -277,6 +294,10 @@ def render():
         rc1, rc2 = st.columns([3, 1])
         # 使用 session_state 來動態更新輸入框的預設值
         center_coord_raw = rc1.text_input("中心座標 (lat,lng 或 lng,lat)", value=default_coord, placeholder="例如：25.0479240,121.5170810")
+=======
+        rc1, rc2 = st.columns([3, 1])
+        center_coord_raw = rc1.text_input("中心座標", placeholder="例如：25.0479240,121.5170810")
+>>>>>>> 81b83f58349da59515de6f1ba6047c44206b871e
         radius_km = rc2.number_input("半徑公里", min_value=1.0, max_value=50.0, value=5.0, step=1.0)
 
     if st.button("搜尋地圖找房", type="primary"):
@@ -287,6 +308,7 @@ def render():
                 "cities": selected_cities,
                 "districts": selected_districts
             }
+<<<<<<< HEAD
             st.session_state["map_search_results_df"] = placement_model.find_available_rooms(filters)
             st.session_state["map_search_summary_df"] = placement_model.get_dorm_vacancy_summary(filters)
             st.session_state["map_search_query_date"] = query_date
@@ -431,7 +453,114 @@ def render():
         room_sort_asc = [True if c != "空床位數" else False for c in room_sort_cols]
         st.dataframe(
             results_df.sort_values(by=room_sort_cols, ascending=room_sort_asc)[room_display_cols],
+=======
+            results_df = placement_model.find_available_rooms(filters)
+            summary_df = placement_model.get_dorm_vacancy_summary(filters)
+
+        st.subheader(f"查詢結果 ({query_date})")
+        if summary_df.empty:
+            st.warning("找不到符合條件的宿舍資料。")
+            return
+
+        vacancy_filter = st.radio(
+            "宿舍顯示篩選",
+            ["全部", "有空床位", "無空床位"],
+            horizontal=True
+        )
+
+        if vacancy_filter == "有空床位":
+            summary_df = summary_df[summary_df["總空床位數"] > 0].copy()
+        elif vacancy_filter == "無空床位":
+            summary_df = summary_df[summary_df["總空床位數"] <= 0].copy()
+
+        if summary_df.empty:
+            st.warning("目前篩選條件下沒有符合的宿舍。")
+            return
+
+        summary_with_coords_df = summary_df.dropna(subset=["緯度", "經度"]).copy()
+        map_df = summary_with_coords_df.copy()
+        if not map_df.empty:
+            map_df["顯示地址"] = map_df["地圖顯示地址"].fillna("").replace("", pd.NA).fillna(map_df["宿舍地址"])
+            map_df["latitude"] = map_df["緯度"].astype(float)
+            map_df["longitude"] = map_df["經度"].astype(float)
+            map_df = map_df.fillna("")
+
+        center_info = None
+        center_lat = None
+        center_lng = None
+        if center_coord_raw:
+            try:
+                center_lat, center_lng = _parse_coordinate_pair(center_coord_raw)
+            except ValueError:
+                st.error("中心點座標格式不正確，請輸入 `lat,lng` 或 `lng,lat`。")
+                return
+
+        if center_lat is not None and center_lng is not None and not map_df.empty:
+            center_info = {
+                "label": "查詢中心點",
+                "latitude": float(center_lat),
+                "longitude": float(center_lng),
+                "radius_km": float(radius_km),
+            }
+            map_df["距離公里"] = map_df.apply(
+                lambda row: _calculate_distance_km(center_info["latitude"], center_info["longitude"], row["latitude"], row["longitude"]),
+                axis=1
+            )
+            summary_df = summary_df.merge(
+                map_df[["dorm_id", "距離公里"]],
+                on="dorm_id",
+                how="left"
+            )
+            map_df = map_df[map_df["距離公里"] <= float(radius_km)].copy()
+            summary_df = summary_df[summary_df["距離公里"].notna() & (summary_df["距離公里"] <= float(radius_km))].copy()
+            if not results_df.empty:
+                valid_dorm_ids = summary_df["dorm_id"].tolist()
+                results_df = results_df[results_df["dorm_id"].isin(valid_dorm_ids)].copy()
+
+        st.markdown("##### 宿舍地圖")
+        if map_df.empty:
+            if center_info and not summary_with_coords_df.empty:
+                st.warning(f"查無 {float(radius_km):.0f} 公里內的宿舍，請放大搜尋半徑或調整中心座標。")
+            else:
+                st.warning("目前查詢結果沒有可顯示的座標資料，請先到「地圖座標維護」補上經緯度。")
+        else:
+            _render_leaflet_map(map_df, center_info=center_info)
+
+        st.markdown("##### 宿舍列表")
+        if vacancy_filter == "無空床位":
+            display_cols = ["宿舍名稱", "宿舍地址", "縣市", "區域", "房間數", "總床位數", "目前入住數", "總空床位數"]
+            if "距離公里" in summary_df.columns:
+                display_cols.append("距離公里")
+            display_df = summary_df[display_cols].sort_values(
+                by=["縣市", "區域", "宿舍地址"], ascending=[True, True, True]
+            )
+        else:
+            display_cols = ["宿舍名稱", "宿舍地址", "縣市", "區域", "可入住房間數", "總空床位數", "全部空床位數", "總床位數", "目前入住數"]
+            if "距離公里" in summary_df.columns:
+                display_cols.append("距離公里")
+            display_df = summary_df[display_cols].sort_values(
+                by=["總空床位數", "可入住房間數"], ascending=[False, False]
+            )
+        st.dataframe(
+            display_df,
+>>>>>>> 81b83f58349da59515de6f1ba6047c44206b871e
             width="stretch",
             hide_index=True
         )
 
+<<<<<<< HEAD
+=======
+        metric_c1, metric_c2, metric_c3 = st.columns(3)
+        metric_c1.metric("宿舍數", len(summary_df))
+        metric_c2.metric("可入住房間數", int(summary_df["可入住房間數"].sum()))
+        metric_c3.metric("總空床位數", int(summary_df["總空床位數"].sum()))
+
+        if not results_df.empty and vacancy_filter != "無空床位":
+            st.markdown("##### 可入住房間明細")
+            room_display_cols = ["宿舍地址", "縣市", "區域", "房號", "空床位數", "房間性別政策", "房內現住人員", "房間備註"]
+            st.dataframe(
+                results_df[room_display_cols].sort_values(by=["縣市", "區域", "空床位數"], ascending=[True, True, False]),
+                width="stretch",
+                hide_index=True
+            )
+>>>>>>> 81b83f58349da59515de6f1ba6047c44206b871e

@@ -300,7 +300,7 @@ def _render_full_edit_form(selected_log_id, dorm_options, vendor_options, item_t
         ec9, ec10, ec11, ec12 = st.columns(4)
         e_cost = ec9.number_input("維修費用", min_value=0, step=100, value=details.get('cost') or 0)
         
-        payer_opts = ["", "我司", "工人", "雇主", "房東"]
+        payer_opts = ["", "我司", "工人", "雇主", "廠商", "房東"]
         payer_idx = payer_opts.index(details.get('payer')) if details.get('payer') in payer_opts else 0
         e_payer = ec10.selectbox("付款人", payer_opts, index=payer_idx)
         e_invoice_date = ec11.date_input("請款日期", value=details.get('invoice_date'))
@@ -455,7 +455,7 @@ def render_add_new_record(dorm_options, vendor_options, item_type_options, statu
     # 【新增】聯繫廠商日期
     with c8: new_contact_date = st.date_input("聯繫廠商日期", value=None, key="add_m_contact_date")
     
-    with c9: new_payer = st.selectbox("付款人", ["", "我司", "工人", "雇主"], key="add_m_payer")
+    with c9: new_payer = st.selectbox("付款人", ["", "我司", "工人", "雇主", "廠商"], key="add_m_payer")
     with c10: new_finish_date = st.date_input("完成日期", value=None, key="add_m_finish")
     with c11: 
         st.write(""); st.write("")
