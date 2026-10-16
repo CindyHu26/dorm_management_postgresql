@@ -21,7 +21,6 @@ def _execute_query_to_dataframe(conn, query, params=None):
 
 def _parse_date_or_none(raw_value):
     """將報表中的日期安全轉為 Python date；NaN/NaT/空字串 一律回傳 None。"""
-<<<<<<< HEAD
     import math
     if raw_value is None:
         return None
@@ -32,10 +31,6 @@ def _parse_date_or_none(raw_value):
             return None
     except (TypeError, ValueError):
         pass
-=======
-    if pd.isna(raw_value):
-        return None
->>>>>>> 81b83f58349da59515de6f1ba6047c44206b871e
 
     if hasattr(raw_value, "date") and not isinstance(raw_value, str):
         try:
@@ -44,11 +39,7 @@ def _parse_date_or_none(raw_value):
             pass
 
     raw_text = str(raw_value).strip()
-<<<<<<< HEAD
     if not raw_text or raw_text.lower() == 'nan':
-=======
-    if not raw_text:
->>>>>>> 81b83f58349da59515de6f1ba6047c44206b871e
         return None
 
     parsed = pd.to_datetime(raw_text, errors='coerce')
@@ -76,8 +67,6 @@ def _normalize_sql_value(value):
 
 def _normalize_sql_record(record):
     return {key: _normalize_sql_value(value) for key, value in record.items()}
-
-<<<<<<< HEAD
 
 def _clean_sync_text(value):
     """將報表內的空值與多餘空白正規化，避免同一地址因排版差異重複建立。"""
@@ -144,8 +133,6 @@ def _sync_employer_workplaces(cursor, fresh_df: pd.DataFrame, log_callback: Call
     log_callback(f"INFO: 已同步 {len(workplaces)} 筆雇主工作地點（已去重，保留既有座標）。")
     return len(workplaces)
 
-=======
->>>>>>> 81b83f58349da59515de6f1ba6047c44206b871e
 def run_update_process(fresh_df: pd.DataFrame, log_callback: Callable[[str], None]):
     """
     【v2.41 換宿日誌增強版】

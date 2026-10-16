@@ -380,6 +380,7 @@ def create_all_tables_and_indexes():
             CREATE TABLE IF NOT EXISTS "MaintenanceLog" (
                 "id" SERIAL PRIMARY KEY,
                 "dorm_id" INTEGER NOT NULL,
+                "room_id" INTEGER,
                 "vendor_id" INTEGER,
                 "equipment_id" INTEGER, -- 新增：關聯到特定設備
                 "status" VARCHAR(50) NOT NULL DEFAULT '待處理',
@@ -398,6 +399,7 @@ def create_all_tables_and_indexes():
                 "notes" TEXT,
                 "photo_paths" TEXT[],
                 FOREIGN KEY ("dorm_id") REFERENCES "Dormitories" ("id") ON DELETE CASCADE,
+                FOREIGN KEY ("room_id") REFERENCES "Rooms" ("id") ON DELETE SET NULL,
                 FOREIGN KEY ("vendor_id") REFERENCES "Vendors" ("id") ON DELETE SET NULL,
                 FOREIGN KEY ("equipment_id") REFERENCES "DormitoryEquipment" ("id") ON DELETE SET NULL -- 新增外鍵關聯
             );
@@ -657,6 +659,17 @@ def create_all_tables_and_indexes():
                 "ADD COLUMN IF NOT EXISTS planned_sequence INTEGER "
                 "CHECK (planned_sequence IS NULL OR planned_sequence > 0)"
             )
+            cursor.execute(
+                'ALTER TABLE "MaintenanceLog" '
+                'ADD COLUMN IF NOT EXISTS "room_id" INTEGER'
+            )
+            cursor.execute(
+                'DO $$ BEGIN '
+                'ALTER TABLE "MaintenanceLog" '
+                'ADD CONSTRAINT "MaintenanceLog_room_id_fkey" '
+                'FOREIGN KEY ("room_id") REFERENCES "Rooms" ("id") ON DELETE SET NULL; '
+                'EXCEPTION WHEN duplicate_object THEN NULL; END $$;'
+            )
 
             INDEXES = [
                 'CREATE INDEX IF NOT EXISTS idx_dorms_normalized_address ON "Dormitories" ("normalized_address");',
@@ -664,6 +677,7 @@ def create_all_tables_and_indexes():
                 'CREATE INDEX IF NOT EXISTS idx_workers_employer_name ON "Workers" ("employer_name");',
                 'CREATE INDEX IF NOT EXISTS idx_employer_workplaces_employer_id ON "EmployerWorkplaces" ("employer_id");',
                 'CREATE INDEX IF NOT EXISTS idx_rooms_dorm_id ON "Rooms" ("dorm_id");',
+                'CREATE INDEX IF NOT EXISTS idx_maintenance_room_id ON "MaintenanceLog" ("room_id");',
                 'CREATE INDEX IF NOT EXISTS idx_workers_room_id ON "Workers" ("room_id");',
                 'CREATE INDEX IF NOT EXISTS idx_feehistory_worker_id ON "FeeHistory" ("worker_unique_id");',
                 'CREATE INDEX IF NOT EXISTS idx_statushistory_worker_id ON "WorkerStatusHistory" ("worker_unique_id");',

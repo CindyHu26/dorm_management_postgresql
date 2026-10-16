@@ -296,19 +296,29 @@ def render():
                 selected_log_id = st.selectbox("選擇一筆紀錄進行操作，或新增一筆：", [None] + list(log_options.keys()), format_func=lambda x: "➕ 新增一筆紀錄" if x is None else f"✏️ 編輯 {log_options[x]}", key="maintenance_log_selector")
                 if selected_log_id:
                     log_details = maintenance_model.get_single_log_details(selected_log_id)
+                    rooms_df = maintenance_model.get_rooms_for_selector(log_details.get('dorm_id'))
+                    room_options = {row['id']: row['room_number'] for _, row in rooms_df.iterrows()} if not rooms_df.empty else {}
                     with st.form(f"edit_maintenance_log_{selected_log_id}"):
                         st.markdown(f"###### 正在編輯 ID: {selected_log_id}")
                         emc1, emc2, emc3 = st.columns(3)
                         e_ml_date = emc1.date_input("通報/完成日期", value=log_details.get('notification_date'))
                         e_ml_type = emc2.selectbox("項目類型", ["定期保養", "更換耗材", "維修"], index=["定期保養", "更換耗材", "維修"].index(log_details.get('item_type')) if log_details.get('item_type') in ["定期保養", "更換耗材", "維修"] else 0)
                         e_ml_status = emc3.selectbox("狀態", ["待處理", "進行中", "已完成"], index=["待處理", "進行中", "已完成"].index(log_details.get('status')) if log_details.get('status') in ["待處理", "進行中", "已完成"] else 2)
+                        room_keys = [None] + list(room_options.keys())
+                        current_room_id = log_details.get('room_id')
+                        e_ml_room_id = st.selectbox(
+                            "房號 (選填)",
+                            options=room_keys,
+                            format_func=lambda x: "公共區域/未指定" if x is None else room_options.get(x, "未知房號"),
+                            index=room_keys.index(current_room_id) if current_room_id in room_keys else 0,
+                        )
                         e_ml_desc = st.text_input("細項說明", value=log_details.get('description'))
                         emc4, emc5 = st.columns(2)
                         e_ml_cost = emc4.number_input("費用", min_value=0, value=log_details.get('cost') or 0)
                         e_ml_vendor = emc5.selectbox("執行廠商", options=[None] + list(vendor_options.keys()), format_func=lambda x: "未指定" if x is None else vendor_options.get(x), index=([None] + list(vendor_options.keys())).index(log_details.get('vendor_id')) if log_details.get('vendor_id') in [None] + list(vendor_options.keys()) else 0)
                         col_edit, col_delete = st.columns(2)
                         if col_edit.form_submit_button("儲存變更"):
-                            update_data = {"notification_date": e_ml_date, "completion_date": e_ml_date, "item_type": e_ml_type, "status": e_ml_status, "description": e_ml_desc, "cost": e_ml_cost, "vendor_id": e_ml_vendor}
+                            update_data = {"room_id": e_ml_room_id, "notification_date": e_ml_date, "completion_date": e_ml_date, "item_type": e_ml_type, "status": e_ml_status, "description": e_ml_desc, "cost": e_ml_cost, "vendor_id": e_ml_vendor}
                             success, message = maintenance_model.update_log(selected_log_id, update_data)
                             if success: st.success(message); st.cache_data.clear(); st.rerun()
                             else: st.error(message)
@@ -320,9 +330,16 @@ def render():
                     with st.form(f"add_maintenance_log_{selected_id}", clear_on_submit=True):
                         st.markdown("###### 正在新增一筆紀錄")
                         details = equipment_model.get_single_equipment_details(selected_id)
+                        rooms_df = maintenance_model.get_rooms_for_selector(details.get('dorm_id'))
+                        room_options = {row['id']: row['room_number'] for _, row in rooms_df.iterrows()} if not rooms_df.empty else {}
                         amc1, amc2, amc3 = st.columns(3)
                         a_ml_date = amc1.date_input("通報/完成日期", value=date.today())
                         a_ml_type = amc2.selectbox("項目類型", ["定期保養", "更換耗材", "維修"])
+                        a_ml_room_id = amc3.selectbox(
+                            "房號 (選填)",
+                            options=[None] + list(room_options.keys()),
+                            format_func=lambda x: "公共區域/未指定" if x is None else room_options.get(x, "未知房號"),
+                        )
                         a_ml_desc = st.text_input("細項說明", placeholder="例如: 更換RO膜濾心")
                         amc4, amc5 = st.columns(2)
                         a_ml_cost = amc4.number_input("費用", min_value=0, step=100)
@@ -330,7 +347,7 @@ def render():
                         if st.form_submit_button("新增紀錄"):
                             if not a_ml_desc: st.error("請填寫「細項說明」！")
                             else:
-                                log_details = { 'dorm_id': details['dorm_id'], 'equipment_id': selected_id, 'notification_date': a_ml_date, 'completion_date': a_ml_date, 'item_type': a_ml_type, 'description': a_ml_desc, 'cost': a_ml_cost if a_ml_cost > 0 else None, 'vendor_id': a_ml_vendor, 'status': '已完成' }
+                                log_details = { 'dorm_id': details['dorm_id'], 'room_id': a_ml_room_id, 'equipment_id': selected_id, 'notification_date': a_ml_date, 'completion_date': a_ml_date, 'item_type': a_ml_type, 'description': a_ml_desc, 'cost': a_ml_cost if a_ml_cost > 0 else None, 'vendor_id': a_ml_vendor, 'status': '已完成' }
                                 success, message = maintenance_model.add_log(log_details)
                                 if success: st.success(message); st.cache_data.clear(); st.rerun()
                                 else: st.error(message)

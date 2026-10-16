@@ -208,10 +208,7 @@ def get_dorm_vacancy_summary(filters: dict):
             return pd.DataFrame()
 
         target_room_ids = rooms_df['room_id'].tolist()
-<<<<<<< HEAD
         # 查詢有效房間的住宿狀況（用於計算空床、性別等）
-=======
->>>>>>> 81b83f58349da59515de6f1ba6047c44206b871e
         workers_query = """
             SELECT
                 ah.room_id,
@@ -258,7 +255,6 @@ def get_dorm_vacancy_summary(filters: dict):
         rooms_df['suitable_vacancies'] = rooms_df.apply(calculate_suitable_vacancies, axis=1)
         rooms_df['suitable_room_count'] = rooms_df['suitable_vacancies'].apply(lambda x: 1 if x > 0 else 0)
 
-<<<<<<< HEAD
         # ── 以 dorm_id 為單位重新計算「目前入住數」──────────────────────────────
         # 涵蓋所有在該宿舍的人（含掛在「未分配房間」者），排除掛宿外住
         # 「在住」判斷：AccommodationHistory 日期範圍有效，且 Workers.accommodation_end_date
@@ -285,8 +281,6 @@ def get_dorm_vacancy_summary(filters: dict):
         )
         # ────────────────────────────────────────────────────────────────────────
 
-=======
->>>>>>> 81b83f58349da59515de6f1ba6047c44206b871e
         summary_df = (
             rooms_df.groupby(
                 ['dorm_id', 'original_address', 'dorm_name', 'map_display_address', 'map_latitude', 'map_longitude', 'city', 'district'],
@@ -303,7 +297,6 @@ def get_dorm_vacancy_summary(filters: dict):
             .reset_index()
         )
 
-<<<<<<< HEAD
         # 用 dorm_id 級別的實際人數覆蓋原本按 room 加總的 current_occupants
         if not dorm_occupancy_df.empty:
             dorm_occupancy_df['dorm_id'] = dorm_occupancy_df['dorm_id'].astype(summary_df['dorm_id'].dtype)
@@ -323,8 +316,6 @@ def get_dorm_vacancy_summary(filters: dict):
         summary_df.loc[summary_df['suitable_vacancies'] == 0, 'suitable_room_count'] = 0
         # ────────────────────────────────────────────────────────────────────────
 
-=======
->>>>>>> 81b83f58349da59515de6f1ba6047c44206b871e
         summary_df.rename(columns={
             'original_address': '宿舍地址',
             'dorm_name': '宿舍名稱',

@@ -183,6 +183,7 @@ def get_related_maintenance_logs(equipment_id: int):
         query = """
             SELECT 
                 l.id,
+                r.room_number AS "房號",
                 l.notification_date AS "通報日期",
                 l.item_type AS "項目類型",
                 l.description AS "細項說明",
@@ -191,6 +192,7 @@ def get_related_maintenance_logs(equipment_id: int):
                 v.vendor_name AS "廠商",
                 l.completion_date AS "完成日期"
             FROM "MaintenanceLog" l
+            LEFT JOIN "Rooms" r ON l.room_id = r.id
             LEFT JOIN "Vendors" v ON l.vendor_id = v.id
             WHERE l.equipment_id = %s
             ORDER BY l.notification_date DESC

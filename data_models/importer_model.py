@@ -1244,6 +1244,8 @@ def batch_insert_maintenance_logs(df: pd.DataFrame):
             dorms_df = _execute_query_to_dataframe(conn, 'SELECT id, original_address, normalized_address FROM "Dormitories"')
             original_addr_map = {d['original_address']: d['id'] for _, d in dorms_df.iterrows()}
             normalized_addr_map = {d['normalized_address']: d['id'] for _, d in dorms_df.iterrows()}
+            rooms_df = _execute_query_to_dataframe(conn, 'SELECT id, dorm_id, room_number FROM "Rooms"')
+            room_map = {(r['dorm_id'], str(r['room_number']).strip()): r['id'] for _, r in rooms_df.iterrows()}
             
             vendors_df = _execute_query_to_dataframe(conn, 'SELECT id, vendor_name FROM "Vendors"')
             vendor_map = {v['vendor_name']: v['id'] for _, v in vendors_df.iterrows()}
@@ -1258,6 +1260,14 @@ def batch_insert_maintenance_logs(df: pd.DataFrame):
                     if not dorm_id:
                         raise ValueError(f"找不到宿舍地址: '{addr_stripped}'")
 
+                    room_id = None
+                    room_number = row.get('房號')
+                    if pd.notna(room_number) and str(room_number).strip():
+                        room_number = str(room_number).strip()
+                        room_id = room_map.get((dorm_id, room_number))
+                        if not room_id:
+                            raise ValueError(f"宿舍內找不到房號: '{room_number}'")
+
                     vendor_id = None
                     vendor_name = row.get('維修廠商')
                     if pd.notna(vendor_name) and str(vendor_name).strip():
@@ -1265,6 +1275,7 @@ def batch_insert_maintenance_logs(df: pd.DataFrame):
 
                     details = {
                         'dorm_id': dorm_id,
+                        'room_id': room_id,
                         'vendor_id': vendor_id,
                         'status': row.get('狀態', '已完成'),
                         'notification_date': pd.to_datetime(row.get('收到通知日期')).date() if pd.notna(row.get('收到通知日期')) else None,
@@ -1282,8 +1293,10 @@ def batch_insert_maintenance_logs(df: pd.DataFrame):
                     }
                     
                     cursor.execute(
-                        'SELECT id FROM "MaintenanceLog" WHERE dorm_id = %s AND description = %s AND notification_date = %s',
-                        (details['dorm_id'], details['description'], details['notification_date'])
+                        'SELECT id FROM "MaintenanceLog" '
+                        'WHERE dorm_id = %s AND room_id IS NOT DISTINCT FROM %s '
+                        'AND description = %s AND notification_date = %s',
+                        (details['dorm_id'], details['room_id'], details['description'], details['notification_date'])
                     )
                     if cursor.fetchone():
                         continue
@@ -1324,12 +1337,28 @@ def batch_update_maintenance_logs(df: pd.DataFrame):
         with conn.cursor() as cursor:
             vendors_df = _execute_query_to_dataframe(conn, 'SELECT id, vendor_name FROM "Vendors"')
             vendor_map = {v['vendor_name']: v['id'] for _, v in vendors_df.iterrows()}
+            rooms_df = _execute_query_to_dataframe(conn, 'SELECT id, dorm_id, room_number FROM "Rooms"')
+            room_map = {(r['dorm_id'], str(r['room_number']).strip()): r['id'] for _, r in rooms_df.iterrows()}
 
             for index, row in df.iterrows():
                 try:
                     log_id = int(pd.to_numeric(row.get('ID'), errors='coerce'))
                     if not log_id:
                         raise ValueError("Excel 中缺少 ID 欄位，無法進行更新。請下載最新的待更新檔案。")
+
+                    cursor.execute('SELECT dorm_id FROM "MaintenanceLog" WHERE id = %s', (log_id,))
+                    current_log = cursor.fetchone()
+                    if not current_log:
+                        raise ValueError(f"在資料庫中找不到對應的維修 ID: {log_id}")
+
+                    room_id = None
+                    if '房號' in df.columns:
+                        room_number = row.get('房號')
+                        if pd.notna(room_number) and str(room_number).strip():
+                            room_number = str(room_number).strip()
+                            room_id = room_map.get((current_log['dorm_id'], room_number))
+                            if not room_id:
+                                raise ValueError(f"宿舍內找不到房號: '{room_number}'")
 
                     vendor_id = None
                     vendor_name = row.get('維修廠商')
@@ -1338,6 +1367,7 @@ def batch_update_maintenance_logs(df: pd.DataFrame):
                         vendor_id = vendor_map.get(vendor_name_stripped)
 
                     details = {
+                        **({'room_id': room_id} if '房號' in df.columns else {}),
                         'vendor_id': vendor_id,
                         'status': row.get('狀態'),
                         'reported_by': row.get('公司內部通知人'),
@@ -1353,7 +1383,10 @@ def batch_update_maintenance_logs(df: pd.DataFrame):
                         'notes': row.get('備註')
                     }
                     
-                    update_details = {k: v for k, v in details.items() if pd.notna(v)}
+                    update_details = {
+                        k: v for k, v in details.items()
+                        if k == 'room_id' or pd.notna(v)
+                    }
 
                     if not update_details:
                         continue
@@ -1390,6 +1423,7 @@ def export_maintenance_logs_for_update():
                 l.id AS "ID",
                 l.notification_date AS "收到通知日期",
                 d.original_address AS "宿舍地址",
+                r.room_number AS "房號",
                 l.description AS "修理細項說明",
                 l.item_type AS "項目類型",
                 v.vendor_name AS "維修廠商",
@@ -1405,6 +1439,7 @@ def export_maintenance_logs_for_update():
                 l.status AS "狀態"
             FROM "MaintenanceLog" l
             JOIN "Dormitories" d ON l.dorm_id = d.id
+            LEFT JOIN "Rooms" r ON l.room_id = r.id
             LEFT JOIN "Vendors" v ON l.vendor_id = v.id
             WHERE l.is_archived_as_expense = FALSE
             ORDER BY l.notification_date DESC;

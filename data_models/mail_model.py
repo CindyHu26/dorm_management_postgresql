@@ -2725,6 +2725,10 @@ def _fill_named_envelope_template(document, record, remove_text_boxes=False):
 
 TEXT_BOX_CLEANUP_TEMPLATES = {"信封(大).docx", "信封(小).docx"}
 REGISTERED_MARK_TEMPLATE = "信封(小).docx"
+ENVELOPE_TEMPLATE_ALIASES = {
+    "B4.docx": "信封(大B4咖啡色).docx",
+    "信封(小).docx": "一般信封(小).docx",
+}
 
 
 def _set_small_envelope_registered_mark(document, mail_service):
@@ -2738,7 +2742,7 @@ def _envelope_template_path(template_name):
     safe_name = Path(template_name).name
     if safe_name != template_name or not safe_name.lower().endswith(".docx"):
         raise ValueError("信封範本名稱不正確。")
-    template_path = TEMPLATE_DIR / safe_name
+    template_path = TEMPLATE_DIR / ENVELOPE_TEMPLATE_ALIASES.get(safe_name, safe_name)
     if not template_path.exists():
         raise FileNotFoundError("信封範本尚未放入 doc_templates。")
     return safe_name, template_path

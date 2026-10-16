@@ -105,6 +105,7 @@ def get_maintenance_details(start_date, end_date, dorm_ids=None):
         query = """
             SELECT 
                 d.original_address AS "宿舍",
+                r.room_number AS "房號",
                 l.item_type AS "維修類型",
                 l.description AS "說明",
                 l.cost AS "金額",
@@ -115,6 +116,7 @@ def get_maintenance_details(start_date, end_date, dorm_ids=None):
                 v.vendor_name AS "維修廠商"
             FROM "MaintenanceLog" l
             JOIN "Dormitories" d ON l.dorm_id = d.id
+            LEFT JOIN "Rooms" r ON l.room_id = r.id
             LEFT JOIN "Vendors" v ON l.vendor_id = v.id
             WHERE l.notification_date BETWEEN %s AND %s
             AND l.cost > 0

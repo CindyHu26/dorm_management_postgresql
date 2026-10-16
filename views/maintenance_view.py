@@ -28,6 +28,7 @@ def _build_log_search_text(log_df: pd.DataFrame) -> pd.Series:
     return (
         log_df['id'].astype(str) + " " +
         log_df['宿舍地址'].fillna('') + " " +
+        log_df['房號'].fillna('') + " " +
         log_df['細項說明'].fillna('') + " " +
         log_df['狀態'].fillna('') + " " +
         log_df['內部提報人'].fillna('') + " " +
@@ -58,7 +59,25 @@ def _format_log_option(row) -> str:
             pass
     if dorm_id in st.session_state.get('_maintenance_dorm_options', {}):
         dorm_label = st.session_state['_maintenance_dorm_options'][dorm_id]
-    return f"{report_date} / {dorm_label} / {row['狀態']} / {detail} / {reporter}"
+    raw_room_label = row.get('房號')
+    room_label = str(raw_room_label) if pd.notna(raw_room_label) and raw_room_label not in (None, '') else '公共區域/未指定'
+    return f"{report_date} / {dorm_label} / {room_label} / {row['狀態']} / {detail} / {reporter}"
+
+def _get_room_options(dorm_id):
+    """取得指定宿舍的房間選項；None 代表公共區域或未指定。"""
+    if not dorm_id:
+        return {}
+    rooms_df = maintenance_model.get_rooms_for_selector(dorm_id)
+    if rooms_df.empty:
+        return {}
+    return {row['id']: row['room_number'] for _, row in rooms_df.iterrows()}
+
+def _room_number_from_row(row):
+    """新資料優先使用正式房號欄位，舊資料才回退解析說明文字。"""
+    room_number = row.get('房號')
+    if pd.notna(room_number) and room_number not in (None, ''):
+        return str(room_number)
+    return extract_room_number(row.get('細項說明', ''))
 
 def _build_resident_list(records):
     if not records:
@@ -88,6 +107,8 @@ def _render_line_dispatch_message(selected_log_id, key_suffix, details, dorm_opt
     default_line_date = saved_notify_date or date.today()
 
     dorm_name_str = dorm_options.get(saved_dorm_id, "未知地址")
+    room_options = _get_room_options(saved_dorm_id)
+    room_name_str = room_options.get(details.get('room_id'), "公共區域/未指定")
     vendor_name_str = vendor_options.get(saved_vendor_id, "未指定") if saved_vendor_id else "未指定"
 
     period_col1, period_col2 = st.columns(2)
@@ -121,6 +142,7 @@ def _render_line_dispatch_message(selected_log_id, key_suffix, details, dorm_opt
             resident_list_str = f"名單查詢出錯: {e}"
 
     line_msg = f"🏠宿舍地址：{dorm_name_str}\n"
+    line_msg += f"🚪房號：{room_name_str}\n"
     line_msg += f"🔨說明：{saved_desc}\n"
     line_msg += f"🧰廠商：{vendor_name_str}\n"
     line_msg += f"💲費用：{saved_cost}\n"
@@ -222,6 +244,31 @@ def _render_full_edit_form(selected_log_id, dorm_options, vendor_options, item_t
                     key=f"dl_{pdf_path}_{key_suffix}"
                 )
 
+    # 宿舍與房號放在 form 外，才能在切換宿舍時立即更新房間選單。
+    st.markdown("##### 📍 維修位置")
+    location_col1, location_col2 = st.columns(2)
+    current_dorm_id = details.get('dorm_id')
+    dorm_keys = list(dorm_options.keys())
+    current_dorm_index = dorm_keys.index(current_dorm_id) if current_dorm_id in dorm_keys else 0
+    e_dorm_id = location_col1.selectbox(
+        "宿舍地址",
+        options=dorm_keys,
+        format_func=lambda x: dorm_options.get(x, "未知"),
+        index=current_dorm_index,
+        key=f"edit_dorm_{selected_log_id}_{key_suffix}",
+    )
+    room_options_edit = _get_room_options(e_dorm_id)
+    current_room_id = details.get('room_id') if e_dorm_id == current_dorm_id else None
+    room_keys_edit = [None] + list(room_options_edit.keys())
+    room_index = room_keys_edit.index(current_room_id) if current_room_id in room_keys_edit else 0
+    e_room_id = location_col2.selectbox(
+        "房號",
+        options=room_keys_edit,
+        format_func=lambda x: "公共區域/未指定" if x is None else room_options_edit.get(x, "未知房號"),
+        index=room_index,
+        key=f"edit_room_{selected_log_id}_{key_suffix}_{e_dorm_id}",
+    )
+
     # --- 2. 編輯表單 ---
     with st.form(f"edit_log_form_{selected_log_id}_{key_suffix}"):
         
@@ -241,18 +288,10 @@ def _render_full_edit_form(selected_log_id, dorm_options, vendor_options, item_t
         
         st.markdown("---")
         st.subheader("📋 案件資訊")
-        ec1, ec2, ec3, ec4 = st.columns(4)
+        ec2, ec3, ec4 = st.columns(3)
         
-        # 宿舍處理
-        current_dorm_id = details.get('dorm_id')
-        dorm_keys = list(dorm_options.keys())
-        current_dorm_index = dorm_keys.index(current_dorm_id) if current_dorm_id in dorm_keys else 0
-        e_dorm_id = ec1.selectbox("宿舍地址", options=dorm_keys, format_func=lambda x: dorm_options.get(x, "未知"), index=current_dorm_index)
-        
-        # 設備處理 (根據當前選擇的宿舍，重新抓取設備選單)
-        # 注意：Streamlit form 內無法做動態連動(選宿舍立刻變設備)，只能基於載入時的資料
-        # 若要完全動態，需要把這兩格搬出 form，但為了版面整潔，我們先以此方式實作
-        equipment_in_dorm_edit = equipment_model.get_equipment_for_view({"dorm_id": current_dorm_id}) if current_dorm_id else pd.DataFrame()
+        # 設備選單也依 form 外目前選取的宿舍更新。
+        equipment_in_dorm_edit = equipment_model.get_equipment_for_view({"dorm_id": e_dorm_id}) if e_dorm_id else pd.DataFrame()
         equip_options_edit = {row['id']: f"{row['設備名稱']} ({row.get('位置', 'N/A')})" for _, row in equipment_in_dorm_edit.iterrows()}
         current_equip_id = details.get('equipment_id')
         
@@ -388,7 +427,7 @@ def _render_full_edit_form(selected_log_id, dorm_options, vendor_options, item_t
                     final_file_paths.append(path)
 
             update_data = {
-                'dorm_id': e_dorm_id, 'equipment_id': e_equipment_id, 'status': e_status, 
+                'dorm_id': e_dorm_id, 'room_id': e_room_id, 'equipment_id': e_equipment_id, 'status': e_status,
                 'vendor_id': e_vendor_id, 'notification_date': e_notification_date,
                 'reported_by': e_reported_by, 'item_type': final_type, 'description': e_description,
                 'contacted_vendor_date': e_contacted_vendor_date, 'completion_date': e_completion_date,
@@ -424,12 +463,21 @@ def render_add_new_record(dorm_options, vendor_options, item_type_options, statu
         st.success(st.session_state.maint_success_msg)
         del st.session_state["maint_success_msg"]
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     with c1:
         dorm_keys = list(dorm_options.keys())
-        new_dorm_id = st.selectbox("宿舍 (連動設備)*", options=dorm_keys, format_func=lambda x: dorm_options.get(x, "未選擇"), key="add_m_dorm")
+        new_dorm_id = st.selectbox("宿舍*", options=dorm_keys, format_func=lambda x: dorm_options.get(x, "未選擇"), key="add_m_dorm")
 
     with c2:
+        room_options_new = _get_room_options(new_dorm_id)
+        new_room_id = st.selectbox(
+            "房號",
+            options=[None] + list(room_options_new.keys()),
+            format_func=lambda x: "公共區域/未指定" if x is None else room_options_new.get(x, "未知房號"),
+            key=f"add_m_room_{new_dorm_id}",
+        )
+
+    with c3:
         if new_dorm_id:
             equipment_in_dorm = equipment_model.get_equipment_for_view({"dorm_id": new_dorm_id})
             if not equipment_in_dorm.empty:
@@ -441,9 +489,9 @@ def render_add_new_record(dorm_options, vendor_options, item_type_options, statu
         else:
             new_equipment_id = None
 
-    with c3: new_report_date = st.date_input("收到通知日期*", value=date.today(), key="add_m_date")
-    with c4: new_status = st.selectbox("案件狀態*", options=status_options, key="add_m_status")
-    with c5:
+    with c4: new_report_date = st.date_input("收到通知日期*", value=date.today(), key="add_m_date")
+    with c5: new_status = st.selectbox("案件狀態*", options=status_options, key="add_m_status")
+    with c6:
         new_category_sel = st.selectbox("維修類別", options=item_type_options, key="add_m_cat")
         custom_category = st.text_input("請輸入自訂類型*", placeholder="例如: 網路費", key="add_m_cat_custom") if new_category_sel == "其他(手動輸入)" else None
 
@@ -489,7 +537,7 @@ def render_add_new_record(dorm_options, vendor_options, item_type_options, statu
             if new_finish_date and new_status in ["待處理", "待尋廠商", "進行中"]: final_status = "待付款"
             
             details = {
-                'dorm_id': new_dorm_id, 'equipment_id': new_equipment_id, 'vendor_id': new_vendor, 'status': final_status,
+                'dorm_id': new_dorm_id, 'room_id': new_room_id, 'equipment_id': new_equipment_id, 'vendor_id': new_vendor, 'status': final_status,
                 'notification_date': new_report_date, 'reported_by': new_reporter, 'item_type': final_category, 'description': new_description,
                 # 【修改點 2】 將 None 改為 new_contact_date
                 'contacted_vendor_date': new_contact_date, 
@@ -502,7 +550,7 @@ def render_add_new_record(dorm_options, vendor_options, item_type_options, statu
                 st.session_state.maint_success_msg = f"儲存成功！ {message}"
                 st.cache_data.clear()
                 # 【修改點 3】 加入 add_m_contact_date 以便重置
-                keys_to_clear = ["add_m_dorm", "add_m_equip", "add_m_date", "add_m_status", "add_m_cat", "add_m_cost", "add_m_vendor", "add_m_contact_date", "add_m_payer", "add_m_finish", "add_m_paid_check", "add_m_desc", "add_m_uploader", "add_m_reporter", "add_m_key_info", "add_m_invoice", "add_m_notes", "add_m_cat_custom"]
+                keys_to_clear = ["add_m_dorm", f"add_m_room_{new_dorm_id}", "add_m_equip", "add_m_date", "add_m_status", "add_m_cat", "add_m_cost", "add_m_vendor", "add_m_contact_date", "add_m_payer", "add_m_finish", "add_m_paid_check", "add_m_desc", "add_m_uploader", "add_m_reporter", "add_m_key_info", "add_m_invoice", "add_m_notes", "add_m_cat_custom"]
                 for k in keys_to_clear:
                     if k in st.session_state: del st.session_state[k]
                 st.rerun()
@@ -530,7 +578,7 @@ def render_progress_tracking(dorm_options, vendor_options, item_type_options, st
     raw_df['廠商'] = raw_df['vendor_id'].map(lambda x: vendor_map_id_to_name.get(x, None))
 
     with st.expander("🔍 點此展開/收合 篩選條件", expanded=True):
-        f_col1, f_col2, f_col3 = st.columns(3)
+        f_col1, f_col2, f_col3, f_col4 = st.columns(4)
         available_dorms = sorted(list(raw_df['宿舍'].dropna().unique()))
         available_vendors = sorted(list(raw_df['廠商'].dropna().unique()))
         available_types = sorted(list(raw_df['項目類型'].dropna().unique()))
@@ -542,18 +590,23 @@ def render_progress_tracking(dorm_options, vendor_options, item_type_options, st
             pre_selected = [default_dorm_filter]
 
         selected_dorms = f_col1.multiselect("🏠 宿舍地址", options=available_dorms, default=pre_selected, placeholder="全部")
-        selected_vendors = f_col2.multiselect("🛠️ 維修廠商", options=available_vendors, placeholder="全部")
-        selected_types = f_col3.multiselect("📋 項目類型", options=available_types, placeholder="全部")
+        room_source_df = raw_df[raw_df['宿舍'].isin(selected_dorms)] if selected_dorms else raw_df
+        available_rooms = sorted(list(room_source_df['房號'].dropna().unique()))
+        selected_rooms = f_col2.multiselect("🚪 房號", options=available_rooms, placeholder="全部")
+        selected_vendors = f_col3.multiselect("🛠️ 維修廠商", options=available_vendors, placeholder="全部")
+        selected_types = f_col4.multiselect("📋 項目類型", options=available_types, placeholder="全部")
 
     filtered_df = raw_df.copy()
     if selected_dorms: filtered_df = filtered_df[filtered_df['宿舍'].isin(selected_dorms)]
+    if selected_rooms: filtered_df = filtered_df[filtered_df['房號'].isin(selected_rooms)]
     if selected_vendors: filtered_df = filtered_df[filtered_df['廠商'].isin(selected_vendors)]
     if selected_types: filtered_df = filtered_df[filtered_df['項目類型'].isin(selected_types)]
 
     st.info(f"顯示 {len(filtered_df)} 筆資料。上方表格可快速編輯；如需**上傳檔案/刪檔/改設備**，請於表格下方選擇案件進行編輯。")
 
     # --- Part 2: 快速編輯表格 (Data Editor) ---
-    display_df = filtered_df[['id', '狀態', '宿舍', '項目類型', '細項說明', '廠商', '通報日期', '提報人']].copy()
+    display_df = filtered_df[['id', '狀態', '宿舍', '房號', '項目類型', '細項說明', '廠商', '通報日期', '提報人']].copy()
+    display_df['房號'] = display_df['房號'].fillna('公共區域/未指定')
     
     edited_df = st.data_editor(
         display_df,
@@ -564,6 +617,7 @@ def render_progress_tracking(dorm_options, vendor_options, item_type_options, st
             "id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
             "狀態": st.column_config.SelectboxColumn("狀態", options=status_options, required=True),
             "宿舍": st.column_config.SelectboxColumn("宿舍", options=list(dorm_map_name_to_id.keys()), required=True),
+            "房號": st.column_config.TextColumn("房號", disabled=True),
             "項目類型": st.column_config.SelectboxColumn("項目類型", options=item_type_options),
             "細項說明": st.column_config.TextColumn("細項說明", width="large"),
             "廠商": st.column_config.SelectboxColumn("廠商", options=list(vendor_map_name_to_id.keys())),
@@ -582,7 +636,9 @@ def render_progress_tracking(dorm_options, vendor_options, item_type_options, st
             changes = {}
             if row['狀態'] != orig_row['狀態']: changes['status'] = row['狀態']
             if row['宿舍'] != orig_row['宿舍']:
-                if nid := dorm_map_name_to_id.get(row['宿舍']): changes['dorm_id'] = nid
+                if nid := dorm_map_name_to_id.get(row['宿舍']):
+                    changes['dorm_id'] = nid
+                    changes['room_id'] = None
             if row['廠商'] != orig_row['廠商']:
                 changes['vendor_id'] = vendor_map_name_to_id.get(row['廠商'])
             if row['項目類型'] != orig_row['項目類型']: changes['item_type'] = row['項目類型']
@@ -700,10 +756,18 @@ def render_overview(dorm_options, vendor_options, item_type_options, status_opti
     st.subheader("📊 維修紀錄總覽")
     
     # --- Part 1: 篩選條件 ---
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     f_status = c1.selectbox("狀態篩選", [""] + status_options, key="ov_status")
     f_dorm = c2.selectbox("宿舍篩選", [None] + list(dorm_options.keys()), format_func=lambda x: "全部" if x is None else dorm_options.get(x), key="ov_dorm")
-    f_vendor = c3.selectbox("廠商篩選", [None] + list(vendor_options.keys()), format_func=lambda x: "全部" if x is None else vendor_options.get(x), key="ov_vendor")
+    overview_room_options = _get_room_options(f_dorm)
+    f_room = c3.selectbox(
+        "房號篩選",
+        [None] + list(overview_room_options.keys()),
+        format_func=lambda x: "全部" if x is None else overview_room_options.get(x, "未知房號"),
+        key=f"ov_room_{f_dorm}",
+        disabled=not bool(f_dorm),
+    )
+    f_vendor = c4.selectbox("廠商篩選", [None] + list(vendor_options.keys()), format_func=lambda x: "全部" if x is None else vendor_options.get(x), key="ov_vendor")
     
     c4, c5, c6 = st.columns(3)
     f_start = c4.date_input("完成日期 (起)", value=None, key="ov_start")
@@ -715,6 +779,7 @@ def render_overview(dorm_options, vendor_options, item_type_options, status_opti
     filters = {}
     if f_status: filters["status"] = f_status
     if f_dorm: filters["dorm_id"] = f_dorm
+    if f_room: filters["room_id"] = f_room
     if f_vendor: filters["vendor_id"] = f_vendor
     if f_start: filters["start_date"] = f_start
     if f_end: filters["end_date"] = f_end
@@ -732,7 +797,7 @@ def render_overview(dorm_options, vendor_options, item_type_options, status_opti
     # --- Part 2: 顯示資料表格 ---
     if not log_df.empty:
         # 【修改點 3】如果付款人有被篩選，也要觸發顯示「篩選總計」的文字提示
-        if f_vendor or f_start or f_end or f_payer != "全部":
+        if f_room or f_vendor or f_start or f_end or f_payer != "全部":
              st.success(f"篩選總計: {len(log_df)} 筆, 費用總額: NT$ {log_df['維修費用'].sum():,}")
         
         # 顯示表格 (增加搜尋功能以便快速定位 ID)
@@ -905,9 +970,6 @@ def render_add_improvement_suggestion(dorm_options, vendor_options, item_type_op
                 st.error("「宿舍」和「說明」為必填欄位！")
             else:
                 final_description = new_description
-                if selected_room_id:
-                    room_num = room_options.get(selected_room_id)
-                    final_description = f"【房號: {room_num}】 {new_description}"
 
                 file_paths = []
                 if uploaded_files:
@@ -923,6 +985,7 @@ def render_add_improvement_suggestion(dorm_options, vendor_options, item_type_op
                 
                 details = {
                     'dorm_id': selected_dorm_id, 
+                    'room_id': selected_room_id,
                     'equipment_id': None, 
                     'vendor_id': None, 
                     'status': new_status,
@@ -956,7 +1019,7 @@ def render_add_improvement_suggestion(dorm_options, vendor_options, item_type_op
         if not logs.empty:
             # 這裡也可以多顯示通報日期
             st.dataframe(
-                logs[['id', '通報日期', '細項說明', '狀態']].head(5), 
+                logs[['id', '房號', '通報日期', '細項說明', '狀態']].head(5),
                 hide_index=True,
                 use_container_width=True
             )
@@ -969,7 +1032,7 @@ def render_export_report(dorm_options, status_options):
     st.info("支援匯出 Excel (連結用)、HTML (檢視用) 或 Word (現場簽核/手寫用)。")
 
     # --- 1. 篩選條件 ---
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     selected_dorm_ids = c1.multiselect(
         "1. 選擇宿舍 (留空則全選)", 
         options=list(dorm_options.keys()), 
@@ -983,6 +1046,14 @@ def render_export_report(dorm_options, status_options):
         default=default_statuses,
         key="export_status_filter"
     )
+    export_room_options = _get_room_options(selected_dorm_ids[0]) if len(selected_dorm_ids) == 1 else {}
+    selected_room_ids = c3.multiselect(
+        "3. 選擇房號 (先選單一宿舍)",
+        options=list(export_room_options.keys()),
+        format_func=lambda x: export_room_options.get(x, "未知房號"),
+        disabled=len(selected_dorm_ids) != 1,
+        key=f"export_room_filter_{selected_dorm_ids[0] if len(selected_dorm_ids) == 1 else 'all'}",
+    )
 
     df = maintenance_model.get_logs_for_view(filters=None)
     
@@ -991,13 +1062,15 @@ def render_export_report(dorm_options, status_options):
             df = df[df['dorm_id'].isin(selected_dorm_ids)]
         if selected_statuses:
             df = df[df['狀態'].isin(selected_statuses)]
+        if selected_room_ids:
+            df = df[df['room_id'].isin(selected_room_ids)]
 
     if df.empty:
         st.warning("⚠️ 目前條件下無任何資料。")
         return
 
     # --- 排序邏輯 ---
-    df['sort_room'] = df['細項說明'].apply(extract_room_number)
+    df['sort_room'] = df.apply(_room_number_from_row, axis=1)
     df = df.sort_values(by=['宿舍地址', '項目類型', 'sort_room', '通報日期'], ascending=[True, True, True, False])
 
     st.success(f"已篩選出 {len(df)} 筆資料。")
@@ -1032,7 +1105,7 @@ def render_export_report(dorm_options, status_options):
         if st.button("📥 Excel 報表 (含連結)", use_container_width=True):
             export_df = pd.DataFrame()
             export_df['地址'] = df['宿舍地址']
-            export_df['房號'] = df['細項說明'].apply(extract_room_number)
+            export_df['房號'] = df.apply(_room_number_from_row, axis=1)
             export_df['通報日期'] = df['通報日期']
             export_df['項目類別'] = df['項目類型']
             export_df['改善建議/缺失說明'] = df['細項說明']
@@ -1111,7 +1184,7 @@ def render_export_report(dorm_options, status_options):
             
             for _, row in df.iterrows():
                 dorm_addr = row['宿舍地址']
-                room_no = extract_room_number(row['細項說明'])
+                room_no = _room_number_from_row(row)
                 addr_display = f"{dorm_addr}<br><b>{room_no}</b>" if room_no else dorm_addr
                 
                 photos_html = ""
@@ -1197,7 +1270,7 @@ def render_export_report(dorm_options, status_options):
                     row_cells = new_row.cells
                     
                     # 1. 地址/房號
-                    room_no = extract_room_number(row['細項說明'])
+                    room_no = _room_number_from_row(row)
                     addr_text = f"{row['宿舍地址']}\n{room_no}" if room_no else row['宿舍地址']
                     set_cell_font(row_cells[0], addr_text)
                     

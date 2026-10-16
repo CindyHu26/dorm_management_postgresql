@@ -63,6 +63,28 @@ def _execute_query_to_dataframe(conn, query, params=None):
         columns = [desc[0] for desc in cursor.description]
         return pd.DataFrame(records, columns=columns)
 
+def _validate_maintenance_location(cursor, details: dict, log_id: int = None):
+    """確保選取的房間確實屬於維修紀錄的宿舍；room_id 可為 None。"""
+    current = {}
+    if log_id is not None and ("dorm_id" not in details or "room_id" not in details):
+        cursor.execute(
+            'SELECT dorm_id, room_id FROM "MaintenanceLog" WHERE id = %s',
+            (log_id,),
+        )
+        current = cursor.fetchone() or {}
+
+    dorm_id = details.get("dorm_id", current.get("dorm_id"))
+    room_id = details.get("room_id", current.get("room_id"))
+    if room_id is None:
+        return
+
+    cursor.execute(
+        'SELECT 1 FROM "Rooms" WHERE id = %s AND dorm_id = %s',
+        (room_id, dorm_id),
+    )
+    if cursor.fetchone() is None:
+        raise ValueError("選取的房間不屬於指定宿舍。")
+
 def get_logs_for_view(filters: dict = None):
     conn = database.get_db_connection()
     if not conn: return pd.DataFrame()
@@ -71,8 +93,10 @@ def get_logs_for_view(filters: dict = None):
             SELECT 
                 l.id, 
                 l.dorm_id,
+                l.room_id,
                 l.status AS "狀態",
                 d.original_address AS "宿舍地址",
+                r.room_number AS "房號",
                 e.equipment_name AS "關聯設備",
                 l.notification_date AS "通報日期",
                 l.item_type AS "項目類型",
@@ -85,6 +109,7 @@ def get_logs_for_view(filters: dict = None):
                 l.photo_paths  -- 新增此欄位
             FROM "MaintenanceLog" l
             JOIN "Dormitories" d ON l.dorm_id = d.id
+            LEFT JOIN "Rooms" r ON l.room_id = r.id
             LEFT JOIN "Vendors" v ON l.vendor_id = v.id
             LEFT JOIN "DormitoryEquipment" e ON l.equipment_id = e.id 
         """
@@ -93,6 +118,7 @@ def get_logs_for_view(filters: dict = None):
         if filters:
             if filters.get("status"): where_clauses.append("l.status = %s"); params.append(filters["status"])
             if filters.get("dorm_id"): where_clauses.append("l.dorm_id = %s"); params.append(filters["dorm_id"])
+            if filters.get("room_id"): where_clauses.append("l.room_id = %s"); params.append(filters["room_id"])
             if filters.get("vendor_id"): where_clauses.append("l.vendor_id = %s"); params.append(filters["vendor_id"])
             if filters.get("start_date"): where_clauses.append("l.completion_date >= %s"); params.append(filters["start_date"])
             if filters.get("end_date"): where_clauses.append("l.completion_date <= %s"); params.append(filters["end_date"])
@@ -142,6 +168,7 @@ def add_log(details: dict):
     if not conn: return False, "資料庫連線失敗。"
     try:
         with conn.cursor() as cursor:
+            _validate_maintenance_location(cursor, details)
             columns = ', '.join(f'"{k}"' for k in details.keys())
             placeholders = ', '.join(['%s'] * len(details))
             sql = f'INSERT INTO "MaintenanceLog" ({columns}) VALUES ({placeholders}) RETURNING id'
@@ -159,6 +186,7 @@ def update_log(log_id: int, details: dict, paths_to_delete: list = None):
     if not conn: return False, "資料庫連線失敗。"
     try:
         with conn.cursor() as cursor:
+            _validate_maintenance_location(cursor, details, log_id)
             fields = ', '.join([f'"{key}" = %s' for key in details.keys()])
             values = list(details.values()) + [log_id]
             sql = f'UPDATE "MaintenanceLog" SET {fields} WHERE id = %s'
@@ -247,16 +275,19 @@ def get_unfinished_maintenance_logs():
             SELECT 
                 l.id,
                 l.dorm_id,   -- 新增
+                l.room_id,
                 l.vendor_id, -- 新增
                 l.status AS "狀態",
                 l.notification_date AS "通報日期",
                 d.original_address AS "宿舍地址", -- 僅供參考，實際編輯會用 dorm_id 轉換
+                r.room_number AS "房號",
                 l.item_type AS "項目類型",
                 l.description AS "細項說明",
                 v.vendor_name AS "維修廠商", -- 僅供參考
                 l.reported_by AS "提報人"
             FROM "MaintenanceLog" l
             JOIN "Dormitories" d ON l.dorm_id = d.id
+            LEFT JOIN "Rooms" r ON l.room_id = r.id
             LEFT JOIN "Vendors" v ON l.vendor_id = v.id
             WHERE l.status != '已完成'
             ORDER BY l.notification_date ASC;
@@ -280,6 +311,8 @@ def batch_update_logs_all_fields(updates: list):
             for item in updates:
                 log_id = item.pop('id', None)
                 if not log_id or not item: continue 
+
+                _validate_maintenance_location(cursor, item, log_id)
 
                 # 動態組合 SQL SET 子句
                 set_clauses = []
@@ -330,6 +363,7 @@ def get_archivable_logs():
             SELECT 
                 l.id, 
                 d.original_address AS "宿舍地址",
+                r.room_number AS "房號",
                 l.notification_date AS "通報日期",
                 l.item_type AS "項目類型",
                 l.description AS "細項說明",
@@ -337,6 +371,7 @@ def get_archivable_logs():
                 v.vendor_name AS "維修廠商"
             FROM "MaintenanceLog" l
             JOIN "Dormitories" d ON l.dorm_id = d.id
+            LEFT JOIN "Rooms" r ON l.room_id = r.id
             LEFT JOIN "Vendors" v ON l.vendor_id = v.id
             WHERE 
                 l.status IN ('待付款', '已完成')

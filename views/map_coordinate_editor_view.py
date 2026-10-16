@@ -1,11 +1,7 @@
 import pandas as pd
 import streamlit as st
 
-<<<<<<< HEAD
 from data_models import dormitory_model, employer_workplace_model
-=======
-from data_models import dormitory_model
->>>>>>> 81b83f58349da59515de6f1ba6047c44206b871e
 
 
 @st.cache_data
@@ -23,7 +19,6 @@ def get_editor_df(search_term="", primary_manager="全部", city="全部", distr
     )
 
 
-<<<<<<< HEAD
 @st.cache_data
 def get_workplace_editor_df(search_term=""):
     records = []
@@ -80,9 +75,6 @@ def _parse_coordinate_pair(raw_value):
 
 
 def _render_dorm_coordinate_editor():
-=======
-def render():
->>>>>>> 81b83f58349da59515de6f1ba6047c44206b871e
     st.info("此頁面專門維護宿舍的地圖顯示地址、緯度與經度。座標請填十進位格式，台灣常見範圍約為緯度 20-27、經度 118-123。")
 
     filter_df = get_filter_options_df()
@@ -158,33 +150,10 @@ def render():
                 if pd.isna(pasted_value) or str(pasted_value).strip() == "":
                     continue
 
-<<<<<<< HEAD
                 try:
                     lat, lng = _parse_coordinate_pair(pasted_value)
                 except ValueError as exc:
                     st.error(f"宿舍 ID {int(row['id'])} 的「座標貼上」{exc}")
-=======
-                raw = str(pasted_value).strip()
-                normalized_text = raw.replace("，", ",").replace("、", ",").replace(" ", "")
-                parts = [part for part in normalized_text.split(",") if part != ""]
-                if len(parts) != 2:
-                    st.error(f"宿舍 ID {int(row['id'])} 的「座標貼上」格式不正確，請使用 `lat,lng` 或 `lng,lat`。")
-                    return
-
-                try:
-                    first = float(parts[0])
-                    second = float(parts[1])
-                except ValueError:
-                    st.error(f"宿舍 ID {int(row['id'])} 的「座標貼上」不是有效數字。")
-                    return
-
-                if 20 <= first <= 27 and 118 <= second <= 123:
-                    lat, lng = first, second
-                elif 118 <= first <= 123 and 20 <= second <= 27:
-                    lat, lng = second, first
-                else:
-                    st.error(f"宿舍 ID {int(row['id'])} 的貼上座標不在台灣常用範圍內。")
->>>>>>> 81b83f58349da59515de6f1ba6047c44206b871e
                     return
 
                 normalized_df.at[idx, "緯度"] = lat
@@ -207,7 +176,6 @@ def render():
                 st.rerun()
             else:
                 st.error(message)
-<<<<<<< HEAD
 
 
 def _render_workplace_coordinate_editor():
@@ -309,5 +277,3 @@ def render():
         _render_dorm_coordinate_editor()
     with workplace_tab:
         _render_workplace_coordinate_editor()
-=======
->>>>>>> 81b83f58349da59515de6f1ba6047c44206b871e
