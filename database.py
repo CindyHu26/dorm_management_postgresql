@@ -480,11 +480,23 @@ def create_all_tables_and_indexes():
                 id BIGSERIAL PRIMARY KEY,
                 agency_name VARCHAR(150) NOT NULL,
                 department_name VARCHAR(150),
+                contact_person VARCHAR(150),
                 postal_code VARCHAR(10),
                 address VARCHAR(255) NOT NULL,
                 is_active BOOLEAN NOT NULL DEFAULT TRUE,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """
+
+            TABLES['mail_government_agency_employers'] = """
+            CREATE TABLE IF NOT EXISTS mail_government_agency_employers (
+                agency_id BIGINT NOT NULL REFERENCES mail_government_agencies(id) ON DELETE CASCADE,
+                employer_key VARCHAR(400) NOT NULL,
+                employer_id VARCHAR(100),
+                employer_name VARCHAR(255) NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (agency_id, employer_key)
             );
             """
 
@@ -516,6 +528,7 @@ def create_all_tables_and_indexes():
                 billing_employer_name_snapshot VARCHAR(255),
                 item_description TEXT NOT NULL,
                 mail_service VARCHAR(30) NOT NULL DEFAULT '掛號',
+                planned_sequence INTEGER CHECK (planned_sequence IS NULL OR planned_sequence > 0),
                 planned_shipping_fee INTEGER CHECK (planned_shipping_fee IS NULL OR planned_shipping_fee >= 0),
                 notes TEXT,
                 status VARCHAR(20) NOT NULL DEFAULT 'READY' CHECK (status IN ('DRAFT', 'READY', 'BATCHED', 'DISPATCHED', 'CANCELLED')),
@@ -526,6 +539,52 @@ def create_all_tables_and_indexes():
                     sender_type = 'COMPANY'
                     OR (sender_name_snapshot IS NOT NULL AND sender_address_snapshot IS NOT NULL)
                 )
+            );
+            """
+
+            TABLES['mail_record_billing_employers'] = """
+            CREATE TABLE IF NOT EXISTS mail_record_billing_employers (
+                mail_record_id BIGINT NOT NULL REFERENCES mail_records(id) ON DELETE CASCADE,
+                employer_key VARCHAR(400) NOT NULL,
+                employer_workplace_id INTEGER REFERENCES "EmployerWorkplaces"(id) ON DELETE SET NULL,
+                employer_id_snapshot VARCHAR(100),
+                employer_name_snapshot VARCHAR(255) NOT NULL,
+                sequence_no INTEGER NOT NULL CHECK (sequence_no > 0),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (mail_record_id, employer_key),
+                UNIQUE (mail_record_id, sequence_no)
+            );
+            """
+
+            TABLES['mail_recipient_lists'] = """
+            CREATE TABLE IF NOT EXISTS mail_recipient_lists (
+                id BIGSERIAL PRIMARY KEY,
+                list_name VARCHAR(150) NOT NULL,
+                owner_user_id BIGINT NOT NULL REFERENCES mail_users(id) ON DELETE CASCADE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (owner_user_id, list_name)
+            );
+            """
+
+            TABLES['mail_recipient_list_items'] = """
+            CREATE TABLE IF NOT EXISTS mail_recipient_list_items (
+                id BIGSERIAL PRIMARY KEY,
+                list_id BIGINT NOT NULL REFERENCES mail_recipient_lists(id) ON DELETE CASCADE,
+                sequence_no INTEGER NOT NULL CHECK (sequence_no > 0),
+                recipient_type VARCHAR(20) NOT NULL DEFAULT 'CUSTOM'
+                    CHECK (recipient_type IN ('EMPLOYER', 'GOVERNMENT', 'CUSTOM')),
+                employer_workplace_id INTEGER REFERENCES "EmployerWorkplaces"(id) ON DELETE SET NULL,
+                government_agency_id BIGINT REFERENCES mail_government_agencies(id) ON DELETE SET NULL,
+                recipient_name VARCHAR(255) NOT NULL,
+                recipient_department VARCHAR(255),
+                recipient_postal_code VARCHAR(10),
+                recipient_address VARCHAR(500) NOT NULL,
+                recipient_contact VARCHAR(150),
+                billing_employers JSONB NOT NULL DEFAULT '[]'::JSONB,
+                notes TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (list_id, sequence_no)
             );
             """
 
@@ -588,6 +647,17 @@ def create_all_tables_and_indexes():
             for table_name, table_sql in TABLES.items():
                 cursor.execute(table_sql)
 
+            # CREATE TABLE IF NOT EXISTS 不會替既有資料表補欄位。
+            cursor.execute(
+                "ALTER TABLE mail_government_agencies "
+                "ADD COLUMN IF NOT EXISTS contact_person VARCHAR(150)"
+            )
+            cursor.execute(
+                "ALTER TABLE mail_records "
+                "ADD COLUMN IF NOT EXISTS planned_sequence INTEGER "
+                "CHECK (planned_sequence IS NULL OR planned_sequence > 0)"
+            )
+
             INDEXES = [
                 'CREATE INDEX IF NOT EXISTS idx_dorms_normalized_address ON "Dormitories" ("normalized_address");',
                 'CREATE INDEX IF NOT EXISTS idx_dorms_map_coordinates ON "Dormitories" ("map_latitude", "map_longitude");',
@@ -608,6 +678,10 @@ def create_all_tables_and_indexes():
                 'CREATE INDEX IF NOT EXISTS idx_mail_records_workplace ON mail_records(employer_workplace_id);',
                 'CREATE INDEX IF NOT EXISTS idx_mail_records_billing_employer ON mail_records(billing_employer_id_snapshot);',
                 'CREATE INDEX IF NOT EXISTS idx_mail_records_sender_workplace ON mail_records(sender_employer_workplace_id);',
+                'CREATE INDEX IF NOT EXISTS idx_mail_agency_employers_lookup ON mail_government_agency_employers(employer_id, employer_name);',
+                'CREATE INDEX IF NOT EXISTS idx_mail_record_billing_lookup ON mail_record_billing_employers(employer_id_snapshot, employer_name_snapshot);',
+                'CREATE INDEX IF NOT EXISTS idx_mail_recipient_lists_owner ON mail_recipient_lists(owner_user_id, updated_at DESC);',
+                'CREATE INDEX IF NOT EXISTS idx_mail_recipient_list_items_list ON mail_recipient_list_items(list_id, sequence_no);',
                 'CREATE INDEX IF NOT EXISTS idx_mail_batches_status_created ON mail_batches(status, created_at DESC);',
                 'CREATE INDEX IF NOT EXISTS idx_mail_batch_items_batch ON mail_batch_items(batch_id, sequence_no);',
                 'CREATE UNIQUE INDEX IF NOT EXISTS uq_mail_batch_items_active_record ON mail_batch_items(mail_record_id) WHERE removed_at IS NULL;',
